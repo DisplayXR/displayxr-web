@@ -1,0 +1,57 @@
+<!doctype html>
+<!-- TEST PAGE — an ordinary PlayCanvas (2.x, ESM, no globals) page with a SHADOW: a directional light
+     with castShadows and shadowDistance 11 (about 1.5x the camera's 7.2 m to the subject), a box
+     caster, a ground receiver. The light leans 45 degrees towards +X, so the box's shadow lies on the
+     ground at x 0.75..2.25 (probe: (1.4, 0, 0)); (-2.5, 0, 0) is lit ground. Keeps rendering
+     (autoRender stays true). For the harness it exposes, without exposing the engine:
+       window.__shadow = { sun, shadowDistance, shadowPt, litPt, view(p) -> camera-space [x, y, z],
+                           screen(p) -> CSS px [x, y] through the page camera (mono) } -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>PlayCanvas shadow (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block;width:100%;height:100%}</style>
+<script type="importmap">{ "imports": { "playcanvas": "/deps/playcanvas/playcanvas.mjs" } }</script>
+</head><body>
+<canvas id="application-canvas"></canvas>
+<script type="module">
+import * as pc from 'playcanvas';
+const canvas = document.getElementById('application-canvas');
+const app = new pc.Application(canvas, { graphicsDeviceOptions: { antialias: false, preserveDrawingBuffer: true, deviceTypes: ['webgl2'] } });
+app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(pc.RESOLUTION_AUTO);
+addEventListener('resize', () => app.resizeCanvas());
+
+const camera = new pc.Entity('camera');
+camera.addComponent('camera', { clearColor: new pc.Color(0.16, 0.19, 0.25), fov: 40, nearClip: 0.1, farClip: 100 });
+camera.setPosition(0, 4, 6);
+camera.lookAt(0, 0, 0);
+app.root.addChild(camera);
+window.__expectedConvergence = Math.hypot(4, 6);
+
+const SHADOW_DISTANCE = 11;
+const sun = new pc.Entity('sun');
+sun.addComponent('light', { type: 'directional', intensity: 1.6, castShadows: true, shadowDistance: SHADOW_DISTANCE, shadowResolution: 2048, shadowBias: 0.2, normalOffsetBias: 0.05 });
+sun.setEulerAngles(0, 0, 45); // -Y leaned towards +X: the shadow falls on the +X side of the box
+app.root.addChild(sun);
+app.scene.ambientLight = new pc.Color(0.2, 0.2, 0.22);
+
+const mat = (r, g, b) => { const m = new pc.StandardMaterial(); m.diffuse = new pc.Color(r, g, b); m.update(); return m; };
+const ground = new pc.Entity('ground');
+ground.addComponent('render', { type: 'plane', material: mat(0.8, 0.8, 0.8), castShadows: false, receiveShadows: true });
+ground.setLocalScale(30, 1, 30);
+app.root.addChild(ground);
+const box = new pc.Entity('box');
+box.addComponent('render', { type: 'box', material: mat(0.9, 0.45, 0.2), castShadows: true, receiveShadows: true });
+box.setLocalScale(1.5, 1.5, 1.5);
+box.setPosition(0, 0.75, 0);
+app.root.addChild(box);
+
+const inv = new pc.Mat4(), v = new pc.Vec3(), s = new pc.Vec3();
+window.__shadow = {
+  sun, shadowDistance: SHADOW_DISTANCE, shadowPt: [1.4, 0, 0], litPt: [-2.5, 0, 0],
+  view(p) { inv.copy(camera.getWorldTransform()).invert(); inv.transformPoint(v.set(p[0], p[1], p[2]), s); return [s.x, s.y, s.z]; },
+  screen(p) { camera.camera.worldToScreen(v.set(p[0], p[1], p[2]), s); return [s.x, s.y]; },
+};
+let n = 0;
+app.on('update', () => { if (n >= 60) { window.__frozen = true; return; } n++; });
+app.start();
+</script>
+</body></html>

@@ -45,16 +45,17 @@ hands you.
 <canvas id="pic" style="width:240px; height:240px"></canvas>
 <script type="module">
   import { createInline3D } from './js/inline3d.js';
-  const wall = await createInline3D({ lazy: false });
-  if (wall.supported) {
-    wall.addImage(document.getElementById('pic'), 'photos/cat_sbs.jpg');
+  const wall = await createInline3D({ lazy: false })
+    .catch((err) => { console.warn('inline 3D unavailable, showing 2D', err); return null; });
+  if (wall?.supported) {
+    wall.addImage(document.getElementById('pic'), 'photos/cat_2x1.jpg');
   }
   // else: the <canvas> stays blank on non-DisplayXR browsers — put a 2D <img> fallback
   // behind it, or draw the left half yourself.
 </script>
 ```
 
-`cat_sbs.jpg` is a normal side-by-side stereo image (left view | right view). That's it —
+`cat_2x1.jpg` is a normal side-by-side stereo image (left view | right view). That's it —
 no per-eye code, no WebXR boilerplate.
 
 ## The three content types
@@ -76,12 +77,243 @@ redraws the current video frame into the SBS buffer every frame while the window
 Same `opts` as `addImage`.
 
 ```js
-const v = document.querySelector('video#movie');   // a normal SBS 3D .mp4, muted+loop+play()
+const v = document.querySelector('video#movie');   // a normal SBS 3D .webm (VP9 plays everywhere; H.264 MP4 needs DisplayXR Browser 1.0.6+), muted+loop+play()
 wall.addVideo(document.getElementById('screen'), v);
 ```
 
 A 2D movie is not 3D — the source must be stereo (a full-width SBS encode). Top-bottom
 encodes aren't supported; re-pack to SBS first.
+
+### 2b. Player — `addPlayer(canvas, src, opts)`
+
+**Preview tier** (`@displayxr/inline3d/player` — see [`docs/sdk-stability.md`](sdk-stability.md)).
+`addVideo` above is a paint primitive: you still own the `<video>`, its transport and its
+playback state. `addPlayer(wall, canvas, src, opts)` turns a URL into a title with real
+`play/pause/seek` and an SDK-drawn transport, the way `addSplat`/`addModel` turn a URL into a
+framed object — built ON `addVideo`, so the stereo paint and the display-mode handling are
+inherited, not re-implemented.
+
+```js
+import { addPlayer } from '@displayxr/inline3d/player';
+
+const p = addPlayer(wall, canvas, 'title_2x1.webm', { poster: 'title-poster.jpg', loop: true });
+p.on('ready', () => p.play());
+p.on('ended', () => p.seek(0));
+```
+
+**A page cover over a player comes off on `p.firstWoven`**, the same signal as every other woven
+window ([woven-canvas rule 5](woven-canvas-rules.md#5-keep-the-canvas-covered-until-handlefirstwoven-resolves)),
+never on `'ready'`, `loadeddata` or the first decoded frame. Those fire as soon as the video has a
+frame, which is up to a hold (~1.2 s) before the browser joins the layer, and in that window the
+canvas shows the raw side-by-side pair:
+
+```js
+const p = addPlayer(wall, canvas, ['memories.webm', 'memories.mp4'], { poster: 'memories-poster.jpg' });
+const reveal = () => cover.remove();          // a hard cut, never a fade
+setTimeout(reveal, 4000);                     // ...and always, eventually
+await p.firstWoven;                           // settles at once for 'mono' / no session
+reveal();
+```
+
+The SDK paints the poster into both eyes before the first frame, so the tile is never empty under
+the cover. `p.rewoven()` is the underlying window's `rewoven()` for your own resize cover.
+
+`opts.format` is `'sbs'` (default — a real stereo pair, woven exactly like `addVideo`) or
+`'mono'` (genuinely flat content, painted full-frame, never split into eyes — for a catalogue
+that mixes 2D and 3D titles under one component). `format:'sbs'` on an unsupported/absent `wall`
+also paints flat (the left half only, matching the SDK's own internal fallback) — the module
+never calls a method that doesn't exist on an unsupported `wall`. `opts.controls` is `'sdk'`
+(default) or `'none'` to build your own chrome against the handle. `opts.keyboard` (default
+true) binds Space/K play-pause, ←/→ ±5 s, J/L ±10 s, M mute, scoped to the canvas/transport so
+several players on one page don't fight over the keyboard.
+
+The SDK transport is a **partial** bottom band, auto-tagged `data-inline3d-overlay` — never
+full-tile, per the overlay rule below — hidden after 3 s idle while playing, shown on
+hover/keypress/pause. It needs `canvas.parentElement` to attach into (a `<div>` wrapping the
+`<canvas>`, same as every sample's `.stage`). It carries a scrub bar that grows on hover and
+shades the buffered range, a hover time tooltip, a drag knob, play/pause, a volume button that
+expands to a slider, and a `current / duration` clock; a centre play badge, a keyboard-action
+pip and a buffering spinner sit over the tile as their own small overlays. `opts.accent` (any
+CSS colour) re-skins all of it through the `--dxr-accent` custom property, and
+`opts.badge3d` (`true`, or your own short string) adds a pill to the control row.
+
+Four things about the chrome are the **overlay contract**, not taste, and they are the first
+things to check if you restyle it:
+
+- the darkening behind the controls is a **bounded bottom band**, not the full-height gradient a
+  2D player would use — a full-tile plate matches the canvas's own quad and kicks the canvas out
+  of the weave input (see the overlay rule below), so the tile would present its raw
+  side-by-side pair instead of 3D;
+- there is **no `backdrop-filter`** anywhere in it — an element defined as a function of what is
+  behind it has no isolated composited resource to hand the compositor, so it cannot be excluded
+  at all. The near-solid `rgba(10,11,15,.92)` shell is the documented substitute;
+- promotion is `will-change: transform`, never a CSS `filter`;
+- **no glow or shadow outside a control's own box.** An overlay is excluded from the weave by its
+  rect, so anything it paints outside that rect (an outer `box-shadow`, a halo, a text shadow
+  that spills) is ordinary page content over the woven canvas and gets woven with it: a soft
+  double-imaged smudge around the control. Keep glows inset, or inside the overlay's padding —
+  both skins do.
+
+**Three media traps** that look like player bugs and are not:
+
+- **Codec.** From **DisplayXR Browser 1.0.6**, MP4 plays: H.264 video with AAC (LC or HE-AAC)
+  audio, decoded by the operating system (the GPU and Media Foundation on Windows, MediaCodec on
+  Android); the browser ships no codec of its own. **VP9 (or AV1) with Opus in WebM** stays the
+  safe default and should be listed first when you have both: it also plays in DisplayXR Browser
+  1.0.5 and earlier and in stock Chromium builds, where an MP4 fails outright (`error` fires, the
+  tile keeps its poster), and on a machine with no hardware H.264 decode (a VM, remote desktop, a
+  blocklisted GPU), where `canPlayType` still answers "probably" but the MP4 then fails to decode.
+  The sample's clip is VP9 WebM (video only — it has no audio track).
+- **Non-square pixels.** A source whose container flags a pixel aspect ratio (e.g. a 3840×804
+  stream with a stretch flag) reports a different `videoWidth`/`videoHeight` in Chromium than the
+  coded size, and the SBS pair is split and scaled from the wrong dimensions, so it plays
+  squashed. Rewrap it with square pixels; the container change needs no re-encode (for WebM,
+  `ffmpeg -i in.webm -c copy -aspect W:H out.webm` with the coded W:H).
+- **Black picture, working sound.** An opaque page background painted **over** the woven canvas
+  (a full-bleed section, a later sibling with a background colour, a z-indexed wrapper) hides the
+  tile while the `<video>` keeps playing. Check that nothing opaque sits above the canvas before
+  suspecting the stream.
+
+`opts.badge3d` is deliberately **page-driven and off by default**: the module will not infer it
+from `wall.supported`, because a supported wall whose tile has scrolled away — or whose panel is
+in a 2D mode — is not showing 3D at that moment, and a badge that claims otherwise is worse than
+no badge at all.
+
+| Handle | |
+|---|---|
+| `play()` / `pause()` / `seek(t)` | `<video>`'s own vocabulary — a page that knows `HTMLMediaElement` already knows this |
+| `currentTime`, `duration`, `paused`, `ended` | getters (`currentTime` also settable) |
+| `volume`, `muted` | get/set |
+| `setSource(src, {poster, transition, durationMs, easing})` | swap titles in place; each option overrides the player's own for this swap (`fadeMs` is the legacy alias) |
+| `exclude(el)` / `unexclude(el)` | `'sbs'` + a supported wall only; a no-op elsewhere (nothing is woven to protect an overlay from) |
+| `remove()` | stop the paint loop or weave window, tear down the transport, release the `<video>` |
+| `on(event, fn)` / `off(event, fn)` | `'play'\|'pause'\|'ended'\|'timeupdate'\|'ready'\|'error'`; `on` returns an unsubscribe function |
+
+`setSource()` transitions use **`./splat`'s vocabulary**, so a page that swaps splats and videos
+writes one options object: `transition`, `durationMs` (default 600), `easing` (the same named
+curves, default `'easeInOutSine'`), and `fadeMs` as the legacy alias (`fadeMs: 400` = a 400 ms
+crossfade). The player takes the part a video can mean — `'cut'` (default) and `'crossfade'`.
+`flip`, `wavefront`, the particle and sequence transitions move a photo's gaussians; a video
+frame has none, so they throw by name rather than quietly becoming a crossfade.
+
+```js
+const player = addPlayer(wall, canvas, first, { transition: 'crossfade', durationMs: 800 });
+player.setSource(next);                            // the player's own 800 ms crossfade
+player.setSource(trailer, { durationMs: 1500 });   // longer, this once
+player.setSource(live, { transition: 'cut' });     // no crossfade, this once
+```
+
+A crossfade is **opt-in at construction**, and that is structural rather than fussy: it runs
+through a mixer canvas that stands in for the `<video>` as the window's paint source, so a
+player that never asks for it keeps the byte-identical `addVideo(canvas, video)` path and pays
+no extra draw per frame. A per-call option can change a crossfade's duration or easing, or skip
+it, but cannot switch one on — there would be no mixer to run it through, and building one
+mid-flight means swapping a live window's paint source, which rebuilds the weave layer and
+produces exactly the blink the crossfade removes. That swap is a cut, and says so once in the
+console.
+
+What it dissolves is the outgoing title's **last frame**, not two simultaneously decoding
+streams. On screen that is the same thing (the outgoing title is being replaced), and it costs
+one `<video>` rather than two — which is what keeps the handle, the events and the transport
+bound to a single element. A side effect worth having: between the swap and the incoming
+title's first frame the tile holds the old frame instead of going black. In `./splat` terms this
+is `outgoing: 'frozen'`, the only value the player accepts. Its splat-side caveat — a frozen
+outgoing photo "reads as tracking pausing" — does not carry over: a splat re-renders for every
+head pose, an SBS video frame's disparity is baked in whether it is frozen or playing.
+
+**Playlists.** Give the player `titles` and drive it the way a remote or a voice command would:
+
+```js
+const player = addPlayer(wall, canvas, null, {
+  titles: [
+    { id: 'moon', src: 'moon_2x1.webm', title: 'Fly Me to the Moon', poster: 'moon.png' },
+    { id: 'reef', src: 'reef_2x1.webm', title: 'Reef' },
+  ],
+  autoAdvance: true,           // a title that ends plays the next one
+});
+player.play('reef');           // switch and play (an id, or an index into titles)
+player.next(); player.back();  // back() restarts if more than 3 s in, else the previous title
+player.toggle(); player.pause();
+player.current;                // { id, src, title?, poster? } or null
+player.on('titlechange', (t) => announce(t.title));
+```
+
+With `titles` and no `src`, the first title loads. Each switch goes through `setSource`, so the
+player's `transition` applies and the title line and poster change with it. `next()` stops at
+the last title unless `loopList: true` (which also lets `back()` wrap from the first). `'ended'`
+fires for each title, as before, including for a listener attached after it ended.
+
+**Layouts, bands and stereo posters.** `format` takes `'sbs'`, `'tb'` (top/bottom, left eye on
+top) or `'mono'`, as `./splat` `setVideo` does; a top/bottom source is repacked into the woven
+pair per frame. `band: 2.39` (or `'2.39:1'`) fits the picture into a centred letterbox slot of
+that aspect and leaves the rest of the tile clear. `posterFormat: 'sbs' | 'tb'` paints a stereo
+poster still eye by eye, so the tile is 3D before its first frame (the default `'mono'` puts one
+image in both eyes). `on('ended', fn)` also fires, once, if the clip had already ended when the
+listener was attached. `src` may be a list of candidates best first (see Hosting video below).
+
+**One preview decoding at a time.** A shelf of previews that each play muted and looped is one
+video decoder per tile, which is the cost that shows on a panel PC. Give them a shared `group` and
+they take turns: starting one pauses every other player in the group.
+
+```js
+for (const tile of shelf) addPlayer(wall, tile.canvas, tile.src, { group: 'shelf', muted: true, loop: true });
+```
+
+**Controls in the black bars, and the `'bars'` / `'call'` skins.** With a `band`, the picture
+sits in a strip and the tile has black bars above and below it. When the bottom bar is tall enough
+(44 CSS px, times the `size` scale), every skin moves its controls **into** that bar and the title
+into the top one, and the centre button and key pip stand down, so nothing sits over the picture.
+A bar too thin for them falls back to the usual overlay. Two skins are built for this layout:
+
+- `skin: 'bars'`: one row in the bottom bar reading back / play / elapsed / scrub / remaining.
+  Back is the remote's "previous" (`back()`). Without a band it becomes a solid strip across the
+  bottom of the tile.
+- `skin: 'call'`: the name and a thin timer bar on top, the controls at the bottom, and the
+  picture in a 2.39:1 band by default (`band` overrides it).
+
+**Two video paths, one vocabulary.** The SDK also plays video through `./splat`'s
+`handle.setVideo(src, { format, fit, rig })` (a screen-locked plane where each eye samples its own
+half — docs/playcanvas-adapter.md §setVideo). `addPlayer` keeps the same option names —
+`format` and `fit` (`'contain' | 'cover'`, same meaning) — so a later player can drive either path
+with one options object. Its `format` takes `'sbs' | 'mono'`; `setVideo` also takes `'tb'`. Unset,
+`fit` keeps the 1.x stretch-to-tile behaviour.
+
+v1 does not do `'tb'`/top-bottom re-pack, sidecar/filename
+format auto-detect, HLS, undock, or a one-player-per-`group` playback policy — see `docs/rfcs/0001-media-player.md` for the fuller
+plan and why each is out of this slice.
+
+#### On an app's one persistent canvas: `attachPlayer(splat, src, opts)`
+
+`addPlayer` owns its canvas, which makes it a second woven surface. An app that keeps one woven
+canvas for its whole life (woven-canvas [rules 2 and 3](woven-canvas-rules.md#3-prefer-one-persistent-canvas-for-the-whole-app))
+uses **surface mode** instead: the same transport, playlist and events, drawn through the
+PlayCanvas splat handle's own `setVideo`, with no canvas, layer or session of its own
+(RFC 0001 Addendum A).
+
+```js
+import { attachPlayer } from '@displayxr/inline3d/player';
+
+const splat = addSplat(wall, canvas, 'home.sog', { engine: 'playcanvas' });
+// the Watch screen:
+const player = attachPlayer(splat, null, { titles, format: 'sbs', fit: 'contain', autoplay: true });
+player.next();                 // the same playlist API as addPlayer
+// leaving Watch:
+await player.detach();         // setVideo(null): the splat, pose, lens and rig as they were
+```
+
+- **The scene is the poster.** It stays on screen until the first frame; a source swap cuts at the
+  next title's first frame, with no black between (the player alternates two `<video>` elements so
+  the plane never shows one that is loading).
+- **The controls** go beside the handle's canvas, in its parent (or `opts.chromeContainer`), and
+  are excluded on the handle as well as carrying `data-inline3d-overlay`.
+- **Differences from `addPlayer`:** `fullscreen` defaults to off (it would fullscreen the whole
+  app's canvas); `transition: 'crossfade'` is `./splat` `setVideo`'s GPU crossfade (the same
+  `durationMs` / `easing`); `band` is `setVideo`'s letterbox slot, and the controls sit in its bars
+  as on the canvas player; `poster`, `posterFormat` and the tile options are ignored, with a
+  warning.
+- **If something else takes the slot** (another `setVideo`, or `setVideo(null)`), the player stops
+  and emits `'detached'` with `{ reason: 'superseded' | 'released' }`. It never fights for it.
+- The handle's own `setSource` rejects while a video is on, so `await player.detach()` first.
 
 ### 3. Live scene (three.js / WebGL) — `addScene(canvas, onFrame, opts?)`
 
@@ -130,9 +362,72 @@ the last good `projectionMatrix` / `transform.matrix` per eye to replay from —
 itself, which is only valid inside the callback that delivered it — and feed the copies back with
 `EyeCamera.setFromMatrices(proj, transform)`.
 
+**Copy fields by name, never the object.** `XRViewport` and `XRView` are native objects whose
+fields are getters on the prototype, so `Object.assign`, spread (`{ ...vp }`) and `JSON` copy
+**nothing** from them. A page that kept `Object.assign(last.vp, layer.getViewport(view))` drew
+every eye into a 0×0 viewport and showed a black canvas on the real browser, while working in a
+test harness that returned plain objects. Copy explicitly:
+
+```js
+const vp = layer.getViewport(view);
+last.vp = { x: vp.x, y: vp.y, width: vp.width, height: vp.height };
+last.proj.set(view.projectionMatrix);
+last.xf.set(view.transform.matrix);
+```
+
 `./viewer` (and so `./splat` and `./model`) does all of this for you; use it unless you have your
 own loop. `handle.stats()` reports `{ frames, monoFrames }` per scene window if you want to see
 how often the fallback is firing on real hardware.
+
+**Pass `onLayerLost`, and make it go flat.** When the weave layer goes away for good (the session
+ended, the layer failed, the tile was removed), the SDK stops calling `onFrame` and calls
+`opts.onLayerLost` once. Whatever the canvas holds at that moment stays on screen, and for an
+`addScene` window that is your last side-by-side pair, now shown unwoven in a plain browser
+window: two half-width copies of the scene. The callback must replace it with the 2D view: render
+one mono camera across the full canvas on your own `requestAnimationFrame` loop (the same path as
+`!wall.supported`), or hide the canvas behind an `<img>` / poster. An empty `onLayerLost: () => {}`
+is the same as not passing one. `SceneViewer` ships the reference: `onLayerLost: viewer.onLayerLost`
+calls its `startMono()`. `./splat` and `./model` wire it for you.
+
+```js
+wall.addScene(canvas, onFrame, {
+  onLayerLost: () => {
+    stopStereo = true;                      // your onFrame will not run again anyway
+    const loop = () => { renderMono(); requestAnimationFrame(loop); };
+    loop();                                 // one camera, full canvas: the 2D page
+  },
+});
+```
+
+**Capped or slow? Read the frame clock before you scale anything down.** A long frame interval is
+not always yours to fix. On an Android 3D tablet a full-window woven canvas settled at a flat
+≈ 33.5 ms (every second vsync) that did not move with a 10× triangle count or a narrower eye
+buffer, while `onFrame` used 4–6 ms of CPU; an adaptive scaler aiming for 16.6 ms drove the
+resolution to its floor and bought nothing. Since 1.53 `handle.stats()` also reports the scene's
+frame clock over its last 120 deliveries:
+
+| field | meaning |
+|---|---|
+| `frameIntervalMs` `{ p50, p95 }` | interval between `onFrame` deliveries, on the XR frame timestamp |
+| `cbMs` `{ p50, p95 }` | wall time your `onFrame` took (main-thread CPU only — queued GPU work is not in it) |
+| `frameClockSamples` | intervals behind the percentiles (0–120) |
+| `displayHz`, `displayHzSource` | the refresh rate when the session reports one (`XRSession.frameRate`, source `'session'`), else `null` — never estimated from the cadence, which cannot tell a 30 Hz panel from a 60 Hz one at vsync/2 |
+| `paced` | `true` when the interval is steady (p95 ≤ 1.15 × p50), your callback idle (cb p50 ≤ 0.5 × interval p50) and, if `displayHz` is known, a whole number of refresh periods (±8%); `null` under 30 samples |
+
+```js
+const s = handle.stats();
+if (s.paced) {
+  // The compositor sets this cadence. Cutting CPU or resolution will not shorten it: hold, or
+  // scale back UP while the interval stays put.
+} else if (s.frameIntervalMs && s.cbMs && s.cbMs.p50 > 0.8 * s.frameIntervalMs.p50) {
+  // Your callback is the frame. This is the case resolution/LOD scaling is for.
+}
+```
+
+`paced` cannot see GPU cost, so a GPU-bound scene with a light callback can read `true`. The
+decisive test is the one the scaler already runs: change the resolution one step and watch whether
+`frameIntervalMs.p50` moves. If it does not, stop scaling. Read `stats()` a few times a second, not
+every frame: each read sorts the window. The SDK reports these numbers and changes nothing.
 
 **Resizing clears the buffer, even when nothing changed.** Writing `canvas.width` or
 `canvas.height` reallocates the drawing buffer — including a write of the *same* value, which is
@@ -154,6 +449,12 @@ that virtual display and the scene renders at its authored scale with **no per-f
 scaling**. A bigger `virtualDisplayHeight` shows a larger slice of the world in the element.
 This mirrors the native reference apps (`cube_handle`): the app supplies one scale number and
 consumes render-ready views — it never re-derives the projection or scales the scene.
+
+**Swapping content in a scene: dispose what you take out.** The renderer is yours, so is its
+memory. Removing a three.js object from the scene frees nothing on the GPU: call
+`geometry.dispose()`, `material.dispose()` and `dispose()` on each texture it used, and check that
+`renderer.info.programs.length` levels off across swaps.
+[Content lifecycle rules](content-lifecycle-rules.md), rule 6.
 
 ## View rigs: display vs camera
 
@@ -182,6 +483,113 @@ correctly and still looks flat.
 - **The user IS somewhere and moves** — first person, a walkthrough, a game, a map, a level
   editor, a ported VR app. **Camera rig.** The viewpoint is state the app owns, and a portal has
   no camera to follow you.
+
+**An orbit viewer you already wrote keeps its camera: pose the portal from it.** The portal sits
+at the orbit target, faces the camera and is exactly as tall as the camera's view at that
+distance, so the framing matches the 2D view and orbiting turns the subject behind a fixed window:
+
+```js
+import * as THREE from 'three';
+import { displayRig } from '@displayxr/inline3d/three';
+// An orbit viewer (OrbitControls): pose the portal at the orbit target, facing the camera, as
+// tall as the camera's view there. The target sits on the glass at any window size and zoom.
+const rig = {};
+function orbitRig() {
+  const d = camera.position.distanceTo(controls.target);
+  const vH = 2 * d * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  return displayRig({ position: controls.target, orientation: camera.quaternion, virtualDisplayHeight: vH, out: rig });
+}
+const handle = wall.addScene(canvas, onFrame, { viewRig: orbitRig() });
+// in onFrame, before rendering the eyes: handle.setViewRig(orbitRig());
+```
+
+What this buys over a camera rig for the same orbit: there is no convergence distance to keep in
+sync. A camera rig's glass sits wherever `convergenceDiopters` says, so a page that eases
+convergence toward the camera distance leaves the glass at a stale depth after anything that moves
+the camera (a resize refit, a layout breakpoint that makes the canvas taller, a zoom), and the
+scene recedes until it catches up. The SDK logs a one-time `console.info` when a camera rig
+orbits a fixed point. A real-world report: an orbit-camera physics course whose scene sank into
+the screen as the window was widened, fixed by this switch.
+
+**On a display rig the eye is wherever the viewer's head is.** The eye poses are the tracked
+head, scaled into scene units by `virtualDisplayHeight / the element's physical height`, so the
+camera's distance from the glass is not a constant you chose: it changes as the viewer moves, and
+it is usually well beyond the nominal 0.6 m once scaled (about 1 m in scene units for a 0.24
+virtual display on a 17 cm tall element). Anything keyed to **camera distance** breaks there:
+three.js `Fog(color, near, far)`, distance-based LOD, distance fades. An aquarium that set
+`Fog(bg, 0.6, 0.9)` from its 2D camera at 0.6 m fogged the whole tank to the background colour in
+3D. Key such effects to the scene's own depth (distance behind the glass, `-z`), or leave them off.
+
+**Comfort is set in diopters, so it depends on the viewing distance.** The eyes converge on a
+point at distance `z` while they focus on the glass at distance `V`; comfort is about the
+mismatch `ΔD = 1/V − 1/z` in diopters (positive behind the glass). On the glass that point lands
+with a disparity
+
+    p = e · V · ΔD        (e ≈ 0.063 m, the eye separation)
+
+so the same diopter bound allows more on-screen disparity for a viewer further away, and a
+larger share of a small canvas than of a large one (`% of canvas width = 100 · p / canvas width`).
+A percentage measured on one canvas does not carry over to another size or another distance;
+diopters do. Three published bounds, as on-screen disparity:
+
+| Viewing distance | Percival (±⅓ D) | Shibata et al. 2011, front / behind | Legacy Leia plugins, front / behind |
+|---|---|---|---|
+| 0.45 m | 9.4 mm | 15.6 mm (0.55 D) / 19.7 mm (0.70 D) | 12.6 / 10.5 mm |
+| 0.60 m | 12.6 mm | 21.5 mm (0.57 D) / 23.9 mm (0.63 D) | 12.6 / 10.5 mm |
+| 0.90 m | 18.9 mm | 33.4 mm (0.59 D) / 32.3 mm (0.57 D) | 12.6 / 10.5 mm |
+
+Shibata ("The zone of comfort", J. Vision 2011) puts the near limit at a vergence of
+`Dv/1.035 + 0.626` and the far limit at `Dv/1.129 − 0.442` (`Dv = 1/V`). The Leia Unity and Unreal
+plugins drew a comfort-zone gizmo from 0.83 V to 1.2 V, a constant e/5 in front and e/6 behind on
+the glass. These zones are necessary, not sufficient: the panel's crosstalk can make a bright
+subject ghost well inside them, which is what rule 5 of
+[making-3d-look-right.md](making-3d-look-right.md) is about.
+
+**What viewers reported on a panel** (about 60 cm, a 16:9 canvas of roughly 17 cm wide; the
+diopter values depend on that width, so treat them as approximate). People differ a lot; follow
+the less tolerant viewer:
+
+| | In front of the glass | Behind the glass |
+|---|---|---|
+| Less tolerant viewer | uncomfortable from about 0.55 h (3.1 %, ≈ 0.14 D) | comfortable to 0.6 h (3.4 %, ≈ 0.15 D), usable to 1.0 h (5.6 %, ≈ 0.25 D), past 1.6 h uncomfortable |
+| More tolerant viewer | slight fatigue from about 3.8 % (≈ 0.17 D), moving objects uncomfortable past about 3.5 % | fine to 2.0 h (11 %, ≈ 0.49 D) |
+
+Pop-out tolerates about half the depth that recession does, and moving objects less than still
+ones. The viewers' default fit puts the front of a typical subject near the stricter front limit,
+which is why rule 1 there is "keep the placement", not "come further out".
+
+These are **limits, not targets.** That recession is tolerated better than pop-out does not make
+"behind the glass" a default. The best-looking placement is the subject centred on the glass with
+the least disparity it needs ([making-3d-look-right.md](making-3d-look-right.md) rule 1). Stereo
+cinema agrees: stereographers put the screen plane through the subject, so a part of it sits in
+front and most of it just behind, not set back from the glass as a whole.
+
+**The same content on different devices.** On a display rig at real proportions, depth in tile
+heights is `d · H` metres (`H` = the canvas's physical height), so the vergence load goes roughly
+as `d · H / V²`. Devices are sized for their distance, which keeps it in a narrow band, but close
+devices carry more. A subject 0.5 h in front and 1.0 h behind, full screen, at the nominal distance:
+
+| Device | Distance | Real depth, front / behind | Load, front / behind | Shibata zone |
+|---|---|---|---|---|
+| 32" monitor | 80 cm | 19.9 / 39.8 cm | 0.41 / 0.42 D | 0.58 / 0.58 D |
+| 15.6" laptop | 60 cm | 9.7 / 19.4 cm | 0.32 / 0.41 D | 0.57 / 0.63 D |
+| 11" tablet | 40 cm | 7.4 / 14.8 cm | 0.57 / 0.68 D | 0.54 / 0.73 D |
+| 6.7" phone, landscape | 30 cm | 3.5 / 7.0 cm | 0.44 / 0.63 D | 0.51 / 0.82 D |
+
+Small, close devices also put more of the canvas width into disparity for the same load (about
+6.7 % on the phone against 3.5 % on the laptop), which is what crosstalk follows. So scale depth
+down on small, close devices if anything, and never up on large ones: a display rig's `ipdFactor`
+above 1 distorts shapes, and real proportions on a 32" monitor already give 20 cm of pop-out.
+`getDisplayInfo()` reports the device's nominal viewer distance and `displayMetrics()` the
+canvas's physical size. The `./depth` helpers do this arithmetic: `comfortZone({ viewerM, zone })`
+gives the zone in diopters and on-glass mm; `comfortDepthFactor(...)` the display-rig factor
+(never above 1) that keeps a subject inside it; `backdropPlacement(...)` where a backdrop plane goes
+behind a subject, and how big it must be; `cameraRigComfortFactor(...)` the camera-rig
+eye-separation multiplier (uncapped) that fits a scene's nearest and farthest points into it. On
+`addModel` / `addSplat`, the opt-in `depth: 'auto'` (or `{ zone: 'percival' }`) applies the
+display-rig factor from the nominal distance and the canvas size, once per framing, resize or
+display change, never on zoom or orbit; `handle.depthFactor` reads it. Without the option nothing
+changes.
 
 **Why an orbit belongs on the first line: scale invariance.** A display rig scales the eye poses by
 `virtualDisplayHeight / the element's physical height`, so the depth you get does not depend on how
@@ -260,10 +668,21 @@ bad number degrades the look rather than killing the window.
 Note the display/camera split on `ipdFactor` and `parallaxFactor`. On a display rig they are
 *relative* — `1` is what the display would naturally do, and lowering them is a comfort dial. On a
 camera rig they are *absolute*, in the app's own units. `metersToVirtual` is the unit conversion
-that goes with that, for a scene not authored in metres: a scene built in centimetres would
-otherwise get a 63 mm eye separation measured in *its* units. It is a unit fix, not a depth dial —
-if you are reaching for it to make a scene look deeper, read the section below and then the
-[rig choice](#which-rig--decide-by-what-the-user-moves-not-by-whether-you-hold-a-camera) again.
+that goes with that: how many world units make one real metre, i.e. the world's scale. A scene
+built in centimetres would otherwise get a 63 mm eye separation measured in *its* units. It is a
+unit fix, not a depth dial — but for a made-up game world there is no true scale, so *choosing*
+the scale **is** the unit fix. Never rescale your world to get depth; set `metersToVirtual`. A
+world with a true scale uses the true conversion; a world without one declares the centre of
+interest to be 2 real metres away, `metersToVirtual = convergence / 2` in its own units. Either
+way `ipdFactor` stays the depth dial (see [Aim for real depth](#aim-for-real-depth)).
+
+So on a camera rig `ipdFactor: 1` is **not** "correct" by default with an arbitrary
+`metersToVirtual`: it means real eye separation only when the world's declared scale is right. In
+arbitrary units at `metersToVirtual: 1`, or for a scene framed small or far from the camera, 1 is
+just a number and often gives almost no depth. Normalise the scale first (the rule below), then
+treat `ipdFactor` as a strength dial whose job is to put the scene's nearest and farthest visible
+points inside — and across most of — the comfort zone. Only on a display rig is 1 the natural
+value and anything above it an exaggeration.
 
 ### Which way is out
 
@@ -306,26 +725,292 @@ depth breathe every time the user reconverged.
 **Comfort** — the runtime's own rule (`dxr_view_math.h`):
 
 ```
-comfort = ipdFactor × metersToVirtual × convergenceDiopters × N     (N ≈ 0.5 m, nominal viewing distance)
+comfort = ipdFactor × metersToVirtual × convergenceDiopters × N     (N = the display's nominal viewing distance)
 ```
 
 It is your eye scale divided by the eye scale a display rig would use for a screen at your
 convergence distance. At `1` the viewer's eyes are parallel on infinitely distant content; **past 1
 they diverge**, and nobody can fuse that. With a camera rig's defaults (`ipdFactor` 1,
-`metersToVirtual` 1) it reduces to "keep convergence past about 0.5 world units".
+`metersToVirtual` 1) it reduces to "keep convergence past about N world units" — 0.6 m on desktop
+panels (`XRDisplayInfo.nominalViewerPosition.z`), shorter on tablets.
 
 So comfort bounds where the budget *sits*, not how big it is — it guards the background against
 divergence. A **low** comfort number therefore means "my convergence is far", **not** "my scene is
 flat": a flat window is a budget problem and comfort will not report it. (The two co-vary in a
 naive orbit viewer, where convergence is set to the framing distance, which is how the two get
-confused.) Nothing in this SDK enforces either; the runtime clamps the *convergence* knob — never
-`ipdFactor` — when comfort exceeds 1. `samples/camera-rig/` prints comfort live.
+confused.) Nothing enforces either: neither this SDK nor the runtime clamps a rig the page declares (the
+runtime's convergence clamp applies only to legacy-profile and keyboard-driven rigs). Keep comfort
+≤ 1 yourself; for the budget, see *Aim for real depth* below. `samples/camera-rig/` prints comfort live.
+
+### Aim for real depth
+
+A comfort *ceiling* with no target gets read as "stay far inside it", and the page comes out nearly
+flat. **Use most of the comfort zone. Near-zero disparity is a defect on these displays, not a safe
+default — too little depth is a failure too.**
+
+**The model.** On a camera rig the eyes are *real eyes*: their separation in world units is
+`0.063 m × ipdFactor × metersToVirtual`. A point at camera distance `z` lands, in diopters from the
+glass,
+
+```
+ΔD(z) = ipdFactor × metersToVirtual × (1/D − 1/z) × k        k = tileHeightM / (2·tan(fov/2) · viewerM)
+```
+
+with `D` the convergence distance. `k` is 1 when the camera's field of view matches how the viewer
+sees the canvas, and below 1 for a wide FOV in a small canvas. The comfort zone is about 0.55 D in
+front and 0.65 D behind at 0.6 m (`comfortZone()`).
+
+**Reference point** (the runtime's keyboard-device defaults, known to look right): a real-scale
+world, `ipdFactor` 1, `metersToVirtual` 1, convergence 2 m (0.5 D). Infinity lands 0.5 D behind,
+content at 1 m lands 0.5 D in front; `cameraRigComfortFactor` gives 1.14 (zNear 1, zFar ∞, matched
+canvas), so it uses about 88 % of the zone.
+
+**The rule** (camera rig):
+
+1. **Convergence = the distance from the camera to the centre of interest.** The subject straddles
+   the glass: a little in front, a little behind — not under it, not at the far wall. For a game,
+   the ground at the view centre.
+2. **Never rescale your world; set `metersToVirtual`.** Apps keep their own unit system.
+   - *A world with a true scale* (metres, centimetres, a ported VR app): `metersToVirtual` is the
+     true conversion (1, 100, …), and `ipdFactor` alone tunes depth, with the helper (rule 3).
+   - *A world with no true scale* (most games): `metersToVirtual = convergence / 2` in the app's own
+     units — the subject declared 2 m away, as in the reference — and `ipdFactor` ≈ 1.
+   - Rescaling the scene so the subject sits 2 units away with `metersToVirtual` 1 is equivalent;
+     there is no reason to do it.
+   - If the camera zooms or the subject distance changes a lot, track it: set `metersToVirtual =
+     convergence / 2` every frame through `setViewRig`, so the depth stays constant. That changes
+     the rig, not the world, so it is consistent with "never scale the world per frame".
+
+   Examples: subject 13.4 units away → `metersToVirtual` 6.7. A centimetre scene with the subject
+   200 units away → 100, either way (the true conversion and the convention agree).
+3. **`ipdFactor` tunes the depth.** **Open scene** (content reaches the horizon or a far
+   background): keep `ipdFactor` ≈ 1. **Bounded scene** (a top-down board, a room, a track; nothing much past ~2× the convergence
+   distance): raise it until the nearest and farthest visible content fill the zone, typically
+   1.5–2.5. Compute it: `cameraRigComfortFactor({ zNear, zFar, convergence, verticalFov, aspect,
+   tileHeightM, viewerM, ipdFactor, metersToVirtual })` from `@displayxr/inline3d/depth` returns the
+   multiplier that fills the zone; aim for 0.8–1× of it. `tileHeightM` = `canvasSizeM[1]` and
+   `viewerM` = `nominalViewerM` from `await handle.displayMetrics()`.
+4. **A canvas much smaller than the FOV-matched size (`k < 1`) shows proportionally less depth.**
+   Use the helper with the real `tileHeightM`; don't rely on the comfort product alone.
+5. **The comfort product `ipdFactor × metersToVirtual × convergenceDiopters × N ≤ 1` stays the
+   divergence ceiling** for content at infinity on a FOV-matched canvas (`N` =
+   `XRDisplayInfo.nominalViewerPosition.z`, 0.6 m when the display reports none). A bounded scene
+   or a small canvas (`k < 1`) can sit above 1 and still inside the zone: there the helper binds
+   (`samples/camera-rig/`, a metre-scale bounded scene in a small canvas, can read well above 1). With the `convergence / 2` convention it equals `ipdFactor × N / 2`: 0.3 at
+   `ipdFactor` 1 on a 0.6 m panel.
+
+Keep `parallaxFactor` equal to `ipdFactor`, so the look-around matches the stereo. Keep the camera
+perspective and tilted, so the ground ramps through depth (rule 2 of
+[making-3d-look-right.md](making-3d-look-right.md)); don't shear the ground flat onto the glass.
+
+- **Display rig: `ipdFactor` and `parallaxFactor` 1 are the natural depth** (full roundness at real
+  proportions). Don't lower them without a reason you can name.
+- **Budgets are reports.** Pop-out and recession numbers (`comfortZone`, `cameraRigComfortFactor`,
+  `groundPlaneRig`) tell you where the scene sits; they are not limits to stay far inside. Never
+  lower the depth as the user zooms; if zooming in goes too far, cap the zoom.
+- When you test, assert a visible-disparity **floor** at the default view, not only a ceiling.
+  `inline3d-tools check` measures a camera-rig page's disparity in the two eye images and warns
+  `depth-underused` below about 30 % of the zone; it warns for a display rig whose `ipdFactor` is
+  below 0.5.
+
+**Worked example.** A top-down racing game: three.js camera, `fov` 46°, converged on the track
+13.4 units away, built with `cameraRigFromCamera(THREE, cam, { convergence: 13.4, ipdFactor: 2.5,
+parallaxFactor: 2.5 })` at `metersToVirtual` 1. With visible content from about 8 to 30 units,
+`cameraRigComfortFactor` (matched canvas) gives about 11 at `ipdFactor` 1, so 2.5 uses roughly 20 %
+of the zone: on the panel it reads flat. By the rule (a game world, no true scale):
+`metersToVirtual: 6.7` (13.4 / 2), and then `ipdFactor` 1 is the same eye separation as 6.7 at `metersToVirtual` 1. The track is bounded, so
+raise it to 0.8–1× of the fill multiplier: about 11 / 6.7 ≈ 1.7, i.e. `ipdFactor` ≈ 1.4–1.7,
+`parallaxFactor` the same. Then judge it on the panel.
 
 **Convergence at infinity** (`convergence: 0`) is legal and keeps a perfectly finite budget; it
 just puts the entire scene in front of the glass, which is comfortable for almost nothing. It is
 also the one camera rig with no display-rig equivalent at all — a display rig's zero-disparity
 plane *is* its screen, at a finite distance, so it cannot express "zero disparity at infinity". A
 camera rig simply has one degree of freedom more than a display rig, and this is where you see it.
+
+### A tilted map or strategy camera — `groundPlaneRig()`
+
+*(`@displayxr/inline3d/depth`; added 1.55.0. Guideline only: it returns numbers, never applies
+them.)*
+
+A camera looking down at a ground plane with some tilt (a map, a board, an RTS) on a camera rig
+has one comfortable setup: the zero-disparity plane on the ground at the view centre, convergence a
+fixed function of camera height, and a zoom-in limit before tall things at the near edge come too
+far out of the glass. `groundPlaneRig` derives all of it, including the factor that is easy to get
+wrong silently: on-glass disparity scales with the canvas's **physical** height
+(`0.063 · ipdFactor · metersToVirtual · (1/D − 1/z) · tileHeightM / (2·tan(fov/2))`), so a formula
+that leaves `tileHeightM` out is right only when the canvas exactly fills the camera's field of
+view from the viewer.
+
+```js
+import { groundPlaneRig } from '@displayxr/inline3d/depth';
+import { cameraRigFromCamera } from '@displayxr/inline3d/three';
+
+const m = await handle.displayMetrics();       // read once, and again on resize
+const g = groundPlaneRig({
+  height: cam.position.y - groundY,            // world units above the ground
+  tiltDeg: 35,                                 // view axis from straight down
+  fovDeg: cam.fov,
+  tileHeightM: m.canvasSizeM[1],
+  viewerM: m.nominalViewerM,
+  objectHeight: 3,                             // the tallest unit that can stand at the near edge
+});
+handle.setViewRig(cameraRigFromCamera(THREE, cam, { convergence: g.convergence, out: rig }));
+zoom.minHeight = g.minHeight;                  // your decision, not the SDK's
+```
+
+- `convergence = height / cos(tilt)`: the ground at the view centre sits on the glass. The flat
+  ground's inverse depth at the bottom and top edges is `(1 ± tan(tilt)·tan(fov/2)) / d`, so the
+  near edge comes forward and the far edge recedes by the same disparity (`report.groundNearMm` /
+  `groundFarMm`, on-glass, signed, < 0 in front). Past `tan(tilt)·tan(fov/2) ≥ 1` the top edge sees
+  the horizon (`report.horizonInView`).
+- `minHeight` is the zoom-in limit: the lowest camera height, at the same tilt with convergence
+  following it, at which the top of an `objectHeight`-tall object standing on the near edge stays
+  within the budget — `maxPopOutMm` (perceived mm in front of the glass) if given, else the comfort
+  zone's front side at `viewerM` (`comfortZone()`). Exact, not iterated.
+- `ipdFactorForBudget` is the other way to spend the same budget: the `ipdFactor` that puts that
+  object exactly on it at the current height.
+- `report.popOutMmNearEdge` / `recessionMmFarEdge` are perceived distances in front of / behind
+  the glass; `report.comfortFactor` is `cameraRigComfortFactor` for this scene (> 1 = headroom) and
+  `report.comfortProduct` the runtime's `ipdFactor × metersToVirtual × convergenceDiopters × N`
+  rule (keep ≤ 1).
+
+It suggests a plain camera rig: the ground is tilted in depth, as rule 2 of
+[making-3d-look-right.md](making-3d-look-right.md) asks. A different mode, the ground locked to the
+glass through a sheared projection, is not built.
+
+### Making a subject shallower: keep it rigid
+
+A subject too deep for the display (a room, a diorama, a long product turned side-on) has to lose
+depth somehow. **Do not do it by scaling only the display's `z` after the subject has been turned
+or tilted.** A per-axis scale applied *after* a rotation is a shear, not a squash: right angles
+collapse. The 2D view still looks correct, because the scale runs almost along the line of sight.
+Stereo and head-tracked parallax then show a slanted slab, and viewers describe the scene as
+"looking off" without being able to say why.
+
+A room tilted 36° toward the viewer and turned 45° (an isometric diorama), with a parent group
+scaling display `z`:
+
+| `scale.z` on the parent | floor-to-wall angle | walls tilted back from the glass |
+|---|---|---|
+| 1.0 | 90° | 35.5° |
+| 0.5 | 55° | 20° |
+| 0.3 | 35° | 12° |
+
+What to do instead, in order of preference:
+
+1. **Change the subject's orientation.** A more top-down tilt or a face-on turn lowers the subject's
+   natural depth while keeping it rigid. For the diorama above, going from 36° to 57° tilt halves
+   its depth (1.17 → 0.62 display heights).
+2. **Scale uniformly.** This is what `SceneViewer.fitTo()` does: the subject gets smaller on the
+   screen, but it keeps its shape, and on a display rig its depth scales with it.
+3. **If you really need a per-axis scale, apply it in the subject's own frame, *before* the
+   rotation** (a model that is genuinely too thick), never on a parent of the rotated subject.
+
+Lowering a display rig's `ipdFactor` is the other depth dial, and it works on the cues rather than
+the geometry. On its own it compresses depth in **stereo only**, while head-tracked parallax still
+shows the full depth, so the two cues disagree. The usual practice is to lower `ipdFactor` and
+`parallaxFactor` **together**, so that when the stereo depth shrinks, the look-around shrinks with
+it. Splitting them is legitimate when you want that effect, but it is your call, not a default. Know
+what the dials do, though: they leave the geometry and the 2D view untouched, but they compress
+*perceived* depth along the display's `z` for the whole scene. So a strongly tilted subject's angles
+flatten for the viewer much as they do under a `scale.z`. A rigid, re-oriented subject is still the
+way to keep its shape.
+
+### A user depth slider
+
+A "3D depth" control (0 = flat, 1 = as authored, a little above for more) is two rig fields
+moved **together**, everything else held:
+
+| | camera rig | display rig |
+|---|---|---|
+| drive | `ipdFactor = authoredIpd × s` **and** `parallaxFactor = authoredParallax × s` | `ipdFactor = s`, `parallaxFactor = s` |
+| hold | `convergenceDiopters`, `verticalFov`, `metersToVirtual` | `virtualDisplayHeight`, `perspectiveFactor` |
+| range | `>= 0`, absolute (the runtime clamps only to [0, 10000]) | `[0, 1]` relative; above 1 is accepted and `setViewRig` warns once |
+| comfort | the product `ipdFactor × metersToVirtual × convergenceDiopters × N` scales with `s`: keep `s ≤ 1 / (authored product)` | 1 is what the display shows by construction |
+
+Why these two and not the others:
+
+- **The zero-disparity plane does not move.** On a camera rig it is set by `convergenceDiopters`
+  alone. The runtime shears each eye's frustum by its offset × `convergenceDiopters`, so a point at
+  the convergence distance lands on the same pixel in every view whatever the eye offsets are.
+  `ipdFactor` scales the eyes' spread around their centre, `parallaxFactor` scales how far that
+  centre follows the head, and both scale about that plane. On a display rig the plane is the
+  glass. So scaling depth never reconverges the scene.
+- **Move both, or the cues disagree.** `ipdFactor` alone shrinks stereo depth while head-tracked
+  look-around still shows the full depth (see *Making a subject shallower* above). Moving them
+  together is the default; splitting them is a deliberate effect.
+- **Leave `metersToVirtual` alone.** In the runtime it multiplies the eye exactly as the two factors
+  do, so it would "work". But it is the scene's unit conversion, and an app that changes it for
+  depth has two numbers meaning the same thing. Keep it a unit fix.
+
+```js
+const authored = { ipd: 0.8, parallax: 1 };     // what the scene was tuned with
+let s = 1;                                      // the slider, 0..1.2
+
+wall.addScene(canvas, (views, layer) => {
+  handle.setViewRig(cameraRigFromCamera(THREE, appCam, {
+    attach: true, convergence,                  // held: the zero-disparity plane stays put
+    ipdFactor: authored.ipd * s,
+    parallaxFactor: authored.parallax * s,
+    out: rig,                                   // reused: no allocation per frame
+  }));
+  // ... render ...
+});
+```
+
+`cameraRigFromCamera`, `cameraRigFromPose` and `displayRig` all take `ipdFactor` and
+`parallaxFactor` and put them on the descriptor unchanged. They do not rescale, clamp or couple
+them, and the convergence, FOV and `metersToVirtual` they emit do not depend on them.
+
+**Latency: one frame, the same as any rig change.** The browser locates views before the page's
+rAF, so factors set in frame N shape the views of frame N+1. They are not applied together with
+that frame's eye poses. The attach pattern removes the lag from the camera's *pose* only; the
+factors are applied in the runtime's eye maths and always arrive a frame later. On a slider or a
+300 ms ease that is invisible.
+
+**Going flat where the mode switch is refused** (`setStereoEnabled(false)` rejecting with
+`NotSupportedError`, see [woven-canvas-rules.md](woven-canvas-rules.md)) is the same control eased to
+`s = 0`: every view becomes identical and head motion stops moving the picture. The panel's lens
+stays on, so it is a softer 2D than the real 1-view mode.
+
+### How addModel frames a model
+
+*(`@displayxr/inline3d/model`, both engines; the default since the robust-framing release, web#327.)*
+
+`addModel` does not frame a mesh on its bounding box. At load it samples the surface, uniformly by
+triangle area (65 536 points, a fixed seed, the model's bind / rest pose), and takes three
+separate numbers from that sample:
+
+| | the rule | why |
+|---|---|---|
+| **Screen plane** | the surface's 75th-percentile depth toward the viewer | about 25% of the surface is in front of the glass, the rest just behind (the runtime's own auto-convergence target) |
+| **Turn pivot** | the surface's median in x and z; y is the box centre | the model turns about its body, not about a point a tail pulled away |
+| **Fit extent** | the per-axis 1st–99th percentile, never tighter than the full box at 90% of the tile | an outlier does not shrink the subject, and nothing runs off the tile |
+
+`margin`, `fitSweep` (the swept width) and `depthLimit` apply to the fit extent exactly as before.
+Weighting by area rather than by vertex keeps dense detail (eyes, a text decal) from dominating.
+`handle.frame` reports what was used: `center` (the pivot), `extent`, `screenPlaneZ`, `depthRange`
+(the 1st–99th percentile depth, which `depth: 'auto'` measures against the screen plane) and the
+original `box`.
+
+To override:
+
+```js
+addModel(wall, canvas, 'dino.glb', { framing: 'box' });    // the bounding box, centre on the glass
+addModel(wall, canvas, 'dino.glb', { frame: savedFrame }); // your own frame; overrides `framing`
+```
+
+`frame` takes the same shape as `handle.frame`, so a page can load once, copy `handle.frame`, and
+pin it; give `screenPlaneZ` to choose the depth on the glass, or leave it out to put `center` there.
+A clip that moves the subject far from its rest pose is not followed: pass a `frame` for it. A page
+that sizes something from the subject's depth (a backdrop's rear reach, a pop-out readout) measures
+from this screen plane: `getSubjectBounds()` below already includes it.
+
+The same rule is in `SceneViewer.fitTo(center, extent, { screenPlaneZ, depthRange })` for a page
+that frames its own subject; without the third argument `fitTo` puts `center` on the glass, as it
+always has. The native model viewer frames the same way, so a product keeps its size and placement
+when it is undocked.
 
 ### Reading back where the subject is — `getSubjectBounds()`
 
@@ -364,10 +1049,11 @@ function onFrame(views, layer) {
 ```
 
 **Placing the subject: `depthOffset`.** The companion setter slides the whole subject along the
-depth axis, in display metres, `+` toward the viewer:
+depth axis, in **virtual-display** metres (the units of `virtualDisplayHeight`, not centimetres on
+the panel), `+` toward the viewer:
 
 ```js
-viewer.depthOffset = -0.05;   // push it 5 cm behind the glass
+viewer.depthOffset = -0.05;   // push it back by 0.05 / virtualDisplayHeight tile heights (0.21 h at 0.24)
 ```
 
 It survives `fitTo()` — reframing a subject should not silently discard where you put it — and
@@ -463,6 +1149,23 @@ render with (`samples/splat/`, with `?engine=spark` as the A/B switch) because i
 times cheaper in stereo and it streams large scenes. The same `perf` presets map onto its knobs,
 and the `camera` block below drives both engines the same way. The mapping and every difference
 from Spark are in [`playcanvas-adapter.md`](playcanvas-adapter.md).
+
+**What shows around a splat.** A splat covers only part of its tile, and the viewer's default clear
+is transparent (`clearColor` unset), so the page behind the canvas shows through. The DisplayXR
+Browser pre-blends that page under both eyes at zero disparity, so it reads as a flat backdrop on
+the glass, sampled at half horizontal resolution. Keep what sits behind a splat tile soft (a colour
+or a gentle gradient, light or mid-tone, never black behind a bright subject: [making 3D look
+right](making-3d-look-right.md)); text or a photo there smears, and a photo there also sits on the
+glass, in front of any part of the subject that is behind it. Put a photo backdrop in the scene
+instead, behind the subject (rule 10 there; `backdropPlacement()` gives its depth and size). To pin the backdrop regardless of
+the page, pass an opaque `clearColor` (0..1):
+
+```js
+const splat = addSplat(wall, canvas, 'butterfly.sog', {
+  engine: 'playcanvas',
+  clearColor: [0.85, 0.83, 0.8, 1],          // optional: an opaque backdrop of your own
+});
+```
 
 ### Splat performance — it is overdraw, and neither resolution nor splat count is the lever
 
@@ -662,6 +1365,38 @@ rather than of a lens:
   the runtime's frusta. For a capture lifted from the raw pair (`cx = width/2`) the two agree
   exactly.
 
+## Hands — pinch to turn, two pinches to zoom
+
+Where the display has a hand tracker (the DisplayXR Browser 1.8.0+ on Windows, an Ultraleap
+tracker through the runtime), an inline-3D session exposes **standard WebXR Hand Input**: one
+`XRInputSource` per tracked hand with a 25-joint `XRHand`, located in the **same rig frame as the
+eye views**. There are no `select` events for hands — pinch is computed from the joints — and
+hands are gated per frame (`session.handInputWithheldReason`: `null` when they can be delivered,
+else a reason such as `'camera-rig'`, `'not-fullscreen'` or `'scaled-rig'`; a display-rig tile gets
+them on a runtime that supports rig-scoped joints).
+
+The SDK's `./hands` subpath does the work, and for a model or a splat it is one option:
+
+```js
+import { addModel } from '@displayxr/inline3d/model';
+const h = addModel(wall, canvas, 'helmet.glb', { hands: true });
+h.hands.state.gate;   // 'available' | 'not-fullscreen' | … | 'unknown' (no hand surface)
+```
+
+One pinched hand dragged turns the subject (yaw / pitch, 10 rad per metre of drag); two pinched
+hands spread or close to zoom, twist to roll (about the view axis, on either engine), and dragged
+together turn it. The pinch is **hand-relative**: the 2.5 cm / 4 cm
+enter / exit thresholds scale by the hand's palm length, so a hand scaled into a small tile pinches
+at the same finger posture as a physical one. These are the DisplayXR Model Viewer's controls.
+Pointer and wheel keep working alongside; the idle turntable pauses while a pinch is held, as it
+does for a drag. Everywhere else — every other browser, a DisplayXR Browser with no tracker — the
+option is inert: no hands, nothing moves, no errors.
+
+For a page with its own renderer: `watchHands(wall, f => …)` gives the joints each frame (`poses`,
+`radii`, `joint('index-finger-tip')`, `palmLength`, the gate), `HandGestureController` turns two
+hands' tips into pose deltas, and `handControls(wall, viewerLike)` drives anything with `nudgePose`
+or `getPose` + `setPose`. `samples/hands/` draws the raw joints and nothing else.
+
 ## Many windows, and how batching helps
 
 Add as many windows as you like to one `wall` — a gallery, a grid, a scrolling wall. The
@@ -685,6 +1420,12 @@ if (wall.supported) {
 
 Call `handle.remove()` (returned by each `add*`) to drop one window, or `wall.close()` to
 end the session and release everything.
+
+`remove()` drops a window. It is not how to swap what a window shows: keep the window and change
+its content, and release what each swap replaces (on `addModel` / `addSplat`'s PlayCanvas tiles,
+`handle.releaseEntity`; on an `addScene` renderer, `dispose()`). A page that only destroys the
+outgoing object keeps every shader program it ever linked, and the browser's GPU process grows
+for the life of the page. [Content lifecycle rules](content-lifecycle-rules.md).
 
 **Navigation and resize are handled for you.** A window's rect reaches the compositor from the
 session's own animation frames, so a page that stops running frames leaves its last rects
@@ -711,6 +1452,432 @@ import { inline3DAvailable } from './js/inline3d.js';
 if (!inline3DAvailable()) showFlat2D();        // cheap, synchronous, no false-negative
 ```
 
+**Handle a rejection too.** Where the session cannot open, `createInline3D()` resolves
+`{ supported:false, error }` rather than throwing, but the promise can still reject, and the
+startup around it (the renderer, a WebGL context, an asset load) often does. An unhandled
+rejection leaves the page with a blank or still-covered canvas: no 3D and no 2D. Catch it, log
+the reason, and fall back to a visible 2D view (or a visible error state):
+
+```js
+async function start() {
+  const wall = await createInline3D();
+  if (!wall.supported) return showFlat2D();
+  // … add windows, load assets …
+}
+start().catch((err) => {
+  console.warn('inline 3D setup failed, showing 2D', err);
+  showFlat2D();                                // and drop any cover over the canvas
+});
+```
+
+## Knowing when nobody is tracked
+
+A glasses-free display only shows 3D to a viewer it can **see**. The page can know whether it
+does, from the DisplayXR runtime (which may hand the decision to the vendor plug-in), through the
+browser's `session.trackingState` (DisplayXR Browser patch 0195):
+
+```js
+const wall = await createInline3D();
+console.log(wall.trackingState);                   // 'tracking' | 'searching' | 'unknown'
+if (wall.supported) {
+  wall.on('trackingstatechange', (state) => {      // the STATE is the first argument
+    stepBackHint.hidden = state !== 'searching';   // e.g. "step back into view"
+  });
+}
+```
+
+Every tile handle carries the same `trackingState` and `on('trackingstatechange')`.
+
+**`'searching'` means nobody is being tracked**: the runtime's derived `isTracking` is false. Two
+different situations produce it and a page cannot tell them apart, so do not word your UI as if
+you could:
+
+- the viewer is **outside the display's supported 3D zone** (walked away, leaned too far, turned
+  around), or
+- the display is in an **untracked or 2D mode**.
+
+It does **not** necessarily mean the tracker lost lock on a face that is still in front of the
+panel. Treat it as a cue for a gentle hint or for flat content, never as an error.
+
+**`'unknown'` means no opinion.** It is what every browser without the surface reports (DisplayXR
+Browser 1.0.5 and earlier), forever and silently, and what you get once the session ends. Render
+normally on `'unknown'`. Because of it you can subscribe unconditionally; there is nothing to
+probe or gate on.
+
+### Whose job the flat switch is
+
+The runtime's eye-tracking contract (`displayxr-runtime`:
+`docs/specs/vendor/eye-tracking-modes.md`) splits tracking loss by mode:
+
+- **MANAGED** (the default, and Leia's): **the vendor owns it.** It eases the eyes together during
+  a grace period, keeps reporting `'tracking'` meanwhile, and reports `'searching'` only once it
+  has already switched the display to 2D. Do **nothing** to the pixels: by the time you hear
+  `'searching'` the panel is already flat, and a flatten of your own would be a second transition.
+  Use the state for hints only.
+- **MANUAL**: **the app owns it.** The vendor does nothing, so an untracked viewer sees the woven
+  pair as a soft double image unless the page goes flat. That is what `untrackedFallback` is for.
+
+### The tracking ease (on by default)
+
+While nobody is tracked the views come from a fallback viewpoint (the runtime's nominal viewer, or
+the vendor's collapsed untracked pair). Where the eye stream switches to the tracked eyes in one
+frame, everything drawn from the views (the eye cameras, head parallax, display-rig layers) would
+snap. The SDK's renderers (`./viewer`'s SceneViewer, `./splat` and `./model` on both engines) ease
+that instead: when the views jump within 600 ms of a `trackingState` edge (more than 0.15 of an eye
+separation in one frame), or by more than half an eye separation where the browser reports no
+state, the eye cameras glide from where they were drawn to the live
+views over 300 ms (smoothstep), and keep following the viewer while they do. The eased views are
+exact frusta for the eased eye, so rig matching and the layer rig are unaffected. A stream the
+vendor already animates (the MANAGED revival ramp) is left alone, as are 2D<->3D mode switches
+(the mode switch's own ramp) and buffer resizes.
+
+```js
+const wall = await createInline3D({ viewerEase: { durationMs: 400, easing: 'easeOutCubic' } }); // session default
+addSplat(wall, canvas, src, { viewerEase: false });   // per renderer: off (the old snap)
+```
+
+A page that renders its own `addScene` from the views can use the same thing, `ViewerEase` (core
+export): copy each view's two matrices, `ease.apply(entries, frame.session.trackingState)` once per
+live frame, render from the copies, and keep using the real `XRView` for `layer.getViewport`.
+
+The ease changes WHAT is rendered (the perspective), not where the weave sends it. The panel's own
+response to an acquisition (the weaver switching from its untracked presentation to weaving, and on
+some panels a lens state change) is the display's, and no page-side setting changes it.
+
+### Letting the SDK flatten the windows it owns (MANUAL displays)
+
+For `addImage` and `addVideo` the SDK owns the backing store, so it can do the flat switch:
+
+```js
+const wall = await createInline3D({ untrackedFallback: 'mono' });
+```
+
+On `'searching'` every image and video window **eases to its left eye in both halves** of its
+side-by-side buffer, and eases back to the pair on `'tracking'`, over the same duration as the
+eased 2D↔3D mode switch. `'unknown'` leaves it where it is. The default is `'none'`: nothing
+changes, which is right for MANAGED displays and for every page that does not ask.
+
+What it does and does not do:
+
+- **The buffer is never reallocated and the layer never closed.** The window keeps submitting a
+  valid side-by-side pair (both halves the left eye), so the weave keeps running and there is
+  no flash of a squeezed pair. Only what is drawn into the right half changes.
+- **Scene windows are never touched.** `addScene`, `addSplat` and `addModel` canvases are yours;
+  the SDK will not resize or paint into them.
+
+### The same thing for a scene (MANUAL displays)
+
+A scene renders its own pixels, so the switch is a call you make. `SceneViewer` already has the
+pair for it, the same two methods its `onLayerLost` wiring uses:
+
+```js
+import { SceneViewer } from '@displayxr/inline3d/viewer';
+
+const viewer = new SceneViewer(THREE, canvas, { virtualDisplayHeight: 0.18 });
+viewer.useEyeCamera(EyeCamera);
+// the SAME virtualDisplayHeight on both, or the framing and the rig disagree
+wall.addScene(canvas, viewer.onFrame, { virtualDisplayHeight: 0.18, onLayerLost: viewer.onLayerLost });
+
+wall.on('trackingstatechange', (state) => {
+  if (state === 'searching') viewer.startMono();  // one centred camera
+  else viewer.stopMono();                         // back to the stereo pair
+});
+```
+
+`'unknown'` falls into the `else` on purpose: an old browser must keep rendering stereo. On a
+MANAGED display skip this; the runtime already eases the views together, and a scene renders
+from the views.
+
+## Viewer-independent content — keeping the camera off
+
+A stereo photo or a stereo video looks the same wherever the viewer stands: it is a fixed image
+pair. A live 3D scene is not — look-around is the point. The runtime cannot tell the two apart
+(every page asks it for views), so a page **declares** it, and the DisplayXR Browser forwards the
+declaration to the runtime (`XR_DXR_display_info` v25, `XrViewLocateFixedViewerDXR`).
+
+```js
+wall.addVideo(canvas, video);                                  // viewerIndependent: true (default)
+wall.addImage(canvas, 'pair.jpg');                             // viewerIndependent: true (default)
+const scene = wall.addScene(canvas, onFrame);                  // viewerIndependent: false (default)
+wall.addScene(canvas2, drawPrerenderedPair, { viewerIndependent: true }); // a scene canvas that only plays a fixed pair
+scene.setViewerIndependent(false);                             // change it later; returns whether a live layer took it
+```
+
+What it does: while **every** window the page shows is viewer-independent, the browser asks the
+runtime for the display's nominal viewer instead of the tracked one. On a display that does not
+track the viewer by itself, that means a viewer tracker (a webcam) is **never started** just to
+play a movie. One window that is not viewer-independent (a scene) keeps the whole page tracked, so
+mixing a photo with a scene never costs the scene its look-around. A display that tracks the
+viewer by itself keeps weaving to the viewer's eyes either way.
+
+Rules:
+
+- **It is a declaration, never a constraint.** Nothing the SDK paints changes, and nothing is
+  prevented. Get it wrong in the `true` direction and a scene stops following the head; in the
+  `false` direction, the camera turns on for nothing.
+- **Defaults:** `true` for `addImage` / `addVideo` and everything built on them (`./player`,
+  `./camera`); `false` for `addScene` and everything built on it (`./viewer`, `./splat`,
+  `./model`). Under `createInline3D({ untrackedFallback: 'mono' })` image and video windows
+  default to `false` too: that option follows the viewer's tracking state, and a viewer-
+  independent page locates for no viewer, so its `trackingState` would not move.
+- **While the page is viewer-independent its `trackingState` stops updating** (it keeps its last
+  value): the runtime is not being asked about a viewer. Do not drive a "step back into view" hint
+  off it on a pure video page.
+- **Capability:** `inline3dViewerIndependentSupported()` (the presence of
+  `XRDisplayLayer.prototype.setViewerIndependent`). You never need to branch on it — on an older
+  browser or runtime the declaration is simply not sent and the page behaves as before.
+
+Raw WebXR spelling: `new XRDisplayLayer(session, canvas, { viewerIndependent: true })` and
+`layer.setViewerIndependent(bool)`.
+
+## A cursor that respects depth
+
+**On `./model` and `./splat` it is one option:** `addModel(wall, canvas, src, { cursor: 'depth' })`
+(or `addSplat`), or `cursor: { margin, anchor, height, pointerScope, debug, soften, shape }` to tune it. PlayCanvas hit-tests with its depth picker, which covers meshes and splats in one
+cheap pass. three raycasts the subject: on `./model` through a bounds tree (a BVH, loaded only with
+the option) at three rays a frame, on Spark splats one ray a frame. Either way the arrow follows the
+newest pointer position every frame and the pick only refreshes its depth, so a heavy model never
+stretches the frame. Without the option nothing is built or loaded. For your own three.js scene, use `DepthCursor`
+directly:
+
+The mouse cursor is drawn ON the glass (zero disparity). Over content that pops out of the glass it
+is drawn on top of pixels that say they are in front of it, which reads as a broken image. If your
+page knows what is under the pointer (a mesh you can raycast, a depth buffer, a depth map), let the
+cursor rise to it:
+
+```js
+import { DepthCursor, raycastHitTest } from '@displayxr/inline3d/three';
+
+const cursor = new DepthCursor(THREE, { canvas, hitTest: raycastHitTest(THREE, [model]) });
+scene.add(cursor.object);
+wall.addScene(canvas, (views, layer) => {
+  cursor.update(views, { layer }); // first, with THIS frame's views (and its layer, see below)
+  // ... render every view as usual ...
+});
+```
+
+**Where the browser draws the cursor, the SDK only measures.** In a DisplayXR Browser whose runtime
+can draw the web cursor (runtime ADR-046 Amendment 4: Windows, `XR_DXR_cursor_depth` spec 8 or
+later), `layer.getCursorDepthSupport()` answers `"runtime"`. Every depth cursor here (`./model`,
+`./splat` on both engines, `DepthCursor` given `{ layer }`, the stereo-pair cursor on `./call` and
+`./camera`) then draws **no sprite** and never hides the CSS cursor. Each frame it hands the layer the
+**raw** disparity of the content under the pointer, `layer.setCursorDepth({ disparityPx, u, v })`, in
+device pixels between the outermost views (negative = in front of the glass), and withdraws it
+(`setCursorDepth()`) when the pointer leaves or the tile goes 2D. The runtime reads the pointer
+itself at draw time, applies the one policy (margin, clamp, threshold, filter, anchor), and draws
+**the browser's own cursor**: your `grab`, `pointer` or `url(…)` cursor, lifted, at the display's
+frame rate. `margin`, `anchor`, `height`, `soften` and `shape` are then the runtime's, not these
+options. Anywhere else (`"none"`, an older browser, any other browser) the SDK draws its sprite
+exactly as described below. Tile handles forward the same two methods (`handle.setCursorDepth`,
+`handle.getCursorDepthSupport`) for a page with its own cursor.
+
+- **The policy (ADR-046 Amendment 2, the same for every DisplayXR depth cursor, native and web).**
+  - *Never behind the glass.* The cursor is either on the screen plane or in front of it. It moves
+    only to stay ahead of content that comes **out** of the screen; over content on or behind the
+    glass it stays on the glass.
+  - *On the plane it IS the OS cursor.* Nothing is drawn unless the cursor is at least about
+    0.3 mm (0.005 eye baselines, and half a panel pixel) in front of the glass. Otherwise the CSS
+    cursor is the cursor, untouched, including any `cursor:` your page set on the canvas.
+  - *Margin.* `margin` (default 0.015 eye baselines, about 1 mm of on-screen disparity at a
+    63–65 mm IPD) is how far in front of out-of-screen content it floats.
+- **What it draws.** The classic arrow (white, dark outline), at the OS cursor's size (19 CSS px of
+  the canvas unless you pass `height`), with its tip on the click point. It hit-tests the arrow's
+  footprint, not just the tip, so a nearer edge beside the hotspot can't cut through the arrow, and
+  hides the CSS cursor exactly while the arrow is drawn. A custom CSS cursor (`grab`, a `url(…)`
+  image) is still drawn as the arrow while content pops out; mirroring the page's CSS cursor into
+  the sprite is future work (ADR-046 Amendment 2 §C).
+- **Crosstalk softening (`soften`, default `'both'`).** On a lenticular panel a little of each
+  view leaks into its neighbours, so a lifted, white, sharp-edged arrow shows a faint copy one
+  disparity away (ghosting); how visible it is scales with contrast × edge sharpness. On the glass
+  the views coincide and there is no ghost. So the lifted arrow is softened by its lift, exactly as
+  the native runtime does it (ADR-046 Amendment 2 §B.7), and both effects are zero on the glass:
+  - *Edge blur:* radius = 0.1 × the ghost offset (the on-screen distance between neighbouring
+    views' copies of the tip, in panel px), capped at 6% of the arrow's drawn height (about 1 px
+    for the 19 CSS px arrow at DPR 1, about 4 px on a 64 px arrow) and at 8 px.
+  - *Opacity:* eases from 1 to 0.5 with a smoothstep over the first 0.03 eye baselines of lift
+    (the lift over typical content), then holds.
+
+  The tip (the click point) never moves: the arrow's quad grows by the blur radius around it. It
+  is drawn in the arrow's own shader (the runtime's 13-tap kernel, evaluated on an analytic arrow),
+  inside your rendered views; nothing is done with CSS `filter` or `opacity`. A frame with nothing
+  to soften draws the crisp arrow exactly as before. Presets: `'both'`, `'off'` (the crisp arrow),
+  `'alpha'`, `'blur'`. Or tune it: `soften: { mode, blurK, blurMaxPx, blurMaxFrac, alphaMin, fullD }`
+  (defaults 0.1, 8, 0.06, 0.5, 0.03, each over the runtime's default). The same option exists on
+  `DepthCursor`, and on `./call` / `./camera` stereo pairs, where the softened arrow is drawn into
+  the woven pixels. The samples take `&soften=` next to `?cursor=depth` for an A/B on a panel.
+- **Behaviour and placement.** The cursor rises fast and sinks slowly, so it doesn't flicker at
+  edges. The placement maths and defaults are the native runtime's (`XR_DXR_cursor_depth`), so web
+  and native cursors behave alike.
+- **When it's inactive.** In 2D (one view), off the canvas, and over anything on or behind the
+  glass, nothing is drawn and the normal cursor is the cursor.
+- **Head motion: `anchor`.** By default (`'hybrid'`) the arrow follows the pointer exactly
+  while it moves. While the pointer is still, it stays fixed relative to the display, so it
+  parallaxes with the content as the viewer looks around, and a camera that keeps moving (an idle
+  spin, a damped orbit, a scripted fly-through) does not carry it off the pointer. A cursor that never parallaxes reads as being at the
+  glass on a head-tracked display, even when its disparity says otherwise. `'screen'` never
+  parallaxes, and `'world'` always does (and drifts a few mm off the pointer for an off-axis
+  viewer).
+- **DOM over the canvas.** `pointerScope: 'window'` keeps the cursor active over HTML layered on
+  the canvas (overlay buttons) and hides the CSS cursor page-wide meanwhile.
+- **The sprite is your CSS cursor.** By default (`shape: 'auto'`) the drawn cursor is what the
+  browser would show: the page's computed CSS cursor under the pointer. Every standard keyword has a
+  sprite (`pointer` a pointing hand, `grab` / `grabbing` open and closed hands, `text` an I-beam,
+  the resize arrows, `not-allowed`, `help`, `wait`, `zoom-in`, …), `url(…)` images are drawn as
+  images (the first that loads with CORS; their hotspot and size as the browser uses them), and
+  `none` draws nothing. So a model with `cursor: grab` that switches to `grabbing` while dragging
+  shows the same hands when the cursor is lifted. Fix it with `shape: 'grab'` (etc.), or decide per
+  frame with `shapeFor: ({ u, v, point, css }) => name`. The SDK hides the CSS cursor with a
+  `data-inline3d-cursor-hidden` attribute and one injected rule, never by writing `style.cursor`,
+  so set your cursor however you like (inline, a class, a stylesheet). It is re-read after pointer
+  moves (at most every 100 ms) and at once on press and release.
+- **Your `hitTest` must be cheap, and it must cover everything that sticks out.** By default it runs
+  every frame over the whole footprint (two eyes × 10 points); `raysPerFrame: N` spreads that over
+  frames instead (N rays a frame, the arrow still placed at the newest pointer each frame). A stock
+  raycast through a million-triangle mesh is too slow, so use a heightfield march, a BVH, or proxies. Anything you
+  leave out (a small spinning icon, a label) is something the cursor sinks behind; bounding boxes
+  are fine for small parts.
+- **Splats.** Supply a `hitTest` that returns the splat renderer's expected depth along the ray.
+  Raycasting splats doesn't work.
+- **Attach pattern.** If your eye cameras hang off an app camera, pass `viewSpace: appCamera`.
+- **Measuring it: `debug`.** `cursor: { debug: true }` (or `DepthCursor`'s `debug`) logs, at most
+  once a second, what the cursor costs a frame (`update()` ms, rays, frame interval, the pointer
+  sample's age, which pick answered). `debug: 'both'` also keeps the OS cursor visible beside the
+  arrow: move the mouse steadily, film the panel at 240 fps, and the lag is the distance between the
+  two over the speed. The samples take it from the URL: `?cursor=depth&cursorDebug` (`=both`).
+  The pointer itself comes from `pointerrawupdate` where the browser has it (Chromium, secure
+  contexts), so a frame reads the newest position rather than one a frame old.
+- **PlayCanvas: layers on the display rig.** A layer moved with `handle.setLayerRig(name, 'display')`
+  (a round stage, a map tile under a camera-rig photo) is drawn by the layer rig's own cameras, not
+  the eye camera, and the pick follows it: when the layer rig rounds those layers (a camera rig,
+  gain ≠ 1) they get a second low-res pick pass through the same round views, and each hit is
+  turned into the point the photo's views show at the same pixels, so the arrow sits in front of
+  the stage as the panel shows it. The nearest hit of the two passes wins. The second pass exists
+  only while such a layer is on the display rig.
+- **PlayCanvas: your own `pc.ShaderMaterial`.** The pick pass draws into two colour targets (a pick
+  id, then the pick depth). A ShaderMaterial that writes only `gl_FragColor` is left out of the pass
+  (WebGL would reject the draw), so the cursor never rises over it. To make it pickable, write both
+  under the engine's pick defines. `@displayxr/inline3d/cursor-depth` exports the two pieces, which
+  use the engine's own `pickPS` chunk:
+
+  ```js
+  import { CURSOR_DEPTH_PICK_GLSL } from '@displayxr/inline3d/cursor-depth';
+
+  const material = new pc.ShaderMaterial({
+    uniqueName: 'my-stage',
+    attributes: { vertex_position: pc.SEMANTIC_POSITION },
+    vertexGLSL: myVertexGLSL,
+    fragmentGLSL: `${CURSOR_DEPTH_PICK_GLSL.declarations}
+      void main(void) {
+        #ifdef PICK_PASS
+          ${CURSOR_DEPTH_PICK_GLSL.output}
+        #else
+          gl_FragColor = vec4(0.9, 0.5, 0.1, 1.0);
+        #endif
+      }`,
+  });
+  ```
+
+  Spelled out, that is: inside `#ifdef PICK_PASS`, `pcFragColor0 = getPickOutput();` and, inside
+  `#ifdef DEPTH_PICK_PASS`, `pcFragColor1 = getPickDepth();`, with `#include "pickPS"` declared
+  above `main`. Keep any `discard` your shader does, so the pick sees the same silhouette. For a
+  WGSL material (`fragmentWGSL`, WebGPU) use `CURSOR_DEPTH_PICK_WGSL`, whose `output` writes
+  `output.color` and `output.color1`.
+- **Not using three?** `@displayxr/inline3d/cursor-depth` has the same maths and policy,
+  dependency-free: `CursorDepthPlacer`, and the pieces on their own (`cursorTarget`,
+  `cursorShouldDraw`, `cursorArrowMesh`, `cursorDefaultHeight`; for the softening,
+  `cursorPlacementSoften`, `cursorSoften`, `cursorSoftArrowGLSL` for your own shader and
+  `cursorSoftArrowRaster` for a 2D canvas; the sprites: `cursorShapeMesh`, `cssCursorToShape`,
+  `CursorCssReader`).
+- **Stereo pairs** (`./call` and `./camera`, `cursor: 'depth'`) follow the same policy and draw the
+  same sprites (the arrow, or your CSS cursor's), softened the same way; their depth is measured off the pair's two halves instead of
+  hit-tested.
+
+### Your own scene and your own picking (core `addScene`)
+
+A page that owns its whole scene (an instanced renderer, its own picking) gets the same cursor,
+including the runtime-drawn one, by supplying only the depth under the pointer.
+
+**On three.js, use `DepthCursor` with your pick as `hitTest`.** It does everything below (the
+support probe, the runtime hand-off, the SDK-drawn fallback, the footprint, withdrawing):
+
+```js
+import { DepthCursor } from '@displayxr/inline3d/three';
+
+// hitTest(origin, direction): WORLD-space ray in, nearest content point [x, y, z] out (or null).
+const cursor = new DepthCursor(THREE, { canvas, hitTest: (o, d) => myPick(o, d), viewSpace: appCamera });
+scene.add(cursor.object);
+wall.addScene(canvas, (views, layer) => {
+  cursor.update(views, { layer }); // before rendering, with THIS frame's views and layer
+  // ... render every view ...
+});
+```
+
+`viewSpace` is only for the attach pattern (eye cameras parented under an app camera). Picks that
+are expensive take `raysPerFrame: N`.
+
+**Without three (or to drive the layer yourself):** `@displayxr/inline3d/cursor-depth` has the
+pieces. `CursorRuntimeLink` is the probe and hand-off every SDK cursor uses;
+`cursorDisparityPxAt(views, u, v, point, canvasPx)` turns your picked point into the number the
+layer takes:
+
+```js
+import { CursorRuntimeLink, cursorDisparityPxAt } from '@displayxr/inline3d/cursor-depth';
+
+const link = new CursorRuntimeLink();
+wall.addScene(canvas, (views, layer) => {
+  if (link.bind(layer)) {
+    // The runtime draws the browser's own cursor: draw no sprite, leave the CSS cursor alone.
+    if (pointerOverCanvas) {
+      const point = myPickAt(u, v); // nearest content under the pointer, in the views' space, or null
+      const canvasPx = canvas.getBoundingClientRect().height * devicePixelRatio;
+      link.report(u, v, point ? cursorDisparityPxAt(views, u, v, point, canvasPx) : null);
+    } else {
+      link.withdraw();
+    }
+  } else {
+    // "none" or still "pending": draw your own sprite (CursorDepthPlacer gives the placement).
+  }
+  // ... render ...
+});
+```
+
+The contract of `layer.setCursorDepth({ disparityPx, u, v })` (also `handle.setCursorDepth`, which
+returns `false` while the window has no live layer):
+
+| | |
+|---|---|
+| `disparityPx` | on-screen disparity of the **nearest content under the cursor footprint**, in **device px** (CSS px × `devicePixelRatio`), between the **two outermost views** you rendered (last view minus first) |
+| sign | **< 0 = crossed = in front of the glass** (display-space `+z`, out toward the viewer); 0 on the glass; > 0 behind it |
+| raw | no margin, clamp or filter: the runtime applies the one policy (never behind the glass, margin, draw threshold, rise/sink, hybrid anchor). Send content behind the glass as it is |
+| the rig | compute it from the **views you render**: the rig (camera or display, `ipdFactor`, `metersToVirtual`, convergence) is already in them, so nothing about it is sent or re-derived |
+| `u`, `v` | where it was sampled, element-normalised, `v` down, clamped to [0, 1]. The runtime reads the live pointer itself at weave time; `u`/`v` is diagnostic |
+| over the canvas, nothing 3D under it | `{ u, v }` with no `disparityPx` |
+| over HTML chrome, or off the canvas | withdraw: `setCursorDepth()` with no argument, once (not every frame). The runtime then draws nothing and the OS cursor is the cursor. This is what the default `pointerScope: 'canvas'` does over DOM layered on the canvas |
+| 2D (fewer than two views) | withdraw |
+
+`cursorDisparityPxAt` is the same maths every SDK cursor uses: S, the canvas point under (u, v),
+is where the outermost views' rays meet, E their midpoint, the point's depth t its distance in
+front of E along the display normal over S's, d = 1 − 1/t eye baselines, and
+`disparityPx = d × baseline / canvasHeight × canvasPx`. `point` must be in the views' space (the
+reference space, or camera-local in the attach pattern). It returns `null` rather than guessing:
+fewer than two views, (u, v) off the canvas, a point not in front of the eye, an unknown canvas
+size. To pick the cursor's footprint rather than its tip (so an edge beside the hotspot cannot cut
+through the drawn cursor), `cursorFootprint` / `cursorArrowFootprint` give the sample points, and
+the nearest hit wins.
+
+**Support.** `getCursorDepthSupport()` answers `"runtime"` only where the browser and runtime draw
+the web cursor (Windows, `XR_DXR_cursor_depth` spec 8 or later) and `"none"` until the weave
+session is live, so ask again (`CursorRuntimeLink` re-asks, rate-limited); a browser without the
+methods is never asked. Anywhere else, draw your own sprite: `CursorDepthPlacer.update(views,
+{ u, v, nearestPoint, canvasPx })` returns the placement (`active` false on the plane, where the
+OS cursor is the cursor).
+
+**Cost: send it every animation frame while the pointer is over the canvas.** The call carries
+three numbers. The runtime keeps a rect's depth for **500 ms** after the last frame that carried
+it, then lets the cursor sink to the glass, so skipping unchanged values saves nothing and a long
+skip drops the cursor. The expensive part is your pick: amortise that (a few rays a frame, a
+coarse proxy, a depth read-back you already have), not the call.
+
 ## Rounded corners
 
 CSS `border-radius` on a weaved canvas rounds the **packed SBS rectangle's** outer corners —
@@ -729,8 +1896,10 @@ stacking 2D over 2D. There is nothing to declare: no data-attribute, no `exclude
 registration of your header.
 
 This is the browser's **Phase-2 compositor path** (a plane split in viz, replacing the Phase-1
-geometric matcher). It is not the default yet — see [Rollout](#rollout) at the end of this
-section for exactly what is live when, and why the SDK's answer is `false` until it is.
+geometric matcher). It is **on by default** in current DisplayXR Browser builds (Windows since
+August 2026, then Android and macOS), and they expose the capability the SDK reads, so
+`inline3dOcclusionByDrawOrder()` answers `true` there. Older builds answer `false` and get the
+legacy machinery below; see [Rollout](#rollout).
 
 That means all of this is ordinary HTML/CSS again, with no inline-3D wiring at all:
 
@@ -747,18 +1916,22 @@ it. Nothing about the tile changes — its buffer is still side-by-side stereo
 ([the one contract](#the-one-contract-you-must-understand)), it is still lazily woven, it still
 scrolls.
 
-**The case that still does not work is `backdrop-filter`** on anything that overlaps a tile.
-A backdrop filter is by definition a function of *what is behind it*, and behind it is the
-woven, lens-interleaved buffer — not the flat image it would need to blur. Drop the blur and use
-a near-solid background (`rgba(16,17,22,.92)` reads much like a frosted bar), or keep the blur on
-a surface that never overlaps a tile. Same guidance as before, and the piece of it that survives.
+**`backdrop-filter` on anything that overlaps a tile needs DisplayXR Browser 0.1.16+.** A
+backdrop filter is by definition a function of *what is behind it*, and behind it is the woven,
+lens-interleaved buffer — not the flat image it would need to blur. From 0.1.16 the compositor
+draws the tile **mono inside each frost rect** (displayxr-browser#120), so partial frosted chrome
+over a tile looks right: flat under the frost, 3D elsewhere (`samples/composition`'s sticky header
+is the validated case). Never frost a whole visible tile, and effects on the canvas or its
+ancestors are still out (rule 7). On older browsers drop the blur and use a near-solid background
+(`rgba(16,17,22,.92)` reads much like a frosted bar). See [rule 10](woven-canvas-rules.md#10-backdrop-filter-over-the-weave-only-on-displayxr-browser-0116-never-over-a-whole-tile).
 
 More precisely — and this is the whole of the small print — the first version of the split is
 **conservative about content that does not draw as a plain quad**. Anything that reaches the
 compositor through its own render pass, or out of the normal painting order, is left where it is
 rather than lifted over the weave, and so weaves like Phase-1 content did:
 
-- pixel-moving filters — `filter: blur()`, `drop-shadow()` — and `backdrop-filter`;
+- pixel-moving filters — `filter: blur()`, `drop-shadow()` — and, before DisplayXR Browser 0.1.16,
+  `backdrop-filter` (0.1.16+ draws the tile mono under it, above);
 - blend modes other than normal (`mix-blend-mode`, `background-blend-mode`);
 - 3D sorting contexts (`transform-style: preserve-3d` and friends).
 
@@ -800,10 +1973,10 @@ Written for the transition, and safe at every step of it:
 
 | Browser state | `inline3dOcclusionByDrawOrder()` | What the SDK does |
 |---|---|---|
-| No Phase-2 path (everything published so far) | `false` | Legacy exclusion machinery, unchanged |
-| Phase-2 present but off (its default today) | `false` | Legacy machinery — correct, because that *is* the live path |
+| No Phase-2 path (builds before August 2026) | `false` | Legacy exclusion machinery, unchanged |
+| Phase-2 present but switched off (`--disable-inline-3d-occlusion`) | `false` | Legacy machinery — correct, because that *is* the live path |
 | Phase-2 on, capability flag not yet exposed | `false` | Legacy machinery: redundant but harmless (see below) |
-| Phase-2 on, flag exposed | `true` | Nothing — no scan, no observers, no promotions |
+| Phase-2 on, flag exposed (current builds, the default) | `true` | Nothing — no scan, no observers, no promotions |
 
 The third row is the one to understand: the browser's occlusion switch is enabled but the page
 cannot see it, so the SDK keeps declaring exclusions. That is **harmless** — the declarations are
@@ -874,19 +2047,20 @@ Rules of the road:
   a console warning rather than destroying the tile — but it can only judge the rect it can
   measure, so a plate that is `display:none` at registration and becomes full-tile when shown
   slips through. The rule is yours to keep.
-- **A `backdrop-filter` element can never be an overlay.** Exclusion needs the element as an
-  isolated composited resource — the element rastered on transparency. `backdrop-filter` is
-  defined as a function *of what is behind it*, so it has no such resource: the browser has
-  nothing to hand the compositor, and the element either weaves anyway or drops out. There is
-  no flag for this. On the woven path, drop the blur and use a near-solid background
-  (`rgba(16,17,22,.92)` reads much like a frosted bar) — and if you want the blur off the
-  woven path, keep it on a surface that never overlaps a tile.
+- **A `backdrop-filter` element can never be an overlay** on a browser that excludes overlays.
+  Exclusion needs the element as an isolated composited resource — the element rastered on
+  transparency. `backdrop-filter` is defined as a function *of what is behind it*, so it has no
+  such resource: the browser has nothing to hand the compositor, and the element either weaves
+  anyway or drops out. There is no flag for this. There, drop the blur and use a near-solid
+  background (`rgba(16,17,22,.92)` reads much like a frosted bar), or keep the blur on a surface
+  that never overlaps a tile. DisplayXR Browser 0.1.16+ handles it differently: see below.
 - **Older DisplayXR Browsers** (no `excludeElement`): silent no-op — the overlay weaves like
   before. Progressive enhancement, nothing to detect (the SDK feature-detects internally).
 - **Newer DisplayXR Browsers** (draw-order occlusion): also a no-op, for the opposite reason —
   the overlay already composites over the woven 3D, and none of the rules above apply to it (a
   full-tile plate is fine, a translucent one is fine, no promotion is needed). `backdrop-filter`
-  remains the exception.
+  works from 0.1.16: the tile is drawn mono inside the frost rect (never frost a whole visible
+  tile; rule 10).
 
 ## Page chrome — headers, toolbars, floating bars (legacy browsers)
 
@@ -938,9 +2112,10 @@ your DOM's `will-change`. Both paths are no-ops on a browser without overlay exc
 
 Two things to know about chrome specifically:
 
-- **Keep `backdrop-filter` off it.** A blurred sticky header is the single most common chrome
-  mistake: it cannot be excluded at all (see the rule above), so tiles weave straight through
-  it. Use a near-solid background instead.
+- **Keep `backdrop-filter` off it on these browsers.** A blurred sticky header is the single
+  most common chrome mistake here: it cannot be excluded at all (see the rule above), so tiles
+  weave straight through it. Use a near-solid background instead. (On DisplayXR Browser 0.1.16+
+  a frosted header over a tile works: the tile is drawn mono under it.)
 - **Seams during scroll.** Exclusion keeps chrome out of each tile's weave input, but the
   per-tile present can still seam a page-global bar where it spans the gap between two tiles.
   The systematic fix is the whole-window composited present (browser#22).
@@ -952,6 +2127,11 @@ and KTX2-compressed assets, which matters because a catalogue GLB that came out 
 is almost never uncompressed. A bare `GLTFLoader` does not *degrade* on these — it **throws**
 (`"No DRACOLoader instance provided."`) — so "your existing 3D assets already work here" is a claim
 about whether the decoders are wired, not about the loader.
+
+A page that shows one model after another in the same tile (a carousel, a catalogue) adds each
+under `handle.engine.root` and hands the outgoing one to `handle.releaseEntity(entity, { asset })`:
+its programs, textures and container go with it. `handle.remove()` frees everything the tile
+holds. [Content lifecycle rules](content-lifecycle-rules.md).
 
 `addModel` reads the asset's `extensionsUsed` / `extensionsRequired` **before** parsing and attaches
 exactly the decoders it declares. Nothing is imported or constructed for an asset that declares
@@ -1049,6 +2229,16 @@ short:
 7. **No CSS effects on the canvas or its ancestors** (`filter`, `opacity < 1`, `mask`, radius,
    shadow). Use `cornerRadius` / `feather`.
 8. **Chrome over a tile is a partial region.**
+9. **Nothing with a background sits above the woven canvas; black goes UNDER it.** A section,
+   wrapper or later sibling with an opaque background painted over the canvas hides the tile while
+   its content keeps running (for video: sound, no picture). If you want black around a tile, put
+   it on an element behind the canvas.
+10. **`backdrop-filter` over the weave only on DisplayXR Browser 0.1.16+.** There the tile is
+    drawn mono inside each frost rect; never frost a whole visible tile. Before 0.1.16 a blur
+    reads the interlaced pixels and disturbs the 3D image across the element's whole box: use a
+    plain tint.
+11. **A resize is a fresh-canvas moment.** Fullscreen or a layout change moves the rect through
+    the same identity gap as a new canvas. Cover across it and release on `handle.rewoven()`.
 
 ```js
 const handle = wall.addScene(canvas, onFrame);
@@ -1058,13 +2248,45 @@ poster.remove();                                         // cut, never fade
 
 `firstWoven` resolves once and never rejects. `woven: false` means the window will not weave
 (the layer failed, the session ended, the window was removed), and the canvas is already flat.
-Until a browser reports joins, `firstWoven` holds for the measured worst case
-(`firstWovenHoldMs`, default 1200) and `confirmed` is `false`. When a browser does report joins,
-it will settle on the report with no change to your page.
+On a browser that reports joins (`XRDisplayLayer.wovenState`), `firstWoven` settles on the report
+(`confirmed: true`, no hold). Elsewhere it holds for the measured worst case (`firstWovenHoldMs`,
+default 1200) and `confirmed` is `false`. Your page is the same on both.
+
+`handle.rewoven()` asks the same question again, measured from the call, for a canvas that is
+already woven but whose rect is about to change (rule 11). Same result shape; a box change while
+it is pending restarts the hold.
 
 The reasoning for each rule, the SDK call that satisfies it, and a hardware checklist that reads
 the browser's `withheld … ids=[<token>=<why>@<rect>]` log line are in
 **[Woven canvas rules](woven-canvas-rules.md)**.
+
+## Hosting video
+
+What decides whether a clip plays at all, and whether it stays smooth, is mostly the server:
+
+- **Codec.** DisplayXR Browser **1.0.6 and later** plays H.264 + AAC in MP4 through the operating
+  system's decoders; 1.0.5 and earlier, and stock Chromium builds, do not. Serve VP9 (or AV1) video
+  with Opus audio in WebM as the first choice — it plays everywhere, including on machines with no
+  hardware H.264 decode, where `canPlayType` still says "probably" for H.264 and the MP4 then fails —
+  and add an MP4 as an alternative if you have one. List alternatives best first with full
+  `canPlayType` strings —
+  `addPlayer`'s `src` takes `[{ src, type: 'video/webm; codecs="vp9, opus"' }, …]` and plays the
+  first this browser supports (`pickSource()`). A codec-less `'video/mp4'` still answers "maybe",
+  which is why the codecs parameter matters.
+- **Range requests.** The server must answer `Range:` with `206 Partial Content` (object stores —
+  S3, GCS, Azure Blob — do by default; some CDNs need it enabled). Without it every seek restarts
+  the download and a long clip cannot start before it has fully arrived.
+- **Cache headers.** Clips in a bucket should carry a long `Cache-Control` (`public,
+  max-age=31536000, immutable`) under content-hashed or versioned names, so a revisit and a seek
+  back are served from cache rather than re-fetched; change the name, not the headers, to ship
+  a new cut.
+- **CORS.** A cross-origin clip needs `Access-Control-Allow-Origin` for your page's origin
+  (`addPlayer` sets `crossOrigin: 'anonymous'` automatically for a cross-origin URL); without it
+  the frame cannot be drawn into the woven canvas at all.
+- **Square pixels.** A stream whose container flags a non-square pixel aspect (a 3840×804 SBS
+  flagged 193:384 reports 3840×1600) is split into eyes from the wrong size and plays squashed.
+  The page cannot see the coded size, so rewrap it with square pixels — no re-encode:
+  `ffmpeg -i in.webm -c copy -aspect 3840:804 out.webm`.
 
 ## Gotchas checklist
 
@@ -1072,8 +2294,14 @@ the browser's `withheld … ids=[<token>=<why>@<rect>]` log line are in
   a concern if you build buffers by hand.
 - **Detect with `createInline3D`, never `isSessionSupported`.**
 - **Round corners / draw decoration in the canvas buffer, not CSS.**
-- **Scenes: author at ~0.24 m virtual height and `fitToElement` every frame;** put focused
-  content at `z=0`.
+- **Release what a content swap replaces,** programs included: destroying an entity does not free
+  the programs its materials linked ([content lifecycle rules](content-lifecycle-rules.md)).
+- **Scenes: author at ~0.24 virtual height (pass the same `virtualDisplayHeight` to the viewer and
+  to `addScene`);** put focused content at `z=0`, and use the depth: most of the comfort
+  zone on a camera rig, `ipdFactor` 1 on a display rig ([Aim for real depth](#aim-for-real-depth)).
+- **Shallower = rigid:** never fit depth by scaling display `z` on a parent of a turned or tilted
+  subject. That shears it: right angles collapse in stereo while the 2D view looks fine. Re-orient
+  or scale uniformly ([Making a subject shallower](#making-a-subject-shallower-keep-it-rigid)).
 - **A rig set this frame drives NEXT frame's views** — the browser locates before your rAF. Fine
   for a slider; for a moving camera use the [attach pattern](#the-latency-caveat-and-the-attach-pattern)
   rather than predicting the camera forward.
@@ -1090,10 +2318,12 @@ the browser's `withheld … ids=[<token>=<why>@<rect>]` log line are in
   matches the canvas's own quad and the tile falls out of the weave.
 - **Legacy: page chrome is page-global, not per-tile.** `autoChrome` covers sticky/fixed
   furniture in the top three DOM levels; anything else goes through `addGlobalOverlay()`.
-- **No effects on anything that overlaps a tile.** `backdrop-filter` fails on *both* generations
-  (it is a function of what is behind it, and what is behind it is the woven buffer); on the
-  draw-order path a pixel-moving `filter`, a non-normal blend mode or a 3D sorting context also
-  keeps the element out of the lift. Near-solid backgrounds and plain quads instead.
+- **No effects on anything that overlaps a tile, except a partial frost on 0.1.16+.**
+  `backdrop-filter` fails on both generations before DisplayXR Browser 0.1.16 (it is a function
+  of what is behind it, and what is behind it is the woven buffer); from 0.1.16 the tile is drawn
+  mono inside the frost rect (never frost a whole visible tile). On the draw-order path a
+  pixel-moving `filter`, a non-normal blend mode or a 3D sorting context keeps the element out of
+  the lift. Near-solid backgrounds and plain quads instead.
 - **One `createInline3D()` per document.** The element-rect channel is a whole-widget setter,
   so two live managers overwrite each other every frame (the SDK warns). Sequential sessions
   across routes are fine — `close()` the old one first.
@@ -1103,6 +2333,14 @@ the browser's `withheld … ids=[<token>=<why>@<rect>]` log line are in
 - **Cover a new canvas until `handle.firstWoven` resolves** and never remount one: the browser
   shows the raw side-by-side pair until its compositor joins the canvas. See
   [Woven canvas rules](woven-canvas-rules.md).
+- **A player's cover comes off on `player.firstWoven`,** not on `'ready'` / `loadeddata`
+  ([§2b](#2b-player--addplayercanvas-src-opts)).
+- **What is behind a transparent tile is part of the 3D picture**, flat and at half horizontal
+  resolution: keep it soft, never black behind a bright subject
+  ([Gaussian splats](#gaussian-splats-performance-and-the-camera-block)).
+- **An `addScene` page passes an `onLayerLost` that goes flat** (one mono view across the canvas),
+  never a no-op: otherwise the last side-by-side pair stays on screen
+  ([§3](#3-live-scene-threejs--webgl--addscenecanvas-onframe-opts)).
 - **The page still works in 2D.** Always ship a fallback for `{ supported:false }`.
 
 ## Under the hood (raw WebXR)

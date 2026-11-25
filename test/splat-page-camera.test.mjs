@@ -534,7 +534,9 @@ test('calls queued before the adapter loaded replay: the LAST setCameraPose land
 // ── 4. ./splat (imports three + Spark, so read as source) ───────────────────────────────────
 
 test('./splat: controls validated at call time for BOTH engines; Spark refuses controls:page by name', () => {
-  const src = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const src = (fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8') +
+    // the engine:'playcanvas' handle lives in its own module since ./splat/playcanvas
+    fs.readFileSync(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8'));
   const i = src.indexOf('resolveControls(opts)');
   const j = src.indexOf("resolveSplatEngine(opts) === 'playcanvas'");
   assert.ok(i > 0 && i < j, 'before the engine split');

@@ -17,8 +17,8 @@
 
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:18px}
   .tile{display:flex;gap:16px;align-items:center;padding:16px;border:1px solid #ffffff14;
-        border-radius:14px;background:#181a21;transition:border-color .15s,transform .15s;color:inherit}
-  .tile:hover{border-color:#5aa8ff88;transform:translateY(-2px)}
+        border-radius:14px;background:#181a21;transition:border-color .15s;color:inherit}
+  .tile:hover{border-color:#5aa8ff88} /* no hover transform: an animated transform on a woven tile's ancestor takes it out of the weave */
   /* Square stage; the 1024x512 SBS canvas is squished into it, and the weave
      interlaces it back to a correct square 3D logo on DisplayXR hardware.
      The stage must be VISUALLY BARE (no background, border, radius or

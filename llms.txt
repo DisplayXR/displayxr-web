@@ -1,0 +1,49 @@
+# @displayxr/inline3d — DisplayXR inline-3D web SDK
+
+> Glasses-free 3D for web pages on a DisplayXR spatial display: you render one image per eye into a
+> canvas, the DisplayXR Browser weaves them for the panel; an ordinary browser shows the page in 2D.
+
+Read first: docs/making-3d-look-right.md — nine depth and comfort rules from real panels
+(the subject straddles the glass, about a quarter in front: addModel puts the screen plane at the
+surface's 75th-percentile depth, pivot at the surface median, fit from trimmed extents, framing:'box'
+for the old box framing; frame the first view; tilt flat
+arrangements about an axis through the glass, don't push them back; keep moving things' forward swing small, fixed convergence and no near geometry in worlds,
+low contrast behind the subject, text as HTML near the glass, no coplanar surfaces, no sub-pixel
+detail, a cover that always comes off). The SDK's defaults do the rest.
+
+Pick the view rig before writing code — decide by what the user moves, not by whether the page
+owns a camera. The user turns a SUBJECT (model, product, diorama, simulation, chart), even with an
+orbit control: DISPLAY rig (keep the orbit camera and pose the portal from it with
+displayRig({ position: target, orientation: camera.quaternion, virtualDisplayHeight: 2·d·tan(fov/2) })).
+The user moves through a WORLD (first person, game, map, editor, ported VR): CAMERA rig, with
+this depth rule (too little depth is a failure too): convergence = the distance to the subject;
+never rescale the world, set metersToVirtual (the true scale, or convergence/2 when the world has
+none); ipdFactor ≈ 1 for an open scene, cameraRigComfortFactor-filled when bounded
+(docs/authoring-inline-3d.md § Aim for real depth). Then check depth at three window sizes and in
+full screen: the subject must stay on the glass.
+
+Five mistakes a page makes most often (each looks fine in a 2D browser):
+- a cover over a new canvas comes off on handle.firstWoven (a player's too: player.firstWoven),
+  never on 'ready' / loadeddata / the first frame, and always on a timeout as well;
+- what sits behind a transparent tile (a splat's default clear) shows through flat, at half horizontal
+  resolution: keep it a soft light/mid-tone colour, or pass an opaque clearColor;
+- an addScene page passes onLayerLost that draws ONE mono view across the canvas, never a no-op;
+- an addScene page sizes its canvas with sceneBufferSize(canvas, { sbs: true, viewScale: wall.displayInfo })
+  in the SAME task as addScene (never after an await or in a later rAF: the first woven frames would
+  go out flat-shaped, each eye half the scene), re-sizes when handle.getDisplayInfo() resolves, and
+  never uses clientWidth x devicePixelRatio x 2: full screen on an 8K panel that overflows the
+  browser's drawing-buffer cap, the eyes land off-centre and one eye shows both images;
+- page chrome over a tile (sticky header, buy card, caption) is fine as ordinary HTML, opaque or
+  translucent, as long as it covers part of the tile; no filter/blend on it, frost only a partial region.
+
+## Samples (they show the API, not a look to copy)
+- samples/model/, samples/splat/, samples/hello-cube/, samples/camera-rig/, samples/display-modes/
+
+## Reference
+- docs/authoring-inline-3d.md — every API, both view rigs, comfort maths
+- docs/woven-canvas-rules.md — what the browser does to a woven canvas; CSS, remount and cover rules
+- docs/content-lifecycle-rules.md — swapping content in a window: release programs, textures, containers (handle.releaseEntity)
+- docs/porting-three-js-apps.md — moving an existing three.js app over
+- docs/authoring-motion-and-effects.md, docs/splat-effects.md — motion, reveals, depth envelopes
+- index.d.ts, three.d.ts, viewer.d.ts, model.d.ts, splat.d.ts — the public API with JSDoc
+- CHANGELOG.md — what changed per release

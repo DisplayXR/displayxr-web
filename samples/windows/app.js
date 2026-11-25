@@ -35,9 +35,10 @@ function buildPhotoTiles() {
 // ~604x340 of real detail per eye is all that survives. Encoding past that is download weight
 // for pixels the weave throws away. Hence 640x360/eye, and 5 MB instead of 32.
 //
-// CODEC: VP9/WebM, not H.264/mp4. Stock Chromium builds ship ffmpeg_branding="Chromium" with
-// proprietary_codecs off, so an .mp4 fails with MEDIA_ERR_SRC_NOT_SUPPORTED in any dev build.
-// VP9 is royalty-free and always compiled in, so this plays everywhere the SDK does.
+// CODEC: VP9/WebM. It is royalty-free and always compiled in, so this plays everywhere the SDK
+// does. An H.264 .mp4 plays in DisplayXR Browser 1.0.6+ (through the OS decoders), but stock
+// Chromium builds ship proprietary_codecs off and fail it with MEDIA_ERR_SRC_NOT_SUPPORTED, as
+// does a machine with no hardware H.264 decode — so a sample that must play anywhere stays WebM.
 //
 // addVideo() re-draws the <video> into its canvas every frame, so a plain muted+looping
 // element is all the SDK needs; no MediaStream, no captureStream.

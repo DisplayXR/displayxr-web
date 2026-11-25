@@ -1,0 +1,13 @@
+{
+  "name": "dxr-auto3d-shim-corpus",
+  "private": true,
+  "type": "module",
+  "description": "No-harm corpus runner for tools/auto3d-shim (P4 gate): the product bundle over live outside sites, diffed against a control load. Not part of the SDK's npm test.",
+  "scripts": {
+    "corpus": "node run-corpus.mjs",
+    "sample": "node run-corpus.mjs --sample"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.0.0"
+  }
+}

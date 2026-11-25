@@ -7,8 +7,8 @@
 // so the page still shows a spinning cube in any browser.
 
 import * as THREE from 'three';
-import { createInline3D, inline3dViewRigSupported } from '@displayxr/inline3d';
-import { EdgeFeather, displayRig } from '@displayxr/inline3d/three';
+import { createInline3D, inline3dViewRigSupported, sceneBufferSize } from '@displayxr/inline3d';
+import { EdgeFeather, displayRig, DepthCursor, raycastHitTest } from '@displayxr/inline3d/three';
 
 const canvas = document.getElementById('cube');
 const statusEl = document.getElementById('status');
@@ -61,6 +61,18 @@ cube.geometry.setAttribute('uv2', cube.geometry.attributes.uv);  // aoMap sample
 cube.position.set(0, 0, 0);
 scene.add(cube);
 
+// Opt-in depth-aware cursor (?cursor=depth): the pointer rises to the cube instead of being drawn
+// on the glass behind the half of it that pops out. Hit-tests the cube and, while the cube under it
+// comes out of the screen, draws the arrow just in front of it (hiding the CSS cursor meanwhile). See "A cursor that respects depth" in docs/authoring-inline-3d.md.
+// &soften=both|off|alpha|blur A/Bs the crosstalk softening of the lifted arrow (default both).
+// &cursorDebug logs its per-frame cost once a second; &cursorDebug=both also keeps the OS cursor visible.
+const cubeParams = new URLSearchParams(location.search);
+const cursorDebug = cubeParams.has('cursorDebug') ? (cubeParams.get('cursorDebug') === 'both' ? 'both' : true) : false;
+const depthCursor = cubeParams.get('cursor') === 'depth'
+  ? new DepthCursor(THREE, { canvas, hitTest: raycastHitTest(THREE, [cube]), debug: cursorDebug, soften: cubeParams.get('soften') || undefined })
+  : null;
+if (depthCursor) scene.add(depthCursor.object);
+
 
 scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x14203a, 0.9));
 const key = new THREE.DirectionalLight(0xffffff, 0.7); key.position.set(0.3, 0.8, 0.5); scene.add(key);
@@ -90,13 +102,17 @@ function setCameraFromView(view) {
 //
 // Mono stays 1:1 — the flat fallback draws the whole canvas, so a 2:1 store would just stretch
 // it. updateStyle=false: the layout owns the CSS box, never the renderer.
+//
+// sceneBufferSize does the arithmetic: per eye, window device px x the display's view scale once
+// we know it (what a native app renders), else CSS box x dpr capped at 2; then it fits the store
+// inside the GL limits and the browser's drawing-buffer area cap. Hand-rolled
+// clientWidth x dpr x 2 overflows that cap full screen on an 8K panel and the eyes land off-centre.
 let sbsMode = false;
+let viewInfo = null; // wall.displayInfo at boot, then handle.getDisplayInfo() once woven
 function sizeToCanvas() {
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.round((canvas.clientWidth || 512) * dpr);
-  const h = Math.round((canvas.clientHeight || 256) * dpr);
-  renderer.setSize(sbsMode ? w * 2 : w, h, false);
-  monoCam.aspect = w / h; monoCam.updateProjectionMatrix();
+  const s = sceneBufferSize(canvas, { sbs: sbsMode, viewScale: sbsMode ? viewInfo : null });
+  renderer.setSize(s.width, s.height, false);
+  monoCam.aspect = s.eyeWidth / s.eyeHeight; monoCam.updateProjectionMatrix();
 }
 window.addEventListener('resize', sizeToCanvas);
 sizeToCanvas();
@@ -120,12 +136,15 @@ document.body.appendChild(dbgEl);
 const DEBUG_HUD = new URLSearchParams(location.search).has('debug');
 if (!DEBUG_HUD && typeof dbgEl !== 'undefined' && dbgEl) dbgEl.style.display = 'none';
 let dbgN = 0;
-// bring-up: tap anywhere -> toggle fullscreen (window becomes the full panel; tests the
-// target-extent-vs-panel-height hypothesis for the portrait double image)
-addEventListener('pointerup', () => {
-  if (document.fullscreenElement) document.exitFullscreen();
-  else document.documentElement.requestFullscreen().catch(()=>{});
-});
+// Bring-up only, behind ?debug like the HUD: a tap anywhere toggles fullscreen (the window
+// becomes the full panel — used to test target extent vs panel height on a portrait panel).
+// OFF by default: on an ordinary page a click must never maximise or restore the window.
+if (DEBUG_HUD) {
+  addEventListener('pointerup', () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else document.documentElement.requestFullscreen().catch(() => {});
+  });
+}
 function dbgUpdate(views, layer) {
   if (!DEBUG_HUD) return;
   if ((dbgN++ % 30) !== 0) return;
@@ -150,6 +169,10 @@ function onXRFrame(views, layer) {
   const now = performance.now(); const dt = last ? (now - last) / 1000 : 0; last = now;
   dbgUpdate(views, layer);
   spin(dt);
+  if (depthCursor) {
+    scene.updateMatrixWorld();   // the raycast reads this frame's cube pose
+    depthCursor.update(views, now);
+  }
   const size = new THREE.Vector2(); renderer.getSize(size);
   renderer.clear();
   renderer.setScissorTest(true);
@@ -273,10 +296,25 @@ function onMonoFrame(now) {
   // and the ?debug panel below drives it.
   const wall = await createInline3D({ lazy: false });
   if (wall.supported) {
-    const handle = wall.addScene(canvas, onXRFrame, { virtualDisplayHeight: 0.12 });
-    // Only now do we know we render side-by-side — re-size the backing store to 2x width.
+    const handle = wall.addScene(canvas, onXRFrame, {
+      virtualDisplayHeight: 0.12,
+      // The weave layer went away for good (session ended, layer failed): go flat, the same mono
+      // loop as the 2D fallback. Without this the canvas keeps its last side-by-side pair.
+      onLayerLost: () => {
+        sbsMode = false;
+        sizeToCanvas();
+        statusEl.innerHTML = '<b>2D</b> — the 3D layer went away';
+        requestAnimationFrame(onMonoFrame);
+      },
+    });
+    // Only now do we know we render side-by-side — re-size the backing store to 2x width, in this
+    // task (the layer's first frame comes later): never after an await or in a later rAF, or the
+    // first woven frames go out flat-shaped and each eye shows half the scene. wall.displayInfo
+    // is the view scale already known (null on a first visit; the read below fills it in).
     sbsMode = true;
+    viewInfo = wall.displayInfo;
     sizeToCanvas();
+    handle.getDisplayInfo().then((info) => { viewInfo = info; sizeToCanvas(); }).catch(() => {});
     statusEl.innerHTML = '<b style="color:#4ade80">inline-3D active</b> — weaving glasses-free 3D · ' +
       'move your head to look around';
     if (DEBUG_HUD) buildRigPanel(handle);

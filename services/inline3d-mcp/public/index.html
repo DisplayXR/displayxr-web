@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DisplayXR inline 3D connector</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="/icon.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="description" content="A remote MCP connector that helps AI assistants build and check 3D web pages for Spatial Displays.">
+<style>
+  :root { --bg: #ffffff; --fg: #1a1a1a; --muted: #5a5a5a; --line: #e2e2e2; --code: #f4f4f4; --link: #0b57d0; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #141414; --fg: #ececec; --muted: #a8a8a8; --line: #2c2c2c; --code: #1f1f1f; --link: #8ab4f8; } }
+  body { background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, Segoe UI, sans-serif; margin: 0; }
+  main { max-width: 720px; margin: 0 auto; padding: 40px 16px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 8px; } h2 { font-size: 1.1rem; margin: 32px 0 8px; }
+  p, li { color: var(--fg); } .muted { color: var(--muted); }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: .92em; word-break: break-all; }
+  pre { background: var(--code); padding: 12px; border-radius: 6px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; } td { border-top: 1px solid var(--line); padding: 8px 6px; vertical-align: top; }
+  a { color: var(--link); }
+</style>
+</head>
+<body>
+<main>
+  <h1>DisplayXR inline 3D connector</h1>
+  <p class="muted">A remote MCP server that helps AI assistants build <code>@displayxr/inline3d</code> web pages that show 3D on Spatial Displays in the DisplayXR Browser, and a 2D fallback everywhere else.</p>
+
+  <h2>Connect</h2>
+  <p>Server URL (streamable HTTP, no sign-in):</p>
+  <pre>https://mcp.displayxr.org/mcp</pre>
+  <ul>
+    <li><b>Claude</b> (claude.ai, desktop): Settings → Connectors → Add custom connector → paste the URL.</li>
+    <li><b>Claude Code</b>: <code>claude mcp add --transport http displayxr-inline3d https://mcp.displayxr.org/mcp</code></li>
+    <li><b>ChatGPT</b> (developer mode): Settings → Apps → Create → paste the URL, authentication: none.</li>
+    <li><b>Codex</b>: <code>codex mcp add displayxr-inline3d --url https://mcp.displayxr.org/mcp</code></li>
+  </ul>
+
+  <h2>Tools</h2>
+  <table>
+    <tr><td><code>get_authoring_guide</code></td><td>The authoring checklist: content type, view rig, depth and comfort, woven-canvas rules, pins, assets.</td></tr>
+    <tr><td><code>scaffold_page</code></td><td>A known-good page template, returned as text.</td></tr>
+    <tr><td><code>check_files</code></td><td>Runs the page checker on the page's own files: a simulated DisplayXR Browser (two real eye views) plus a plain 2D run, pass/warn/fail per rule.</td></tr>
+    <tr><td><code>check_url</code></td><td>The same checker on a deployed page at a public URL.</td></tr>
+    <tr><td><code>get_check_result</code></td><td>Collects a check that was still running.</td></tr>
+    <tr><td><code>check_asset_url</code></td><td>Checks a public .glb/.gltf against a device budget.</td></tr>
+  </table>
+  <p class="muted">A pass means the page works in a simulated 3D browser; it is not a test on a real 3D display. Checks run on shared capacity with a daily limit; the same checker runs locally for free with <code>npx -y @displayxr/inline3d-tools check</code>.</p>
+
+  <h2>What happens to your data</h2>
+  <p>Files sent to <code>check_files</code> are served only to the checker's browser and deleted when the check ends. Pages, files and reports are not stored. Your IP address is hashed and kept only as a rate-limit counter for up to a day; request logs are kept at most 7 days. The connector receives no chat history and no account data. Details: <a href="https://displayxr.org/privacy#hosted-checker">privacy</a> · <a href="https://displayxr.org/terms">terms</a>.</p>
+
+  <h2>More</h2>
+  <p><a href="https://github.com/DisplayXR/displayxr-web/tree/main/services/inline3d-mcp">Source</a> · <a href="https://github.com/DisplayXR/displayxr-web/issues">Support</a> · <a href="https://displayxr.org/privacy#hosted-checker">Privacy</a> · <a href="https://displayxr.org/terms">Terms</a> · <a href="https://www.npmjs.com/package/@displayxr/inline3d">@displayxr/inline3d</a></p>
+</main>
+</body>
+</html>

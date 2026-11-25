@@ -64,6 +64,16 @@ import {
   MONO_NEAR,
   MONO_FAR,
 } from './inline3d-splat-shared.js';
+import {
+  glBufferLimits,
+  clampEyeBuffer,
+  clampWarning,
+  bufferScale,
+  scaleViewport,
+  mismatchWarning,
+} from './inline3d-buffer-limit.js';
+import { viewerEaseFor, frameTrackingState } from './inline3d-viewer-ease.js';
+import { parseClearColor } from './inline3d-splat-shared.js';
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 // NaN/Infinity into a transform silently blanks the tile — three propagates it into the
@@ -260,6 +270,10 @@ export class SceneViewer {
    * @param {number} [opts.feather=0]  edge fade in buffer px (needs ./three's EdgeFeather).
    * @param {number[]} [opts.pitchLimit=[-60,60]]  degrees; stops the viewer rolling under the
    *        subject, which reads as broken rather than as a feature.
+   * @param {number[]|string} [opts.clearColor]  OPT-IN eye clear, `[r,g,b,a]` in 0..1 or a CSS
+   *        colour. Unset: the transparent clear (0,0,0,0), exactly as before. An opaque clear
+   *        avoids stale / black pixels on the weave (web#198); match the page colour behind the
+   *        canvas.
    */
   constructor(THREE, canvas, opts = {}) {
     const {
@@ -273,9 +287,14 @@ export class SceneViewer {
       renderScale = 1,
       feather = 0,
       pitchLimit = PITCH_LIMIT,
+      viewerEase,
     } = opts;
 
     this._THREE = THREE;
+    // The tracking-acquisition ease (./inline3d-viewer-ease.js): undefined = the session's
+    // createInline3D({ viewerEase }) default. Built on the first 3D frame, which knows the session.
+    this._viewerEaseOpt = viewerEase;
+    this.viewerEase = null;
     this.canvas = canvas;
     this.vH = virtualDisplayHeight;
     this.fit = fit;
@@ -283,13 +302,29 @@ export class SceneViewer {
     this.depthLimit = depthLimit;
     this.fitSweep = fitSweep;
     this.renderScale = renderScale;
+    // The device-limit clamp on the backing store (./inline3d-buffer-limit.js): the factor _resize
+    // last had to apply on top of renderScale, 1 when the request fit. effectiveRenderScale reports
+    // the product. Warned once per viewer (one viewer per handle).
+    this._bufClamp = 1;
+    this._warnedBufClamp = false;
+    this._warnedBufMismatch = false;
+    /** Prefix for this viewer's warnings; ./splat and ./model set their own. */
+    this.logTag = opts.logTag || '[inline3d/viewer]';
     this.pitchLimit = pitchLimit;
     this.idleSpin = idleSpin;
+    // Opt-in (null = off, and then nothing below differs from before it existed).
+    this.clearColor = parseClearColor(opts.clearColor, this.logTag);
 
     // alpha + a zero-alpha clear so the tile can dissolve into the page rather than ending at
     // a hard rectangle. An opaque scene.background would defeat both this and the feather.
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     this.renderer.setClearColor(0x000000, 0);
+    // clearColor (opt-in) replaces that clear. three reads a hex as sRGB, as a CSS colour is.
+    if (this.clearColor) {
+      const [r, g, b, a] = this.clearColor;
+      const hex = (Math.round(r * 255) << 16) | (Math.round(g * 255) << 8) | Math.round(b * 255);
+      this.renderer.setClearColor(hex, a);
+    }
     // MUST be 1. layer.getViewport() reports BACKING-STORE px, but three.js multiplies whatever
     // you pass setViewport()/setScissor() by the renderer's pixelRatio — so any other value
     // silently scales every eye viewport (at dpr 2 the left eye covers the whole canvas). It
@@ -340,10 +375,17 @@ export class SceneViewer {
     // into a display-space box under the live pose; without them it would have to re-measure
     // the content every call.
     this._subjectHalf = [0, 0, 0];
+    // fitTo's opts.screenPlaneZ, as model units the pivot sits in front of the glass (0 = none).
+    this._screenPlaneShift = 0;
+    this._framedDepth = null;
     this._yaw = 0;
     this._pitch = 0;
     this._targetYaw = 0;
     this._targetPitch = 0;
+    // Roll about the VIEW axis, degrees. Only the two-hand gesture (./inline3d-hands.js) and an
+    // explicit setPose({ roll }) ever write it, so every existing page is bit-identical at 0.
+    this._roll = 0;
+    this._targetRoll = 0;
     this._lastInput = now(); // so the turntable waits out the load-in rather than starting mid-pop
     this._lastTick = 0;
     this._monoRaf = 0;
@@ -374,6 +416,10 @@ export class SceneViewer {
     this._ro = typeof ResizeObserver === 'function' ? new ResizeObserver(this._onResize) : null;
     if (this._ro) this._ro.observe(canvas);
     else addEventListener('resize', this._onResize);
+    // devicePixelRatio is invisible to ResizeObserver (a browser zoom, a drag to a monitor at a
+    // different scale): the box keeps its CSS size while the buffer it deserves changes (web#267).
+    this._dprWatch = null;
+    this._armDprWatch();
 
     if (orbit) this._bindOrbit();
     this._resize();
@@ -405,12 +451,31 @@ export class SceneViewer {
    * of virtual space through the glass, which is uncomfortable to look at and pushes content
    * past where the display can hold focus. `depthLimit` caps that in display-height units.
    *
-   * @param {number[]|{x:number,y:number,z:number}} center  subject centre, model space.
+   * @param {number[]|{x:number,y:number,z:number}} center  subject centre, model space: the turn
+   *        pivot, and (without `opts.screenPlaneZ`) the point on the zero-disparity plane.
    * @param {number[]|{x:number,y:number,z:number}} extent  subject size, model space.
+   * @param {object} [opts]
+   * @param {number} [opts.screenPlaneZ]  model-space z to put on the zero-disparity plane, when it
+   *        is not the pivot's (addModel's robust framing passes the surface's 75th-percentile
+   *        depth). The subject still turns about `center`; the slide is applied in display space
+   *        and scales with fit × zoom, so this depth stays on the glass under zoom. Unset: the
+   *        centre is on the glass, exactly as before.
+   * @param {number[]} [opts.depthRange]  `[back, front]` model-space z of the subject as the
+   *        `depth: 'auto'` comfort measure should see it (addModel's robust framing passes the
+   *        surface's 1st–99th percentile depth). Unset: the fit box, as before.
    */
-  fitTo(center, extent) {
+  fitTo(center, extent, opts) {
     const c = Array.isArray(center) ? center : [center.x, center.y, center.z];
     const e = Array.isArray(extent) ? extent : [extent.x, extent.y, extent.z];
+    // Model units the pivot sits IN FRONT of the screen plane (0 = the centre on the glass).
+    const zp = opts && opts.screenPlaneZ;
+    this._screenPlaneShift = Number.isFinite(zp) && Number.isFinite(c[2]) ? c[2] - zp : 0;
+    // opts.depthRange: the subject's [back, front] model z as the `depth` option should measure it
+    // (robust framing: the surface's 1st–99th percentile), kept relative to the glass. Null = the
+    // fit box (±extent/2 about the centre), as before.
+    const dr = opts && opts.depthRange;
+    const glassZ = c[2] - this._screenPlaneShift;
+    this._framedDepth = Array.isArray(dr) && Number.isFinite(dr[0]) && Number.isFinite(dr[1]) ? [Math.min(dr[0], dr[1]) - glassZ, Math.max(dr[0], dr[1]) - glassZ] : null;
 
     // Through the focus, not around it: framing a subject IS pointing the viewer at its centre,
     // and keeping the two in one place is what stops an orbit turning about somewhere the fit
@@ -454,7 +519,12 @@ export class SceneViewer {
         if (horiz * s > vW) s = vW / horiz;
       }
 
-      // DEPTH: the subject sits CENTRED on the zero-disparity plane, and that is the whole rule.
+      // DEPTH: the subject sits CENTRED on the zero-disparity plane, and that is the whole rule
+      // for a page that calls fitTo(center, extent). (addModel's robust framing, web#327, passes
+      // `screenPlaneZ` instead: the surface's 75th-percentile depth on the glass, so ~25% of the
+      // surface is in front. That one WAS compared on hardware, on three kinds of model, and
+      // preferred on all of them; it is a different rule from the biased variant below, which
+      // pushed the whole box back.)
       //
       // It is the native convention — displayxr-demo-gaussiansplat sets the rig pose to the
       // subject centre on all three axes, and displayxr-demo-modelviewer states it outright:
@@ -489,12 +559,13 @@ export class SceneViewer {
    * This SNAPS — it writes the eased value and its target together. The easing in _tick exists
    * for input, not for programmatic placement.
    */
-  setPose({ yaw, pitch, zoom, depthOffset } = {}) {
+  setPose({ yaw, pitch, zoom, roll, depthOffset } = {}) {
     if (yaw !== undefined) this._targetYaw = this._yaw = yaw;
     if (pitch !== undefined) {
       this._targetPitch = this._pitch = clamp(pitch, this.pitchLimit[0], this.pitchLimit[1]);
     }
     if (zoom !== undefined) this._targetZoom = this._zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX);
+    if (roll !== undefined) this._targetRoll = this._roll = roll;
     if (depthOffset !== undefined) this._depthOffset = finite(depthOffset, this._depthOffset);
     this._applyTransform();
   }
@@ -518,6 +589,7 @@ export class SceneViewer {
       yaw: target ? this._targetYaw : this._yaw,
       pitch: target ? this._targetPitch : this._pitch,
       zoom: target ? this._targetZoom : this._zoom,
+      roll: target ? this._targetRoll : this._roll,
       depthOffset: this._depthOffset,
     };
   }
@@ -553,17 +625,24 @@ export class SceneViewer {
     const [hx, hy, hz] = this._subjectHalf;
     const p = (this._pitch * Math.PI) / 180;
     const y = (this._yaw * Math.PI) / 180;
-    // Rows of R = Rx(pitch) . Ry(yaw) — the same product _applyTransform builds, and the same
-    // order, which is the part that matters (see its comment on why 'XYZ' and not 'YXZ').
-    // |row| . half gives the AABB half-extent along that world axis.
+    const r = (this._roll * Math.PI) / 180;
+    // Rows of R = Rz(roll) . Rx(pitch) . Ry(yaw) — the same product _applyTransform builds, and
+    // the same order, which is the part that matters (see its comment on why pitch is outside
+    // yaw, and roll outside both). |row| . half gives the AABB half-extent along that world axis.
+    // At roll 0 the first two rows reduce to the old Rx . Ry rows exactly.
     const cp = Math.cos(p);
     const sp = Math.sin(p);
     const cy = Math.cos(y);
     const sy = Math.sin(y);
-    const ex = s * (Math.abs(cy) * hx + Math.abs(sy) * hz);
-    const ey = s * (Math.abs(sp * sy) * hx + Math.abs(cp) * hy + Math.abs(sp * cy) * hz);
+    const cr = Math.cos(r);
+    const sr = Math.sin(r);
+    // Rx . Ry rows
+    const a0 = cy, a1 = 0, a2 = sy;
+    const b0 = sp * sy, b1 = cp, b2 = -sp * cy;
+    const ex = s * (Math.abs(cr * a0 - sr * b0) * hx + Math.abs(cr * a1 - sr * b1) * hy + Math.abs(cr * a2 - sr * b2) * hz);
+    const ey = s * (Math.abs(sr * a0 + cr * b0) * hx + Math.abs(sr * a1 + cr * b1) * hy + Math.abs(sr * a2 + cr * b2) * hz);
     const ez = s * (Math.abs(cp * sy) * hx + Math.abs(sp) * hy + Math.abs(cp * cy) * hz);
-    const cz = this._depthOffset;
+    const cz = this._depthOffset + this._screenPlaneShift * s;
     return {
       center: { x: 0, y: 0, z: cz },
       extent: { x: 2 * ex, y: 2 * ey, z: 2 * ez },
@@ -640,8 +719,22 @@ export class SceneViewer {
   }
 
   /** Return to the framed default pose, depth slide included. */
+  /**
+   * Move the pose by a delta, EASED — what an input device does, as opposed to `setPose`'s snap.
+   * Angles in degrees to add, `zoom` a ratio to multiply; pitch is clamped, zoom bounded. Counts
+   * as interaction for the idle turntable, exactly like a pointer drag. The hands
+   * (`@displayxr/inline3d/hands`) drive the viewer through this; a page may too.
+   */
+  nudgePose({ yaw = 0, pitch = 0, zoom = 1, roll = 0 } = {}) {
+    if (yaw) this._targetYaw += yaw;
+    if (pitch) this._targetPitch = clamp(this._targetPitch + pitch, this.pitchLimit[0], this.pitchLimit[1]);
+    if (zoom && zoom !== 1) this._targetZoom = clamp(this._targetZoom * zoom, ZOOM_MIN, ZOOM_MAX);
+    if (roll) this._targetRoll += roll;
+    this._lastInput = now();
+  }
+
   resetPose() {
-    this.setPose({ yaw: 0, pitch: 0, zoom: 1, depthOffset: 0 });
+    this.setPose({ yaw: 0, pitch: 0, zoom: 1, roll: 0, depthOffset: 0 });
     this._lastInput = now();
   }
 
@@ -665,7 +758,7 @@ export class SceneViewer {
    * stale sub-rect, which smears). A one-frame-stale eye pose is imperceptible; a smear and a
    * black frame are not.
    */
-  onFrame(views, layer) {
+  onFrame(views, layer, frame) {
     if (this._disposed) return;
     // A lazily-activated tile can start weaving after the page already fell back to mono (or
     // after a scroll-away/scroll-back). Take the buffer back to the SBS shape when that happens
@@ -677,7 +770,7 @@ export class SceneViewer {
 
     // 1. A short view list is the load-induced mono fallback. Stereo needs two.
     if (!views || views.length < 2) {
-      this._replayLastGood();
+      this._replayOrFlat();
       return;
     }
 
@@ -703,22 +796,36 @@ export class SceneViewer {
     for (const view of views) {
       const vp = layer && typeof layer.getViewport === 'function' ? layer.getViewport(view) : null;
       if (!vp || !(vp.width > 0) || !(vp.height > 0)) {
-        this._replayLastGood();
+        this._replayOrFlat();
         return;
       }
       vps.push(vp);
     }
 
-    // Validated: this frame WILL draw over everything it clears.
+    // Validated: this frame WILL draw over everything it clears. Copy the matrices first (the
+    // last-good cache), ease a tracking acquisition/loss on the copies, and draw from them, so
+    // the live draw and a later replay are the same numbers.
+    this._cacheGood(views, vps, !eye);
+    const g = this._lastGood;
+    if (eye) (this.viewerEase ||= viewerEaseFor(frame, this._viewerEaseOpt)).apply(g.entries, frameTrackingState(frame));
+    // cursor: 'depth' (ADR-046) — only when a page opted in; null otherwise.
+    if (this.cursorDepth) {
+      this.scene.updateMatrixWorld(); // the hit test reads THIS frame's subject pose
+      // The layer too: where the runtime draws the web cursor (ADR-046 Amendment 4) the depth goes to it.
+      this.cursorDepth.update(g.entries.map((e) => ({ projectionMatrix: e.proj, transformMatrix: e.pose })), { layer });
+    }
     const r = this.renderer;
+    // getViewport() splits canvas.width; a drawing buffer the browser clamped behind our back
+    // (bufferScale().mismatch) gets the same split mapped onto its real size, never canvas.width/2.
+    const b = this._bufScale();
     r.clear();
     r.setScissorTest(true);
     for (let i = 0; i < views.length; i++) {
-      const vp = vps[i];
+      const vp = scaleViewport(vps[i], b.sx, b.sy);
       r.setViewport(vp.x, vp.y, vp.width, vp.height);
       r.setScissor(vp.x, vp.y, vp.width, vp.height);
       if (eye) {
-        eye.setFromView(views[i]);
+        eye.setFromMatrices(g.entries[i].proj, g.entries[i].pose);
         r.render(this.scene, eye.camera);
       } else {
         r.render(this.scene, this.monoCamera);
@@ -726,7 +833,6 @@ export class SceneViewer {
       if (this._feather) this._feather.render(r, vp);
     }
     r.setScissorTest(false);
-    this._cacheGood(views, vps, !eye);
   }
 
   /**
@@ -742,6 +848,22 @@ export class SceneViewer {
     return this;
   }
 
+  /**
+   * `cursor: 'depth'` (ADR-046): a cursor that rises to the subject under it instead of being
+   * drawn on the glass behind content that pops out. Called by ./model and ./splat on opt-in
+   * only — without it nothing is built and every hook below is skipped. Injected, like
+   * useEyeCamera, so this module never imports three.js itself.
+   * @param {Function} DepthCursorClass  ./three's DepthCursor.
+   * @param {(content: object) => Function} hitTestFor  builds the hit test over the subject group.
+   * @param {object} [opts]  extra DepthCursor options (./splat passes `raysPerFrame`).
+   */
+  useDepthCursor(DepthCursorClass, hitTestFor, opts = {}) {
+    if (this.cursorDepth) return this;
+    this.cursorDepth = new DepthCursorClass(this._THREE, { ...opts, canvas: this.canvas, hitTest: hitTestFor(this.content) });
+    this.scene.add(this.cursorDepth.object);
+    return this;
+  }
+
   /** Drive a flat, single-camera render loop for browsers without inline-3D. */
   startMono() {
     if (this._monoRaf || this._disposed) return;
@@ -751,9 +873,11 @@ export class SceneViewer {
       if (this._disposed) return;
       this._monoRaf = requestAnimationFrame(loop);
       this._tick();
+      this.cursorDepth?.update(null); // 2D: no sprite, the normal cursor
       const r = this.renderer;
       r.clear();
-      r.setViewport(0, 0, this.canvas.width, this.canvas.height);
+      const b = this._bufScale();
+      r.setViewport(0, 0, b.w, b.h);
       r.render(this.scene, this.monoCamera);
     };
     this._monoRaf = requestAnimationFrame(loop);
@@ -778,7 +902,10 @@ export class SceneViewer {
     this.stopMono();
     if (this._ro) this._ro.disconnect();
     else removeEventListener('resize', this._onResize);
+    this._disarmDprWatch();
     this._unbindOrbit();
+    this.cursorDepth?.dispose();
+    this.cursorDepth = null;
     this.renderer.dispose();
   }
 
@@ -838,10 +965,40 @@ export class SceneViewer {
   }
 
   /**
+   * A session frame that cannot draw its own views still PRESENTS (1.38): the last good frame,
+   * or, before there is one, the mono camera into both halves — flat, but drawn. An undrawn
+   * woven canvas can drop out of the frame the compositor aggregates (woven-canvas-rules,
+   * "redraw every frame"), and this viewer used to leave exactly the frames before the first
+   * stereo one undrawn. Every clear here is followed by a draw, so the dark-blink rule (web#12)
+   * still holds.
+   */
+  _replayOrFlat() {
+    return this._replayLastGood() || this._drawFlatPair();
+  }
+
+  _drawFlatPair() {
+    if (this._disposed) return false;
+    const r = this.renderer;
+    const b = this._bufScale();
+    if (!(b.w > 1) || !(b.h > 0)) return false;
+    const half = Math.floor(b.w / 2);
+    r.clear();
+    r.setScissorTest(true);
+    for (const x of [0, half]) {
+      const vp = { x, y: 0, width: half, height: b.h };
+      r.setViewport(vp.x, vp.y, vp.width, vp.height);
+      r.setScissor(vp.x, vp.y, vp.width, vp.height);
+      r.render(this.scene, this.monoCamera);
+      if (this._feather) this._feather.render(r, vp);
+    }
+    r.setScissorTest(false);
+    return true;
+  }
+
+  /**
    * Re-render the last good frame from the cached matrices. Returns false when there is no
-   * cache yet — and the caller must then do NOTHING, not clear: before the first good frame
-   * the canvas holds either the page's own initial state or the mono fallback's output, both
-   * of which are better than black.
+   * cache yet (onFrame then draws the flat pair, see _replayOrFlat; a resize leaves the
+   * freshly cleared store to the next session frame).
    */
   _replayLastGood() {
     const g = this._lastGood;
@@ -849,9 +1006,11 @@ export class SceneViewer {
     const r = this.renderer;
     const eye = g.mono ? null : this._ensureEye();
     const el = this.renderer.domElement || this.canvas;
-    // A resize between the cache and the replay changes the buffer, not the split.
-    const sx = g.bufW > 0 && el.width ? el.width / g.bufW : 1;
-    const sy = g.bufH > 0 && el.height ? el.height / g.bufH : 1;
+    // A resize between the cache and the replay changes the buffer, not the split. The cache is in
+    // canvas-attribute px (getViewport's space); the target is the REAL drawing buffer.
+    const b = this._bufScale();
+    const sx = g.bufW > 0 && b.w ? b.w / g.bufW : 1;
+    const sy = g.bufH > 0 && b.h ? b.h / g.bufH : 1;
     const scaled = sx !== 1 || sy !== 1;
     r.clear();
     r.setScissorTest(true);
@@ -876,6 +1035,44 @@ export class SceneViewer {
     }
     r.setScissorTest(false);
     return true;
+  }
+
+  /**
+   * A `(resolution: Ndppx)` query flips exactly when devicePixelRatio leaves its current value,
+   * so arm one and re-arm it on the new value each time it fires (the core does the same for
+   * its own windows, inline3d.js _armDprWatch). The resize itself is the coalesced one.
+   */
+  _armDprWatch() {
+    this._disarmDprWatch();
+    if (this._disposed) return;
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    let q;
+    try {
+      q = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    } catch {
+      return; // no resolution-query support: box changes are still covered
+    }
+    const onChange = () => {
+      if (this._disposed) return;
+      this._armDprWatch(); // this query is stale the moment it fires
+      this._scheduleResize();
+    };
+    try {
+      q.addEventListener('change', onChange);
+    } catch {
+      return;
+    }
+    this._dprWatch = { q, onChange };
+  }
+
+  _disarmDprWatch() {
+    if (!this._dprWatch) return;
+    try {
+      this._dprWatch.q.removeEventListener('change', this._dprWatch.onChange);
+    } catch {
+      /* ignore */
+    }
+    this._dprWatch = null;
   }
 
   /** One rAF per burst of observer callbacks. See the _onResize comment. */
@@ -903,7 +1100,8 @@ export class SceneViewer {
     if (this._mode === 'mono') {
       const r = this.renderer;
       r.clear();
-      r.setViewport(0, 0, this.canvas.width, this.canvas.height);
+      const b = this._bufScale();
+      r.setViewport(0, 0, b.w, b.h);
       r.render(this.scene, this.monoCamera);
       return;
     }
@@ -921,7 +1119,7 @@ export class SceneViewer {
     this._pivot.position.set(
       this._orbitCentre.x,
       this._orbitCentre.y,
-      this._orbitCentre.z + this._depthOffset,
+      this._orbitCentre.z + this._depthOffset + this._screenPlaneShift * s,
     );
     // Order 'XYZ' == R = Rx(pitch) · Ry(yaw), and the order is the whole point.
     //
@@ -934,7 +1132,10 @@ export class SceneViewer {
     // axis is itself yawed. At yaw 90° that axis has swung onto world Z and dragging up/down
     // rolls the subject instead of tilting it. Correct head-on, wrong the moment you turn it —
     // which is why it survived review and only showed up when two controls were combined.
-    this._pivot.rotation.set((this._pitch * Math.PI) / 180, (this._yaw * Math.PI) / 180, 0, 'XYZ');
+    //
+    // Roll (the two-hand twist) is about the VIEW axis, so it goes OUTSIDE both: 'ZXY' == R =
+    // Rz(roll) · Rx(pitch) · Ry(yaw). At roll 0 that is the 'XYZ' product above, bit for bit.
+    this._pivot.rotation.set((this._pitch * Math.PI) / 180, (this._yaw * Math.PI) / 180, (this._roll * Math.PI) / 180, 'ZXY');
   }
 
   /**
@@ -954,17 +1155,71 @@ export class SceneViewer {
     if (this._disposed) return;
     const box = this.canvas.getBoundingClientRect();
     if (box.width < 1 || box.height < 1) return;
+    this.viewerEase?.reset(); // a new window size moves every projection: not a viewer jump
     const dpr = Math.min(window.devicePixelRatio || 1, 2) * this.renderScale;
-    const w = Math.max(1, Math.round(box.width * dpr));
-    const h = Math.max(1, Math.round(box.height * dpr));
-    const bufW = this._mode === 'mono' ? w : w * 2;
+    // Clamp to the device's GL limits BEFORE sizing (./inline3d-buffer-limit.js): a store past
+    // MAX_TEXTURE_SIZE is silently clamped by the browser while getViewport() keeps splitting
+    // canvas.width, which puts the eye boundary off-centre in the woven buffer.
+    const c = clampEyeBuffer(
+      Math.max(1, Math.round(box.width * dpr)),
+      Math.max(1, Math.round(box.height * dpr)),
+      glBufferLimits(this._gl()),
+      { cols: this._mode === 'mono' ? 1 : 2 },
+    );
+    this._noteClamp(c);
+    const bufW = c.bufW;
+    const h = c.bufH;
     // Cheap and always correct to refresh, whether or not the backing store moves.
     this.monoCamera.aspect = box.width / box.height;
     this.monoCamera.updateProjectionMatrix();
     const el = this.renderer.domElement || this.canvas;
-    if (el.width === bufW && el.height === h) return; // observer fired, geometry didn't move
+    if (el.width === bufW && el.height === h) {
+      this._bufScale(); // observer fired, geometry didn't move; still name a browser-side clamp
+      return;
+    }
     this.renderer.setSize(bufW, h, false);
+    this._bufScale(); // warns once if the browser clamped anyway
     this._repaintAfterResize();
+  }
+
+  /**
+   * The renderScale actually in force: the request (`renderScale`) times the device-limit clamp
+   * the last resize applied. Equal to renderScale wherever the store fits.
+   */
+  get effectiveRenderScale() {
+    return this.renderScale * this._bufClamp;
+  }
+
+  _gl() {
+    try {
+      return this.renderer?.getContext?.() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Record a resize's clamp; warn once per viewer the first time the device limit bites. */
+  _noteClamp(c) {
+    this._bufClamp = c.scale;
+    if (c.clamped && !this._warnedBufClamp) {
+      this._warnedBufClamp = true;
+      console.warn(clampWarning(this.logTag, c, this.renderScale));
+    }
+  }
+
+  /**
+   * The drawing buffer's real size and its ratio to canvas.width/height (the space getViewport()
+   * reports in). Identity unless the browser clamped a store the limit query did not predict;
+   * warns once per viewer when it did.
+   */
+  _bufScale() {
+    const el = this.renderer.domElement || this.canvas;
+    const b = bufferScale(el, this._gl());
+    if (b.mismatch && !this._warnedBufMismatch) {
+      this._warnedBufMismatch = true;
+      console.warn(mismatchWarning(this.logTag, el, b));
+    }
+    return b;
   }
 
   /** Damping + idle turntable. Called once per rendered frame, 3D or mono. */
@@ -981,6 +1236,7 @@ export class SceneViewer {
     const k = dt > 0 ? 1 - Math.pow(DAMP_BASE, dt) : 1;
     this._yaw += (this._targetYaw - this._yaw) * k;
     this._pitch += (this._targetPitch - this._pitch) * k;
+    if (this._roll !== this._targetRoll) this._roll += (this._targetRoll - this._roll) * k;
     // Zoom eases on the same curve. Multiplicatively, because zoom is a ratio: approaching 2x
     // linearly spends most of its time near the start and then lurches, while a ratio approach
     // covers equal PERCEPTUAL steps per frame.

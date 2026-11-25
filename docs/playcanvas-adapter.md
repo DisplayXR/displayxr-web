@@ -13,6 +13,34 @@ const h = addSplat(wall, canvas, bytesOrUrl, { engine: 'playcanvas' });   // sam
   that never asks never resolves `playcanvas`: `./splat` imports the adapter with a literal dynamic
   `import('./inline3d-splat-playcanvas.js')`, and the adapter imports the engine the same way.
 - **Peer:** `playcanvas >=2.22.3 <3`, optional. Or hand the module in: `{ playcanvas: pc }`.
+  **Which engine to pin.** One SDK build supports every engine in the range at once: where an
+  engine release changed something the SDK depends on, the SDK detects the shape it finds (shader
+  chunk text, which uniforms exist), never the version number. Pin an exact version in your app
+  (no caret), because an unpinned install picks up the newest 2.x the day it ships:
+  - **`2.24.0` — recommended, and what the samples load.** Validated on a 3D panel (Windows,
+    DisplayXR Browser) and an Android 3D tablet on 2026-11-10: splats in stereo through orbit, zoom,
+    resize and rotation, the depth cursor riding on a splat, transmissive glTF refracting in stereo,
+    no footprint warning. The unit tests run every SDK shader rewrite against its real chunks.
+  - **`2.23.3` and `2.22.3` — also validated on the same panel and tablet**, with the same checks.
+    An earlier report of 2.23.3 losing splat stereo on a tablet did not reproduce on a page with one
+    woven canvas; that page also had overlapping woven canvases (woven-canvas rules), which flatten
+    a tile on their own. Existing apps pinned to either need no change to keep working.
+
+  To A/B engines on a device without a rebuild: `samples/splat/?pc=2.22.3` (or `2.23.3`, `2.24.0`) swaps the
+  engine build, and `&viewPath=cameras` renders each eye with its own camera instead of one camera
+  with N `RenderView`s (`playcanvasViewPath: 'cameras'` on `addSplat`). Stereo on `cameras` but not
+  on the default path points at the engine's per-view path; flat on both points at the page.
+
+  Through SDK 1.51.1, two things broke on newer engines (now fixed by feature detection, so 2.22.3
+  is unchanged): a transmissive (glass) glTF on `./model` failed to compile on 2.23+ and the
+  tile went black, and the depth cursor found no splat on 2.24 (it stayed on the glass). SDK
+  1.51.x also logged a false "footprint fix SKIPPED … half height" warning on 2.23+ (2.23 fixes the
+  side-by-side footprint upstream; the SDK leaves that chunk alone there).
+
+  esbuild: `external: ['node:worker_threads']` — the engine's sort and draco workers carry a `require("node:worker_threads")` fallback that a browser never reaches.
+- **Give the splat canvas an explicit size.** A canvas positioned with `left`/`right`/`top`/`bottom`
+  and `width: auto` keeps its 300×150 intrinsic size, so the splat renders tiny in a corner. Set
+  `width` and `height` (e.g. `100%`, or the stage rect) in CSS.
 - **Formats:** `.sog` (bytes or URL), `.ply`, and a Streamed SOG by URL: its `lod-meta.json`, or
   the directory holding it (a URL ending in `/`). Bytes of a `lod-meta.json` throw at call time
   (a Streamed SOG is a directory of relatively named chunks; §Streamed SOG). `.spz`,
@@ -21,7 +49,7 @@ const h = addSplat(wall, canvas, bytesOrUrl, { engine: 'playcanvas' });   // sam
 - **Extra options:** `preserveDrawingBuffer` (default false; the weave's zero-copy read race on
   large canvases, browser-pvt#24), `orbitMaxDeg` / `orbitEase`, `zoom` (§Zoom bounds and relax), and `captureFit` (both backends).
 - **Extra handle members:** `setSource(src, { fadeMs, resetPose, transition, reveal })` (it throws
-  on Spark), `setRig` / `setVideo` (§setRig, §setVideo), `engine` → `{ app, root, camera }`, and the splat effects — `reveal`, `playEffect`,
+  on Spark), `setRig` / `setVideo` (§setRig, §setVideo), `setViewOffset` (§View offset), `engine` → `{ app, root, camera }`, and the splat effects — `reveal`, `playEffect`,
   `setEffect`, `stopEffect`, `effects()` ([`splat-effects.md`](splat-effects.md)).
 - **Third-party notices:** the engine is MIT; shader code adapted from it (the footprint fix, the
   quad-extent cap, the dissolve effect) is listed in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
@@ -57,6 +85,34 @@ anchor that warns once and renders unpatched if the engine moves the line:
 (the splat's content space; add your entities under it), and the eye-rig camera entity.
 `remove()` destroys the app and everything under `root` with it. This is advanced and not
 covered by the semver promise.
+
+**Swapping what you added: `handle.releaseEntity(entity, { asset })`.** `entity.destroy()` and
+`asset.unload()` free meshes, textures and materials, but not the shader programs those materials
+linked: PlayCanvas caches every program for the device's life, and `Material.destroy()` does not
+destroy one. A page that swaps glTFs under `root` (a product carousel) therefore keeps every program
+it ever showed, about 5 MB each in the GPU process on one Linux driver. `releaseEntity` collects the
+entity's programs, destroys it, unloads its container `asset` unless something else in the tile
+still draws from it, and destroys each collected program nothing left still uses. It returns
+`{ programs, container }` (`container`: `'unloaded'`, `'in-use'` or `null`). The SDK also makes
+the engine delete a compiled shader once the last program using it is destroyed (otherwise kept
+until the device dies). Rules, engine facts and measurements:
+[content lifecycle rules](content-lifecycle-rules.md).
+
+```js
+let shown = null;
+async function showProduct(url) {
+  const asset = new pc.Asset(url, 'container', { url });
+  app.assets.add(asset);
+  await new Promise((ok) => { asset.ready(ok); app.assets.load(asset); });
+  const entity = asset.resource.instantiateRenderEntity();
+  entity.enabled = false;
+  handle.engine.root.addChild(entity);
+  await handle.warmEntity(entity);                  // its programs, linked off the frame
+  if (shown) handle.releaseEntity(shown.entity, { asset: shown.asset });
+  entity.enabled = true;
+  shown = { entity, asset };
+}
+```
 
 **What the app registers (1.9.1).**
 - Component systems: `Camera` and `GSplat` for the splat, plus `Render`, `Light` and `Anim`.
@@ -117,7 +173,52 @@ so **`nearClip` / `farClip`** (both optional, `perf`-independent) are a **floor 
 on far**. They never widen the range, and they rewrite only the depth mapping, not the frustum.
 Anything nearer than `nearClip` is clipped, splats included.
 
-## `setRig` — switching between the display rig and the camera rig (#36)
+## `warmEntity` — a glTF's first draw without the freeze
+
+PlayCanvas's forward renderer compiles and links each new lit program **synchronously on its first
+draw** (`asyncCompile = false` in `renderForwardInternal`, PlayCanvas 2.22.3). A car with 13 lit
+materials (clearcoat paint, normal-mapped parts) froze for **0.8–0.95 s** on a Windows panel, on
+every cold session, at the moment it appeared.
+
+```js
+const car = asset.resource.instantiateRenderEntity();
+car.enabled = false;                 // loaded, not shown
+handle.engine.root.addChild(car);
+await handle.warmEntity(car);        // 13 programs compiled + linked in idle time
+car.enabled = true;                  // first draw: no link
+```
+
+`warmEntity` makes the call the renderer itself makes, `MeshInstance.getShaderInstance`, with the
+renderer's exact arguments:
+- the camera's shader pass;
+- the layer's light hash and `splitLights`;
+- `renderer.viewUniformFormat`;
+- each eye camera's **live** `shaderParams`, whose hash keys the cache.
+
+So the program it creates is the one the first draw looks up, cached on the mesh instance. It
+issues the compiles time-sliced (yielding every ~8 ms) and finishes each link with
+`KHR_parallel_shader_compile` before finalizing. Calling `material.getShaderVariant` with
+hand-built params instead gives broken variants (`#include "litMainVS"` unresolved): that is the
+route this avoids.
+
+**Warm in the state you will show in:** the variant is keyed on the layer's lights, fog and the
+camera's render target. Add the lights first. A light added after the warm means a new program on
+the first draw, exactly as without `warmEntity`. The model handle has it too: `addModel`'s
+`h.warmEntity()` warms the model by default.
+
+Measured in headless Chrome (ANGLE/Metal, PlayCanvas 2.22.3), on Khronos `CarConcept` (109 mesh
+instances, **13 programs**, like the panel's car) under a splat tile with a directional light:
+
+| | links when shown | worst frame when shown | worst frame during the warm |
+|---|---|---|---|
+| cold browser | 13 (2.59 s blocked) | 2.69 s | — |
+| shader cache warm | 13 (21 ms) | 102 ms | — |
+| after `warmEntity` | **0** | **20 ms** | 22 ms (100 ms total) |
+
+The rendered frame is pixel-identical to the cold path (0 of 240,000 pixels differ). The real fix
+is upstream: PlayCanvas honouring a per-draw-call `asyncCompile`. Until then this needs no engine
+patch. Not yet run on a Windows panel.
+
 
 A page with one persistent tile (one canvas, one `addSplat` handle for the whole document)
 sometimes has to show something other than the photograph: a glTF product or a bird under
@@ -233,6 +334,36 @@ pixels match exactly. In the round trip, the mono camera, projection, rig-node m
 tone mapping and the declared camera-rig descriptor are bit-identical to before the switch. The
 IBL installed for the display rig is gone afterwards.
 
+## `setStereo` — live stereo strength, no cut
+
+```js
+h.setStereo({ ipdFactor: 0.6 });          // a depth slider: next frame, pose and focus kept
+h.setStereo({ parallaxFactor: 0.5 });     // keys merge
+h.setStereo({ ipdFactor: null });         // back to the asset's own
+h.setStereo(null);                        // both back
+h.setStereo({ ipdScale: 0.7 });           // RELATIVE: 0.7 × each asset's own, re-applied per setSource
+```
+
+`ipdScale` / `parallaxScale` multiply the asset's own value (`rig.stereoDefault`) and follow every
+asset `setSource` brings in. That is the shape for a depth slider over photos whose capture blocks
+carry different `dxr` scalars. Per scalar, the absolute and the relative key are exclusive, and the
+last one given wins.
+
+It re-declares the rig in force with new scalars and leaves everything else alone: no
+`resetPose`, no re-framing, no new environment. That makes it the continuous control `setRig`
+isn't. On a camera rig the values are **absolute**, exactly like addSplat's
+`ipdFactor` / `parallaxFactor` (and never normalised against the convergence). On a display rig
+they replace the declared display rig's factors. The choice is sticky across `setSource` and
+`setRig` until cleared. `handle.rig.ipdFactor` / `parallaxFactor` read what is in force, and
+`handle.rig.stereoDefault` reads the asset's own. With `controls:'page'` it applies from the next
+tick. A stereo video holds its own display rig, so a value set meanwhile lands when the video
+exits. The 2D↔3D mode-switch ramp still multiplies on top.
+
+Compared with scaling the splat's depth in a shader (`1/d' = 1/D + k·(1/d − 1/D)`), `ipdFactor`
+scales disparity for every object in the tile, meshes included, and `parallaxFactor` scales
+head-motion parallax, which a geometry warp can't. `setDepthEnvelope` reads the live `ipdFactor`,
+so its cap stays exact while the slider moves.
+
 ## `setVideo` — a stereo video on the persistent handle (#36)
 
 A page that renders everything through **one persistent woven canvas and one `addSplat` handle**
@@ -242,22 +373,33 @@ a fresh canvas after a navigation is exactly what shows the raw side-by-side fla
 own engine draws the video, in the tile's own frame:
 
 ```js
-const v = await handle.setVideo('movie_sbs.mp4', { format: 'sbs', fit: 'contain' });
+const v = await handle.setVideo('movie_2x1.webm', { format: 'sbs', fit: 'contain' });
 v.video.play();                      // the page owns transport: play / pause / currentTime / events
 // … back to the photo:
 await handle.setVideo(null);         // splat, pose, lens and declared rig exactly as they were
 ```
 
 `handle.setVideo(src, options?)`:
-- **`src`** is a URL or an `HTMLVideoElement`.
+- **`src`** is a URL or an `HTMLVideoElement`. Prefer **VP9 (or AV1) + Opus in WebM**. DisplayXR
+  Browser 1.0.6+ also plays H.264/AAC `.mp4` through the OS decoders, but 1.0.5 and earlier (and
+  stock Chromium) fail it with `MEDIA_ERR_SRC_NOT_SUPPORTED`, as does a machine with no hardware
+  H.264 decode.
   - **A URL** gets an SDK-owned `<video>` (`crossOrigin: 'anonymous'`, `playsInline`). It autoplays
     unless `autoplay: false`. If the browser refuses sound without a user gesture, it plays
     **muted** (logged once); set `v.video.muted = false` on the next gesture. The SDK frees the
     decoder (pause, drop `src`, `load()`) on exit, on a replacing `setVideo` and on `remove()`.
   - **An element you pass stays yours.** The SDK never plays or pauses it unless you pass
     `autoplay: true`, and it never releases it.
-- **The promise resolves on the first frame the video has**, to `{ video, format, fit, remove(),
-  stats() }`. The switch happens in one task at that point: the splat is hidden, the display rig is
+- **The promise resolves on the first frame the video has**, to `{ video, format, fit, band,
+  transition, rect, onRectChange(), remove(), stats() }`. `rect` is where the picture is on
+  screen, in CSS px from the canvas's top-left and clipped to it (`null` before the first drawn
+  frame and once replaced); `onRectChange(cb)` hears every change (resize, new size, band) off the
+  draw and returns an unsubscribe. The bars are the canvas minus `rect`: place controls in them, or
+  against the picture, with it. The callback runs as a microtask right after the draw, inside the
+  same frame (before paint): controls move in step, but a callback that reads layout forces layout
+  in that frame. `rect` is measured with `getBoundingClientRect`, so under a CSS-transformed
+  ancestor it is in the transformed (on-screen) px. `transition` says what the swap did: `'crossfade'`
+  or `'cut'`. The switch happens in one task at that point: the splat is hidden, the display rig is
   declared and the plane goes up. Before that nothing changes, so there is no blank gap. A video
   that fails to load rejects, and the splat stays on screen. A call superseded before its first
   frame (a newer `setVideo`, `setVideo(null)` or `remove()`) rejects with an `AbortError` and
@@ -277,6 +419,22 @@ await handle.setVideo(null);         // splat, pose, lens and declared rig exact
 | `virtualDisplayHeight` | the tile's own | The display rig's height while the video is on. A flat plane at the window has no disparity of its own, so it does not change the picture. |
 | `loop`, `muted` | the element's | Applied when given. |
 | `autoplay` | `true` for a URL, `false` for an element | |
+| `transition` | `'cut'` | `'crossfade'`: a GPU dissolve from the video already on the plane (see below). From the splat, and on `setVideo(null)`, always a cut. `./splat`'s gaussian transitions (`flip`, `wavefront`, particles) throw: a video frame has no gaussians. |
+| `durationMs` | `600` | The crossfade's length (the player's default). `0` is a cut. |
+| `easing` | `'easeInOutSine'` | A named easing (`SplatEasing` in `splat.d.ts`: `linear`, `easeInOutSine`, `easeInOutCubic`, …) or `(x) => y` on [0, 1]. |
+| `outgoing` | `'frozen'` | Only `'frozen'`: the outgoing video dissolves from its last frame. |
+| `band` | none | A letterbox slot: the picture is fitted into a centred band of this aspect (`2.39` or `'2.39:1'`) inside the element, the rest left clear, as `./player`'s `band`. `'contain'` in the band is a smaller quad; `'cover'` makes the quad the band and crops each eye about its centre in texture space (the band's edges are inside the window, so the window cannot cut the overflow). |
+
+**Crossfade (`transition: 'crossfade'`).** At the swap, the quad on screen becomes a *ghost*: its
+texture stops uploading (so the outgoing `<video>` can be released at once, as the SDK does with
+its own), and it is drawn blended over a fresh quad carrying the incoming video, its opacity eased
+from 1 to 0 over `durationMs` from the incoming video's first drawn frame. Each quad keeps its own
+format, fit and size, so a swap between two aspects fades bar for bar; the buffer stays opaque
+under the incoming picture throughout. A `setVideo` while a fade is running drops the old ghost
+and fades from the video then on screen, if that video has been drawn; one that has not drawn a
+frame yet (two swaps before the next frame) makes it a cut, and `transition` says `'cut'`. The promise resolves at the swap, not at the end of the
+fade. Cost: one extra full-plane textured draw for the length of the fade, and one texture
+allocation (plus its first upload) for the incoming video at the swap.
 
 **How it is drawn.**
 - **The plane.** One quad is parented under the **rig node**, the eye camera's parent, at display
@@ -310,15 +468,19 @@ await handle.setVideo(null);         // splat, pose, lens and declared rig exact
 - Only the splat is hidden. Entities the page hung under `handle.engine.root` stay as they are,
   and a page hides its own.
 
-**Transport chrome is the page's.** The player module RFC ([`docs/rfcs/0001-media-player.md` on
-`feat/player`](https://github.com/DisplayXR/displayxr-web/blob/feat/player/docs/rfcs/0001-media-player.md))
-has a partial-region transport bar (`data-inline3d-overlay`). It is internal to that unmerged
-module (`buildTransportBar` is not exported) and bound to `addPlayer`'s own canvas, so it is not
-reused here. The integration point is `v.video`: the same `HTMLMediaElement` vocabulary
-(`play/pause/currentTime/duration/ended`, `timeupdate`/`ended` events) the RFC's handle uses. If
-the bar ever becomes an export taking `(container, video)`, it applies to `setVideo` unchanged. As
+**Transport chrome: `attachPlayer`, or the page's own.** `./player`'s `attachPlayer(handle, src,
+opts)` puts the SDK transport, a playlist and the player's events on this slot, with no second
+canvas ([authoring guide §2b](authoring-inline-3d.md#on-an-apps-one-persistent-canvas-attachplayersplat-src-opts),
+RFC 0001 Addendum A). A page that draws its own chrome drives `v.video` directly, the same
+`HTMLMediaElement` vocabulary. Either way, as
 [rule 8](woven-canvas-rules.md#8-chrome-over-a-woven-canvas-is-a-partial-region) requires, keep the
 chrome a partial region of the tile.
+
+**Two read-only properties** exist for code that sits beside the slot:
+- `handle.videoElement` is the `<video>` the plane is showing now, or `null` (none, or one still
+  waiting for its first frame). No event reports it changing; `attachPlayer` reads it to notice
+  another `setVideo` taking the slot.
+- `handle.canvas` is the tile's canvas, for chrome placed as its sibling. After `remove()` it still points at the (now dead) element.
 
 **Gates** (Chrome 153, real GPU (Metal/ANGLE, M1 Pro), a 1280×720 CSS tile at DPR 1, on the
 camera-rig photo `ports_100_cam.sog`). The pixel gates are headless, with fake stereo: two
@@ -390,13 +552,47 @@ derivation and the runtime-math proof are in
   the transition overlay). Same N `RenderView`s, same viewports.
 - **Depth.** The display camera clears depth (only depth) in 3D: the two camera spaces never share a
   depth test. The splat writes none; the display layers depth-test among themselves.
-- **Rounding.** `viewerDistance` (m, default **0.6**, the browser's nominal) or an explicit `gain`,
-  for the whole tile (last call wins). The runtime knows the real nominal distance but the browser
-  does not expose it yet — a wrong value scales the objects' depth by `n_true/n`; it never moves the
-  contact plane or the 2D picture.
+- **Rounding.** `viewerDistance` (m) or an explicit `gain`. The default n is the **browser's**
+  `XRDisplayInfo.nominalViewerPosition.z` — the runtime's nominal viewer distance for this panel,
+  asked once per tile from the frame's layer — where the browser reports it (DisplayXR Browser
+  patch 0221), else **0.6 m**. Passing `viewerDistance` pins it; `layerRigState().viewerDistanceSource`
+  says which one is in use (`'page'` | `'browser'` | `'default'`). A wrong n (e.g. the 0.6 m fallback
+  on a panel whose nominal distance differs) scales the objects' depth by `n_true/n`; it never moves
+  the contact plane or the 2D picture.
+- **Which plane lands on the glass.** By default the photo's **convergence plane** (distance `D`
+  from the photo's camera — `planeM` / `photoConvergenceM` in `layerRigState()`): an object whose
+  contact point is on it sits on the glass, in both rigs. A stage built around another depth (its
+  "z = 0" is not the convergence plane) reads as **recessed** (or popped) under the photo rig
+  already, and the display rig multiplies that by the gain. Move it:
+  - `planeOffset` — metres **on the panel**, + = toward the viewer: the stage comes forward by that
+    much; the plane on the glass moves back to `D·(1 + planeOffset / viewerDistance)`.
+  - `planeDistance` — the plane on the glass directly, as a distance from the photo's camera in
+    world units (wins over `planeOffset`). A page that knows its contact point's depth passes it.
+
+  Exact, still no Kooima: the round views get one more factor, the uniform scale about the photo's
+  camera that sends that plane onto the photo's window — every ray from the camera maps onto
+  itself, so the 2D picture at the nominal viewpoint does not move; only which depth has zero
+  disparity does (proof: docs/proposals/layer-display-rig.md §Plane offset).
+- **Options merge**, tile-wide, across `setLayerRig` and **`handle.setLayerRigOptions(opts)`** (live,
+  no layer change): a key given replaces it, `null` clears it.
+- **Both view paths.** The engine's `RenderView` path (the default: one display camera with N
+  RenderViews) and the N-camera fallback (one display camera per view, at that view's rect, the
+  shear carried in its projection). Measured identical below. A display layer that **no camera**
+  draws is drawn by the display camera (on the N-camera path there is no `handle.engine.camera` to
+  add it to); a layer that **another** camera draws (the page's own, a reflection pass) is left
+  alone and named in `reason`.
+- **Never silent.** `layerRigState()` → `{ path: 'renderviews' | 'ncamera' | 'mono', engaged,
+  reason, viewerDistance, viewerDistanceSource, gain, planeM, photoConvergenceM, planeOffset, located,
+  display, disabled }`
+  — `engaged` is true only when the display-rig views were applied on the last drawn frame, and
+  `reason` says why not (a layer not in the composition, a layer another camera draws, mono, a
+  display rig, gain 1). The same line is WARNed on the first 3D frame and on every change, e.g.
+
+  ```
+  [inline3d/splat] setLayerRig: path=renderviews engaged=true layers=[StageObjects, StageAfterSplat]
+    viewerDistance=0.60m(default) gain=4.000 planeM=2.400 photoConvergenceM=2.400 planeOffset=0.000m located=true reason=-
+  ```
 - **Kill switch:** `?dxrdiag=nolayerrig` — requests are recorded, never applied.
-- Needs the engine's `RenderView` path (the default); on the N-camera fallback it warns once and
-  the layer stays on the photo rig.
 
 **Measured** (headless Chrome, ANGLE Metal, 2560×720 SBS buffer; a splat, a z = 0 contact marker,
 markers 0.5 world units in front of and behind the plane; the page plays the runtime with
@@ -413,6 +609,13 @@ runtime's own conversion says the photo IS, with factors 1 — an independent or
 | mono, camera vs display | | **byte-identical** frame |
 | after a `setSource` crossfade / at zoom 1.4× | | contact unmoved, disparity unchanged |
 | per-frame cost (CPU + sync, median of 6×60 frames) | 2.65 ms | 2.51 ms — within noise; same draw count (12) |
+
+The N-camera path (`playcanvasViewPath: 'cameras'`) and `controls: 'page'` (stage under
+`handle.engine.root` in world space) give the same numbers — all four combinations were run
+(`tools/layer-rig-capture/run.mjs … '?path=cameras&controls=page'`). With `planeOffset` = 0.15 m
+(plane on the glass 0.5 world units behind the convergence plane): the marker there goes to **0.0 px**
+disparity (expected 0.00), the old contact marker to +22 px (expected +21.33), the front marker to
++56 px (expected +56.89).
 
 The measured positions are centroids of axis-aligned squares, so they sit on half pixels: every one
 is within 0.5 px of the oracle. The extra camera costs one depth clear and a camera's culling/sort
@@ -801,6 +1004,18 @@ The diag reports it on the panel as `MAIN-THREAD gap`.
 | `nooverlay` | records, logs and dumps, no overlay | the overlay's own cost |
 | `oldpick` | `handle.pick()` always runs the full scan over every centre, no pick index (the 1.21.1 path) | "the page's own picks block the main thread at the swap's end" |
 | `oldrig` | no rig tracking: the views are drawn as the runtime located them, and a live outgoing photo goes back on the pre-1.24 node chain | "the outgoing photo jumps when the incoming photo's rig is declared" (§ Each photo through its own rig) |
+| `keepshaders` | the engine's compiled-shader cache as it ships: no shader deleted before the device dies (page-wide: the engine class is shared) | "the compiled shaders, not the programs, are what grows" ([content lifecycle](content-lifecycle-rules.md) rule 5) |
+
+**Live GL objects and the leak watch.** The overlay's third line is
+`gl programs N live (+created −deleted)  shaders N live (…)  cache <state>`, counted on the tile's
+context since diag attached (`glObjects` in the dump; `cache` is the shader-cache fix's state:
+`patched`, `already`, or `skipped: <why>`). At every content swap the SDK can see (a `setSource`, a
+glTF container loaded into the tile's registry, a `handle.releaseEntity`) it samples the live
+program count, and warns once in the console when that count has not dropped across the last 10
+swaps of one kind and rose at more than 60% of them: something each swap replaces is not released.
+The model handle (`addModel`, PlayCanvas) records the same with `?dxrdiag`. One more switch:
+`keepshaders` leaves the engine's compiled-shader cache as it ships (page-wide, so put it on the
+URL). [Content lifecycle rules](content-lifecycle-rules.md) §4.
 
 The recipe on the panel: run the Photos show with `?dxrdiag=1` for three or four transitions and
 read the console verdicts; then `?dxrdiag=cold` and `?dxrdiag=norig` the same way; paste
@@ -869,6 +1084,22 @@ splats. So every `perf` value except `false` starts from 0. **`perf: false` is t
 engine defaults, untouched. `splatBudget` is a no-op on a flat `.sog`: 1,179,648 of 1,179,648
 drawn at a 600k budget. It only acts on a Streamed SOG, where it defaults to **600k per tile**
 (both eyes included) instead of the engine's 1M; `perf: false` keeps the 1M (§Streamed SOG).
+
+## View offset (2D tilt parallax)
+
+`handle.setViewOffset({ x, y })` moves the **mono** camera's eye in its own plane, a head-parallax
+analogue for a flat screen that has no tracked eyes (a phone's tilt). The offset is normalised and
+clamped to the unit disc; at |offset| = 1 the eye has moved `c · tan(orbitMaxDeg)`, where `c` is the
+focus's distance along the view axis, so the line of sight to the focus swings by the drag orbit's
+cone (15° by default). The projection is shifted off-axis by `−e · near / c`, which pins the focus
+plane: the focus keeps its screen position while nearer content moves against the eye and farther
+content with it. The camera never turns (`offsetMonoView`).
+
+It moves the eye and the orbit turns the scene, so the two compose and neither undoes the other's
+easing. It is a snap like `setPose`: ease it in the page, and gate it on the page's own drag if a
+held drag should win. `pick()` and the effects' eye frame use the offset camera. In woven 3D it is
+a no-op for the pixels (the head tracker owns the eyes; the value is kept and applies again if the
+tile falls back to 2D), and it is ignored on `controls: 'page'`. `handle.viewOffset` reads it back.
 
 ## Zoom bounds and relax
 
@@ -1111,6 +1342,11 @@ immutable`). The chunk paths are relative, so any prefix works. A rebuild goes t
 never over the old one: a viewer mid-stream would otherwise mix levels from two builds. Cross-origin
 hosting needs CORS on every chunk (`Access-Control-Allow-Origin`). The public Trogir scene below
 serves `*`.
+
+A Streamed SOG also gets past response-size caps. Behind a serverless route handler (Vercel caps one
+response at 4.5 MB) an 11 MB flat `.sog` fails, while a Streamed SOG built with chunks of 1.6 MB or
+less loads, and paints its first level sooner. The chunk URLs carry no cache key, so the versioned
+folder is what invalidates them.
 
 ### Measured
 

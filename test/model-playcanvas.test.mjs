@@ -342,6 +342,35 @@ test('default engine with neither playcanvas nor three resolvable: ready rejects
   }
 });
 
+test("addModel's drag is the three path's TURNTABLE (cumulative, half a turn per tile width, no relax); orbitStyle:'tilt' opts back into the photo mapping", async () => {
+  installDom();
+  const { pc } = makeFakePc();
+  installFetch(glb());
+  const h = addModel(null, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, idleSpin: 0 });
+  await h.ready;
+  const v = h.viewer;
+  assert.equal(v.orbitStyle, 'turntable');
+  v._onDown({ clientX: 100, clientY: 150, pointerId: 1 });
+  v._onMove({ clientX: 200, clientY: 150, pointerId: 1 }); // +25 % of the width
+  v._onMove({ clientX: 300, clientY: 150, pointerId: 1 }); // another +25 %
+  assert.equal(v.getPose({ target: true }).yaw, 90, 'half the width = a quarter turn, NOT capped at 15°');
+  v._onUp({ pointerId: 1 });
+  assert.equal(v.getPose({ target: true }).yaw, 90, 'release keeps it: no relax to centre');
+  v._onDown({ clientX: 300, clientY: 150, pointerId: 2 });
+  v._onMove({ clientX: 400, clientY: 150, pointerId: 2 });
+  assert.equal(v.getPose({ target: true }).yaw, 135, 'a second drag adds to it');
+  v._onUp({ pointerId: 2 });
+  h.remove();
+  const t = addModel(null, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, idleSpin: 0, orbitStyle: 'tilt' });
+  await t.ready;
+  t.viewer._onDown({ clientX: 100, clientY: 150, pointerId: 1 });
+  t.viewer._onMove({ clientX: 300, clientY: 150, pointerId: 1 });
+  assert.equal(t.viewer.getPose({ target: true }).yaw, 15, 'tilt: capped');
+  t.viewer._onUp({ pointerId: 1 });
+  assert.equal(t.viewer.getPose({ target: true }).yaw, 0, 'tilt: relaxes');
+  t.remove();
+});
+
 // ── 3. engine setup + lighting ──────────────────────────────────────────────────────────────
 
 test('engine defaults: MSAA on, Khronos PBR Neutral tone mapping, no sky, neutral-studio envAtlas', async () => {
@@ -425,7 +454,8 @@ test('room radiance: the panels, the lit walls, grey, deterministic, cached', ()
 
 test('KHR_materials_transmission: grab pass on, transmissive draws sorted first, per-eye grab chunk; plain models untouched', async () => {
   installDom();
-  const engineChunk = 'uniform float x;\nvec3 evalRefractionColor(vec3 v, float g, float i) {\n\tvec4 projectionPoint = v4;\n\tvec2 uv = getGrabScreenPos(projectionPoint);\n}';
+  // 2.22-shaped (uScreenSize); test/playcanvas-chunks.test.mjs runs the real 2.22 / 2.23 / 2.24 chunks.
+  const engineChunk = 'uniform float x;\nvec3 evalRefractionColor(vec3 v, float g, float i) {\n\tvec4 projectionPoint = v4;\n\tvec2 uv = getGrabScreenPos(projectionPoint);\n\tfloat refractionLod = log2(uScreenSize.x);\n}';
   const chunks = new Map();
   const glassMat = { useDynamicRefraction: true, getShaderChunks: () => chunks, update() {} };
   let { pc } = makeFakePc({ aabbs: [{ c: [0, 1, 0], h: [0.5, 1, 0.25], material: glassMat }, { c: [0, 0, 0], h: [1, 1, 1], material: { useDynamicRefraction: false } }] });
@@ -646,7 +676,7 @@ test('inline3d-playcanvas-engine.js exports every engine member the two adapters
   const block = helper.slice(helper.indexOf('export {'), helper.indexOf("} from 'playcanvas'"));
   const exported = new Set([...block.replace(/\/\/[^\n]*/g, '').matchAll(/([A-Za-z_$][\w$]*)\s*,/g)].map((m) => m[1]));
   const used = new Set();
-  for (const f of ['inline3d-splat-playcanvas.js', 'inline3d-model-playcanvas.js', 'inline3d-pc-look.js', 'inline3d-splat-effects.js', 'inline3d-splat-live.js']) {
+  for (const f of ['inline3d-splat-playcanvas.js', 'inline3d-model-playcanvas.js', 'inline3d-pc-look.js', 'inline3d-splat-effects.js', 'inline3d-splat-live.js', 'inline3d-cursor-depth-playcanvas.js']) {
     const src = readFileSync(join(JS, f), 'utf8').replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
     for (const m of src.matchAll(/\bpc\.([A-Za-z_$][\w$]*)/g)) used.add(m[1]);
   }
@@ -656,7 +686,7 @@ test('inline3d-playcanvas-engine.js exports every engine member the two adapters
 });
 
 test('the default model path imports neither three nor playcanvas statically (both are dynamic)', () => {
-  for (const f of ['inline3d-model-entry.js', 'inline3d-model-playcanvas.js', 'inline3d-pc-look.js', 'inline3d-splat-playcanvas.js', 'inline3d-splat-shared.js', 'inline3d-splat-rig.js', 'inline3d-splat-effects.js', 'inline3d-splat-live.js', 'inline3d-sog.js', 'inline3d-splat-perf.js', 'inline3d-viewer.js', 'inline3d-three.js']) {
+  for (const f of ['inline3d-model-entry.js', 'inline3d-model-playcanvas.js', 'inline3d-pc-look.js', 'inline3d-splat-playcanvas.js', 'inline3d-splat-shared.js', 'inline3d-splat-rig.js', 'inline3d-splat-effects.js', 'inline3d-splat-live.js', 'inline3d-sog.js', 'inline3d-splat-perf.js', 'inline3d-viewer.js', 'inline3d-three.js', 'inline3d-cursor-depth.js', 'inline3d-cursor-depth-playcanvas.js', 'inline3d-cursor-option.js']) {
     const src = readFileSync(join(JS, f), 'utf8');
     const statics = [...src.matchAll(/^\s*import\s[^;]*?from\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
     for (const s of statics) assert.ok(s.startsWith('./'), `${f} statically imports ${s}`);
@@ -666,3 +696,120 @@ test('the default model path imports neither three nor playcanvas statically (bo
 function near(a, b, eps, what = '') {
   assert.ok(Math.abs(a - b) < eps, `${what} ${a} !~= ${b}`);
 }
+
+// ── look-right helpers (opt-in; absent = byte-identical) ────────────────────────────────────
+
+test('setStereo: queued before load, then a display rig with those RELATIVE factors; none = no rig declared', async () => {
+  installDom();
+  const { pc } = makeFakePc();
+  installFetch(glb());
+  const plain = fakeWall();
+  const h0 = addModel(plain.wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc });
+  await h0.ready;
+  assert.equal(plain.rec.rig, undefined, 'a page that never calls setStereo declares nothing new');
+  assert.equal(h0.rig.ipdFactor, 1);
+  h0.remove();
+
+  const { wall, rec } = fakeWall();
+  const h = addModel(wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, virtualDisplayHeight: 0.3 });
+  assert.equal(h.rig, null, 'null until the backend has loaded');
+  assert.throws(() => h.setStereo({ ipdFactor: 'more' }), /@displayxr\/inline3d\/model: setStereo — ipdFactor/);
+  assert.equal(h.setStereo({ ipdFactor: 0.4 }), h);
+  await h.ready;
+  assert.equal(h.rig.ipdFactor, 0.4);
+  assert.deepEqual({ ...rec.rig }, { type: 'display', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 }, virtualDisplayHeight: 0.3, ipdFactor: 0.4, parallaxFactor: 1, perspectiveFactor: 1 });
+  h.setStereo(null);
+  assert.equal(rec.rig.ipdFactor, 1);
+  assert.equal(rec.rig.virtualDisplayHeight, 0.3, 'the plain rig, the shorthand made explicit');
+  h.remove();
+});
+
+test('clearColor reaches the eye camera; absent = the transparent clear', async () => {
+  installDom();
+  const { pc } = makeFakePc({ aabbs: [{ c: [0, 0, 0], h: [0.2, 0.2, 0.6] }] });
+  installFetch(glb());
+  const a = fakeWall();
+  const base = addModel(a.wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, idleSpin: 0 });
+  await base.ready;
+  assert.deepEqual({ ...base.viewer.eye.camera.clearColor }, { r: 0, g: 0, b: 0, a: 0 }, 'absent: the transparent clear');
+  const b = fakeWall();
+  const opaque = addModel(b.wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, idleSpin: 0, clearColor: '#203040' });
+  await opaque.ready;
+  assert.deepEqual({ ...opaque.viewer.eye.camera.clearColor }, { r: 0x20 / 255, g: 0x30 / 255, b: 0x40 / 255, a: 1 });
+  base.remove();
+  opaque.remove();
+});
+
+// ── depth: 'auto' (opt-in comfort depth) ────────────────────────────────────────────────────
+
+import { comfortDepthFactor } from '../js/inline3d-depth-budget.js';
+import { framedSubjectBounds } from '../js/inline3d-splat-shared.js';
+
+/** fakeWall plus displayMetrics: a small, close panel (H 0.12 m, nominal viewer 0.3 m). */
+function metricsWall() {
+  const { wall, rec } = fakeWall();
+  rec.rigs = [];
+  rec.metricsCalls = 0;
+  const addScene = wall.addScene;
+  wall.addScene = (...a) => {
+    const h = addScene(...a);
+    h.setViewRig = (r) => rec.rigs.push(JSON.parse(JSON.stringify(r)));
+    h.displayMetrics = async () => {
+      rec.metricsCalls++;
+      return { canvasSizeM: [0.16, 0.12], nominalViewerM: 0.3, source: { size: 'display', viewer: 'display', eyeSeparation: 'default' } };
+    };
+    return h;
+  };
+  return { wall, rec };
+}
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+test("depth absent: no rig declared, no metrics read, depthFactor 1 — exactly as before", async () => {
+  installDom();
+  const { pc } = makeFakePc();
+  installFetch(glb());
+  const { wall, rec } = metricsWall();
+  const h = addModel(wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc });
+  assert.equal(h.depthFactor, 1, 'on the synchronous handle');
+  await h.ready;
+  await settle();
+  assert.equal(h.depthFactor, 1);
+  assert.equal(rec.rigs.length, 0, 'no setViewRig call');
+  assert.equal(rec.metricsCalls, 0, 'no async work');
+  assert.equal(rec.opts.virtualDisplayHeight, 0.24, 'the shorthand, as before');
+  h.remove();
+});
+
+test("depth on: the display rig's ipdFactor and parallaxFactor = k (× setStereo's); the framed box, the nominal viewer", async () => {
+  installDom();
+  const { pc } = makeFakePc();
+  installFetch(glb());
+  const { wall, rec } = metricsWall();
+  const h = addModel(wall, makeCanvas(400, 300), 'https://x/a.glb', { playcanvas: pc, depth: { zone: 0.1 } });
+  await h.ready;
+  await settle();
+  const b = framedSubjectBounds(h.viewer);
+  const k = comfortDepthFactor({ frontH: b.front / 0.24, backH: -b.back / 0.24, tileHeightM: 0.12, viewerM: 0.3, zone: 0.1 });
+  assert.ok(k < 1, String(k));
+  near(h.depthFactor, k, 1e-12);
+  const r = rec.rigs.at(-1);
+  assert.equal(r.type, 'display');
+  near(r.ipdFactor, k, 1e-12);
+  near(r.parallaxFactor, k, 1e-12);
+  const n = rec.rigs.length;
+  h.setPose({ zoom: 1.5, yaw: 60 });
+  await settle();
+  assert.equal(rec.rigs.length, n, 'zoom / orbit never re-measure');
+  h.setStereo({ ipdFactor: 0.5 });
+  near(rec.rigs.at(-1).ipdFactor, 0.5 * k, 1e-12);
+  near(rec.rigs.at(-1).parallaxFactor, k, 1e-12);
+  h.remove();
+});
+
+test('depth: an invalid value throws at the call, on either engine', () => {
+  installDom();
+  for (const engine of [undefined, 'three']) {
+    assert.throws(() => addModel(null, makeCanvas(), 'a.glb', { engine, depth: 'max' }), /@displayxr\/inline3d\/model: depth must be 'auto'/);
+    assert.throws(() => addModel(null, makeCanvas(), 'a.glb', { engine, depth: { zone: -1 } }), /depth.zone must be/);
+  }
+});

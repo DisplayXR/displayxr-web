@@ -1,0 +1,316 @@
+// Type definitions for @displayxr/inline3d/depth — depth measurements (also re-exported by the
+// root entry and, minus the warning helpers, by ./three).
+//
+// Measurements and pure helpers only: nothing here changes a pixel, clamps a rig or refuses a
+// value (the opt-in `depth` option of ./model and ./splat is what applies comfortDepthFactor). The units are RELATIVE — disparity as % of the TILE's width, or depth in TILE HEIGHTS on
+// a display rig — so they hold on any panel. Depth ranges measured on a panel are in
+// docs/authoring-inline-3d.md, as reference points.
+
+/** The eye separation every estimate assumes, metres (0.063). No browser surface reports a real one. */
+export const DEPTH_EYE_SEPARATION_M: number;
+/** The viewer distance used when the display reports no nominal viewer, metres (0.6, a desktop panel). */
+export const DEPTH_DEFAULT_VIEWER_M: number;
+
+/** What a depth report measured against. */
+export interface DepthReportBasis {
+  rig: 'display';
+  /** The tile's width / height. */
+  aspect: number;
+  /** Nominal viewer distance used, metres. */
+  viewerM: number;
+  /** The tile's physical height, metres, or null (then the small-depth formula, which ignores it). */
+  heightM: number | null;
+  /** The display rig's ipdFactor in force (disparity scales with it). */
+  ipdFactor: number;
+  eyeSeparationM: number;
+}
+
+/**
+ * How deep a display-rig subject is. `frontH` / `backH` are MAGNITUDES in tile heights (0 when
+ * nothing is on that side); `frontPct` / `backPct` the matching disparity magnitudes, % of the
+ * tile width.
+ */
+export interface DepthReport {
+  frontH: number;
+  backH: number;
+  frontPct: number;
+  backPct: number;
+  basis: DepthReportBasis;
+}
+
+/**
+ * Disparity, % of the tile width, of a point `depthH` tile heights out of the glass on a DISPLAY
+ * rig: physical depth `z = depthH · heightM`, disparity `e · z / (V − z)` (e = 0.063 m × ipdFactor,
+ * V = `viewerM`) over the tile width `aspect · heightM`. Without `heightM` the small-depth limit
+ * `100 · e · depthH / (aspect · V)`. SIGNED: `depthH > 0` (in front) gives a NEGATIVE disparity,
+ * behind a positive one — as {@link cameraRigDisparityPct}. −Infinity at or past the viewer.
+ */
+export function disparityPct(o: {
+  depthH: number;
+  aspect: number;
+  /** Default 0.6. */
+  viewerM?: number;
+  heightM?: number;
+  /** Default 1. */
+  ipdFactor?: number;
+  /** Default 0.063. */
+  eyeSeparationM?: number;
+}): number;
+
+/**
+ * Disparity, % of the tile width, of a point `z` world units down a CAMERA rig's view axis:
+ * `100 · b · (1/D − 1/z) / (2 · tan(verticalFov/2) · aspect)`, `b = 0.063 · ipdFactor ·
+ * metersToVirtual`. `+` = behind the glass, `−` = in front. `convergence` 0 / unset (and no
+ * `convergenceDiopters`) is infinity: everything is in front. NaN on bad input.
+ */
+export function cameraRigDisparityPct(o: {
+  z: number;
+  /** Zero-disparity distance, world units (0 = infinity). */
+  convergence?: number;
+  /** Or the descriptor's 1 / distance; wins over `convergence`. */
+  convergenceDiopters?: number;
+  ipdFactor?: number;
+  metersToVirtual?: number;
+  /** FULL vertical angle, RADIANS. */
+  verticalFov: number;
+  aspect: number;
+}): number;
+
+/**
+ * A {@link DepthReport} from a display-rig subject box: `front` / `back` as
+ * `SceneViewer.getSubjectBounds()` reports them (display space, +z toward the viewer, glass at 0),
+ * in the units where one tile height is `virtualDisplayHeight`.
+ */
+export function depthBudgetFromBounds(o: {
+  front: number;
+  back: number;
+  virtualDisplayHeight: number;
+  aspect: number;
+  viewerM?: number;
+  heightM?: number;
+  ipdFactor?: number;
+}): DepthReport;
+
+/**
+ * A comfort zone (vergence–accommodation): `'shibata'` (Shibata et al. 2011, "The zone of
+ * comfort", J. Vision — the default), `'percival'` (±1/3 D), or a number: a symmetric |ΔD| bound,
+ * diopters (> 0).
+ */
+export type ComfortZoneName = 'shibata' | 'percival' | number;
+
+/**
+ * A comfort zone at one viewing distance: the largest comfortable vergence change in front of the
+ * glass (`frontD`) and behind it (`behindD`), diopters, and the matching on-screen disparities in
+ * mm (`e · V · ΔD`). `behindD` is Infinity when the zone's far limit is past optical infinity.
+ */
+export interface ComfortZoneReport {
+  zone: ComfortZoneName;
+  viewerM: number;
+  frontD: number;
+  behindD: number;
+  frontMm: number;
+  behindMm: number;
+}
+
+/**
+ * The comfort zone for a viewer at `viewerM` (default 0.6 m). Shibata: near vergence limit
+ * `Dv/1.035 + 0.626`, far `Dv/1.129 − 0.442` (Dv = 1/V), so 0.57 D in front / 0.63 D behind at
+ * 0.6 m; Percival: ±1/3 D. NaN fields on bad input (a distance ≤ 0, an unknown zone).
+ */
+export function comfortZone(o?: { viewerM?: number; zone?: ComfortZoneName }): ComfortZoneReport;
+
+/**
+ * How much a DISPLAY rig's depth would have to shrink for a subject to sit inside a comfort zone:
+ * the largest `k ≤ 1` such that its disparities × k (ipdFactor, parallaxFactor moved with it)
+ * stay within {@link comfortZone}. ONLY EVER LOWERS DEPTH: 1 = it already fits, never above 1.
+ *
+ * Exact geometry at real proportions: the nearest point at `V − frontH · tileHeightM` from the
+ * viewer, the farthest at `V + backH · tileHeightM`, each side's `|1/V − 1/z|` against the zone.
+ * Use the NOMINAL viewer distance (what the display is built for), not a live head distance. The
+ * same depth in tile heights asks more of a small, close screen — a tablet at 0.4 m carries more
+ * vergence per tile height than a laptop at 0.6 m — which is why the answer depends on the panel.
+ *
+ * Returns 1 (no change) for missing or invalid input, and when the front reaches the viewer.
+ */
+export function comfortDepthFactor(o: {
+  /** MAGNITUDE, tile heights in front of the glass. */
+  frontH: number;
+  /** MAGNITUDE, tile heights behind it. */
+  backH: number;
+  /** The tile's (canvas's) physical height, metres. */
+  tileHeightM: number;
+  /** NOMINAL viewer distance, metres. Default 0.6. */
+  viewerM?: number;
+  /** Default 'shibata'. */
+  zone?: ComfortZoneName;
+}): number;
+
+/** What {@link backdropPlacement} returns. Tile heights unless named otherwise. */
+export interface BackdropPlacement {
+  /** Behind the glass, tile heights (a magnitude: place the plane at z = −depthH). */
+  depthH: number;
+  /** The same, metres on the physical display. */
+  depthM: number;
+  /** Plane size that overfills the tile from any eye within the head travel. */
+  heightH: number;
+  widthH: number;
+  /** The rear comfort budget, tile heights; Infinity when the zone has no rear bound. */
+  budgetH: number;
+  /** depthH / budgetH: 0.4 by default, above 1 when the subject itself reaches past the budget. */
+  budgetUsed: number;
+  /** The plane's disparity, % of the tile width (positive: behind the glass). */
+  disparityPct: number;
+}
+
+/**
+ * Where to put a BACKDROP (a photo or a scene behind the subject) on a DISPLAY rig: a plane fixed
+ * to the display, not turning with the orbit, behind the subject's farthest point at any turn and
+ * zoom, at a share of the rear comfort budget, and big enough that no eye within `headTravelM` sees
+ * its edge. A backdrop drawn ON the glass (a CSS image behind a transparent canvas) has zero
+ * disparity and conflicts with any part of the subject behind the glass; see
+ * docs/making-3d-look-right.md rule 10. A measurement, never a limit: a subject past the budget
+ * gets a plane past it too, and `budgetUsed > 1` says so.
+ *
+ * Depth = `max(fraction · budget, backH + margin · budget)`. NaN fields on bad input.
+ */
+export function backdropPlacement(o: {
+  /** MAGNITUDE, tile heights the subject reaches behind the glass at ANY turn and the largest zoom allowed. */
+  backH: number;
+  /** The tile's (canvas's) physical height, metres (`displayMetrics()`). */
+  tileHeightM: number;
+  /** The tile's width / height. Default 16/9. */
+  aspect?: number;
+  /** NOMINAL viewer distance, metres. Default 0.6. */
+  viewerM?: number;
+  /** Default 'shibata'. */
+  zone?: ComfortZoneName;
+  /** Share of the rear budget to sit at, at least. Default 0.4. */
+  fraction?: number;
+  /** Share of the rear budget kept between the subject and the plane. Default 0.05. */
+  margin?: number;
+  /** Sideways head motion the plane overfills for, metres. Default 0.2. */
+  headTravelM?: number;
+}): BackdropPlacement;
+
+/**
+ * The CAMERA-rig counterpart: the multiplier on the eye separation (ipdFactor) that puts the
+ * scene's nearest (`zNear`) and farthest (`zFar`, may be Infinity) points at the edge of the
+ * comfort zone. Measurement only; the page decides whether to apply it. Unlike the display-rig
+ * factor it can EXCEED 1, because a camera rig's 1 (63 mm × metersToVirtual in scene units) is
+ * only physical in metre-scale worlds — in large scene units it renders nearly flat.
+ * The camera-rig depth rule sets `ipdFactor` to 0.8–1× of this for a bounded scene (docs/authoring-inline-3d.md § Aim for real depth).
+ *
+ * Disparity `f = b · (1/D − 1/z) / (2 · tan(verticalFov/2) · aspect)` of the tile width
+ * (b = 0.063 · ipdFactor · metersToVirtual), on the glass `p = f · aspect · tileHeightM`, in
+ * diopters `p / (0.063 · viewerM)`; the result is the smallest zone side / |ΔD| over the sides
+ * with content. Convergence 0 / unset = infinity (everything in front). Infinity when nothing is
+ * off the plane, NaN on bad input.
+ */
+export function cameraRigComfortFactor(o: {
+  zNear: number;
+  zFar: number;
+  /** Zero-disparity distance, world units (0 = infinity). */
+  convergence?: number;
+  /** Or 1 / distance; wins over `convergence`. */
+  convergenceDiopters?: number;
+  /** FULL vertical angle, RADIANS. */
+  verticalFov: number;
+  aspect: number;
+  tileHeightM: number;
+  /** Default 0.6. */
+  viewerM?: number;
+  /** Default 'shibata'. */
+  zone?: ComfortZoneName;
+  /** Default 1. */
+  ipdFactor?: number;
+  /** Default 1. */
+  metersToVirtual?: number;
+}): number;
+
+/** What {@link groundPlaneRig} reports. Disparities are on-glass, mm, signed (< 0 = in front). */
+export interface GroundPlaneRigReport {
+  /** Inverse-depth ratio of the flat ground at the bottom edge to the view centre: `1 + tan(tilt)·tan(fov/2)`. */
+  nearEdgeInvDepthRatio: number;
+  /** The same at the top edge: `1 − tan(tilt)·tan(fov/2)`; ≤ 0 when the horizon is in view. */
+  farEdgeInvDepthRatio: number;
+  horizonInView: boolean;
+  groundNearMm: number;
+  groundFarMm: number;
+  /** The top of an `objectHeight`-tall object at the near edge. */
+  objectNearMm: number;
+  /** Perceived distance in front of the glass of that object's top, mm. */
+  popOutMmNearEdge: number;
+  /** Perceived distance behind the glass of the ground at the top edge, mm (Infinity: divergent / horizon). */
+  recessionMmFarEdge: number;
+  /** The pop-out budget used, as on-glass crossed disparity, mm. */
+  budgetMm: number;
+  budgetSource: 'maxPopOutMm' | 'zone';
+  /** {@link cameraRigComfortFactor} for this rig and scene (> 1 = room to spare). NaN without `tileHeightM`. */
+  comfortFactor: number;
+  /** The runtime's comfort product `ipdFactor × metersToVirtual × convergenceDiopters × viewerM` (keep ≤ 1). */
+  comfortProduct: number;
+}
+
+/** A suggested ground-plane camera rig and its report. Nothing is applied. */
+export interface GroundPlaneRig {
+  /** Suggested convergence: the ground at the view centre, `height / cos(tilt)`, world units. */
+  convergence: number;
+  convergenceDiopters: number;
+  /** The FULL vertical FOV used, radians. */
+  verticalFov: number;
+  /** Lowest camera height (same tilt) keeping the near-edge object within the budget; null without `tileHeightM`. */
+  minHeight: number | null;
+  /** The ipdFactor that puts the near-edge object exactly at the budget at THIS height; null when nothing pops out. */
+  ipdFactorForBudget: number | null;
+  report: GroundPlaneRigReport;
+  basis: {
+    tiltDeg: number;
+    viewerM: number;
+    tileHeightM: number | null;
+    ipdFactor: number;
+    metersToVirtual: number;
+    objectHeight: number;
+    eyeSeparationM: number;
+    zone: ComfortZoneName;
+  };
+}
+
+/**
+ * A SUGGESTED camera rig for a tilted top-down view of a ground plane (a map, a strategy game, a
+ * board), plus what it does on this panel. Guideline only: it never applies or clamps anything.
+ *
+ * Convergence on the ground at the view centre (`height / cos(tilt)`, tilt from straight down);
+ * the flat ground's inverse depth at the bottom / top edges is `(1 ± tan(tilt)·tan(fov/2)) / d`.
+ * On-glass disparity is `0.063 · ipdFactor · metersToVirtual · (1/D − 1/z) · tileHeightM /
+ * (2·tan(fov/2))`, so it scales with the canvas's PHYSICAL height — pass `tileHeightM`
+ * (`handle.displayMetrics().canvasSizeM[1]`). `minHeight` is the zoom-in limit for an
+ * `objectHeight`-tall object at the near edge against `maxPopOutMm` (perceived) or the comfort
+ * zone's front side. Returns null on invalid input.
+ */
+export function groundPlaneRig(o: {
+  /** Camera height above the ground, world units. */
+  height: number;
+  /** View axis from straight down, degrees, [0, 90). */
+  tiltDeg: number;
+  /** FULL vertical FOV, DEGREES (three's camera.fov); or pass `verticalFov` in radians. */
+  fovDeg?: number;
+  verticalFov?: number;
+  /** The canvas's physical height, metres. */
+  tileHeightM?: number;
+  /** Default 0.6. */
+  viewerM?: number;
+  /** Default 0. World units. */
+  objectHeight?: number;
+  /** Default 1 (absolute, camera rig). */
+  ipdFactor?: number;
+  /** Default 1. */
+  metersToVirtual?: number;
+  /** Pop-out budget, perceived mm in front of the glass; default: the comfort zone's front side. */
+  maxPopOutMm?: number;
+  /** Default 'shibata'. */
+  zone?: ComfortZoneName;
+}): GroundPlaneRig | null;
+
+/** The hint `[inline3d]` logs for a `withheldReason` token (docs/woven-canvas-rules.md §3). */
+export function withheldReasonHint(reason: string): string;
+

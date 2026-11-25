@@ -40,8 +40,13 @@ export {
   Vec4,
   Quat,
   LAYERID_SKYBOX,
+  LAYERID_WORLD,
   LAYERID_UI,
-  // materials / meshes (the edge feather)
+  LAYERID_IMMEDIATE,
+  // cursor: 'depth' (./inline3d-cursor-depth-playcanvas.js, loaded only on opt-in)
+  Picker,
+  // materials / meshes (the edge feather; Material: the program release, ./inline3d-pc-auto-release.js)
+  Material,
   Mesh,
   MeshInstance,
   ShaderMaterial,
@@ -54,11 +59,15 @@ export {
   CULLFACE_NONE,
   SEMANTIC_POSITION,
   SEMANTIC_TEXCOORD0,
+  SEMANTIC_COLOR,
   ShaderChunks,
   SHADERLANGUAGE_GLSL,
+  SHADERLANGUAGE_WGSL,
+  SHADER_FORWARD,
   CHUNKAPI_2_8,
   // setSource's frame snapshot
   RenderTarget,
+  FILTER_LINEAR,
   FILTER_NEAREST,
   // setSource's live outgoing asset (./inline3d-splat-live.js)
   Layer,

@@ -174,6 +174,26 @@ test('footprint patch declines (ok:false, source untouched) when the anchor move
   assert.equal(r.src, moved);
 });
 
+test('footprint patch: the engine\'s own per-axis focal (PlayCanvas ≥ 2.23) is fixed already — ok, native, untouched', () => {
+  const corner223 = [
+    '#else',
+    '\t\tvec2 focal = viewport_size.xy * vec2(center.projMat00, center.projMat11);',
+    '\t\tvec3 vp = camera_params.w == 1.0 ? vec3(0.0, 0.0, 1.0) : v;',
+    '\t\tvec2 J1 = focal / vp.z;',
+    '\t\tvec2 J2 = -J1 / vp.z * vp.xy;',
+    '\t\tmat3 J = mat3(',
+    '\t\t\tJ1.x, 0.0, J2.x,',
+    '\t\t\t0.0, J1.y, J2.y,',
+    '\t\t\t0.0, 0.0, 0.0',
+    '\t\t);',
+    '#endif',
+  ].join('\n');
+  const r = patchGsplatFootprint(corner223);
+  assert.equal(r.ok, true);
+  assert.equal(r.native, true);
+  assert.equal(r.src, corner223);
+});
+
 test('quad-extent patch caps clipCorner at k, scaling offset AND uv together', () => {
   const r = patchPlayCanvasQuadExtent(COMMON_2_22_3, Math.sqrt(6) / Math.sqrt(8));
   assert.equal(r.ok, true);
@@ -244,6 +264,8 @@ const POSES = [
   { yaw: 0, pitch: 0, scale: 1, focus: [0, 0, 0], orbitCentre: [0, 0, 0], depthOffset: 0 },
   { yaw: 37, pitch: -22, scale: 0.013, focus: [2.4, 18.2, -35.4], orbitCentre: [0, 0, 0], depthOffset: 0.02 },
   { yaw: -120, pitch: 50, scale: 3.5, focus: [0.1, -0.2, 1.7], orbitCentre: [0.1, -0.2, 1.7], depthOffset: -0.05 },
+  // The two-hand twist: roll about the view axis, outside yaw and pitch.
+  { yaw: 25, pitch: -10, roll: 40, scale: 0.8, focus: [0.3, 0.1, -0.6], orbitCentre: [0, 0, 0], depthOffset: 0.01 },
 ];
 
 test('pivotInverseTRS is exactly the inverse of pivotMatrix', () => {
@@ -701,7 +723,9 @@ test('onFocusChange assigned on the stub BEFORE the adapter loads is the one tha
 
 test('./splat stub carries an onFocusChange slot; the adapter never writes out.ready (source check)', async () => {
   const fs = await import('node:fs');
-  const splat = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const splat = (fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8') +
+    // the engine:'playcanvas' handle lives in its own module since ./splat/playcanvas
+    fs.readFileSync(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8'));
   const stub = splat.slice(splat.indexOf('function addSplatDeferred'));
   assert.match(stub, /onFocusChange: null,/);
   assert.equal((stub.match(/out\.ready =/g) || []).length, 1, 'one owner of ready');
@@ -1182,7 +1206,9 @@ test('setSource options: transitions validated before anything loads', async () 
 
 test('Spark refuses every effect entry point by name (source check: ./splat imports three)', async () => {
   const fs = await import('node:fs');
-  const src = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const src = (fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8') +
+    // the engine:'playcanvas' handle lives in its own module since ./splat/playcanvas
+    fs.readFileSync(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8'));
   const spark = src.slice(src.indexOf("if (resolveSplatEngine(opts) === 'playcanvas')"));
   assert.match(spark, /if \(opts\.reveal !== undefined && opts\.reveal !== false\) throw effectsNotOnSpark\('reveal'\);/);
   for (const m of ['playEffect', 'setEffect', 'stopEffect']) assert.match(spark, new RegExp(`${m}\\(\\) \\{\\n\\s+throw effectsNotOnSpark\\('${m}\\(\\)'\\);`));
@@ -1627,7 +1653,9 @@ test("the PlayCanvas viewer's mono camera honours captureFit, and re-declares th
 
 test('addSplat validates captureFit at call time (source check — ./splat imports three)', async () => {
   const fs = await import('node:fs');
-  const src = fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const src = (fs.readFileSync(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8') +
+    // the engine:'playcanvas' handle lives in its own module since ./splat/playcanvas
+    fs.readFileSync(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8'));
   assert.match(src, /CAPTURE_FITS\.includes\(opts\.captureFit\)/);
 });
 
@@ -2669,7 +2697,7 @@ test("setRig('display'): frames the meshes under root on addModel's defaults, de
   near(v._fitScale, fitScale({ extent: [0.2, 0.4, 0.1], fit: 'contain', margin: 0.8, vH: 0.24, aspect: 320 / 180, fitSweep: true, depthLimit: 4 }), 1e-12, 'addModel fit');
   assert.deepEqual(v.getFocus(), { x: 0.5, y: 1, z: -2 });
   assert.equal(v._focusRecentres, true, 'orbits the frame centre');
-  assert.deepEqual(v.getPose(), { yaw: 0, pitch: 0, zoom: 1, depthOffset: 0 }, 'rest');
+  assert.deepEqual(v.getPose(), { yaw: 0, pitch: 0, zoom: 1, roll: 0, depthOffset: 0 }, 'rest');
   assert.equal(v.idleSpin, 8, "addModel's idle spin");
   assert.deepEqual(pushed.at(-1), {
     type: 'display', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 },
@@ -2789,7 +2817,8 @@ test("setRig('display'): a transmissive mesh under root gets the grab pass, tran
   installDom();
   const { pc, rec } = makeFakePc();
   rec.resource = camFlat();
-  const engineChunk = 'vec3 evalRefractionColor(vec3 v) {\n\tvec2 uv = getGrabScreenPos(projectionPoint);\n}';
+  // 2.23+-shaped (screen_size in the view block); the real chunks: test/playcanvas-chunks.test.mjs.
+  const engineChunk = 'vec3 evalRefractionColor(vec3 v) {\n\tvec2 uv = getGrabScreenPos(projectionPoint);\n\tfloat refractionLod = log2(screen_size.x);\n}';
   pc.ShaderChunks = { get: () => ({ get: (k) => (k === 'refractionDynamicPS' ? engineChunk : ''), set() {} }) };
   pc.SHADERLANGUAGE_GLSL = pc.SHADERLANGUAGE_GLSL || 'glsl';
   const out = {};
@@ -2818,6 +2847,235 @@ test("setRig('display'): a transmissive mesh under root gets the grab pass, tran
   out.remove();
 });
 
+
+// ── handle.setStereo: live stereo strength, no cut ───────────────────────────────────────────
+
+test('setStereo re-declares the camera rig with new scalars and NO cut; null keys go back to the asset; sticky across setSource', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.queue = [camFlat(), camFlat()];
+  const { wall, pushed } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  out.setPose({ yaw: 10, zoom: 1.3 });
+  const poseBefore = out.viewer.getPose();
+  const declBefore = pushed.at(-1);
+  assert.equal(declBefore.type, 'camera');
+  assert.deepEqual(out.rig.stereoDefault, { ipdFactor: 1, parallaxFactor: 1 });
+  const n = pushed.length;
+  assert.equal(out.setStereo({ ipdFactor: 0.4 }), out);
+  assert.equal(pushed.length, n + 1, 'declared at once');
+  const d = pushed.at(-1);
+  assert.equal(d.type, 'camera');
+  assert.equal(d.ipdFactor, 0.4);
+  assert.equal(d.parallaxFactor, 1, 'an absent key keeps its value');
+  assert.deepEqual({ ...d, ipdFactor: declBefore.ipdFactor }, declBefore, 'only the scalar changed');
+  assert.deepEqual(out.viewer.getPose(), poseBefore, 'no cut: the pose stays');
+  assert.equal(out.rig.ipdFactor, 0.4);
+  out.setStereo({ parallaxFactor: 0.5 });
+  assert.equal(pushed.at(-1).ipdFactor, 0.4, 'keys merge');
+  assert.equal(pushed.at(-1).parallaxFactor, 0.5);
+  await out.setSource('b.sog');
+  assert.equal(out.rig.ipdFactor, 0.4, 'sticky across setSource');
+  assert.equal(pushed.at(-1).ipdFactor, 0.4, "the incoming asset's rig carries it");
+  out.setStereo({ ipdFactor: null });
+  assert.equal(pushed.at(-1).ipdFactor, 1, "null key = the asset's own");
+  assert.equal(pushed.at(-1).parallaxFactor, 0.5);
+  out.setStereo(null);
+  assert.deepEqual(pushed.at(-1), declBefore, 'cleared: the load-time descriptor');
+  out.remove();
+});
+
+test('setStereo before the first load applies to it; on a display rig it replaces the declared factors; setRig keeps it', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const { wall, pushed } = rigWall();
+  const out = {};
+  const p = attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  out.setStereo({ ipdFactor: 0.7 }); // before the asset has loaded
+  await p;
+  assert.equal(pushed.at(-1).ipdFactor, 0.7);
+  addMesh(pc, out, [0, 0, 0], [0.1, 0.1, 0.1]);
+  await out.setRig('display', { environment: 'none' });
+  assert.equal(pushed.at(-1).type, 'display');
+  assert.equal(pushed.at(-1).ipdFactor, 0.7, 'the display rig carries it');
+  const n = pushed.length;
+  out.setStereo({ ipdFactor: 0.7 });
+  assert.equal(pushed.length, n, 'the same display rig is not re-sent');
+  out.setStereo({ parallaxFactor: 0.2 });
+  assert.equal(pushed.at(-1).type, 'display');
+  assert.equal(pushed.at(-1).parallaxFactor, 0.2);
+  assert.equal(pushed.at(-1).virtualDisplayHeight, 0.24, 'same display rig otherwise');
+  await out.setRig('camera');
+  assert.equal(pushed.at(-1).type, 'camera');
+  assert.equal(pushed.at(-1).ipdFactor, 0.7);
+  assert.equal(pushed.at(-1).parallaxFactor, 0.2);
+  out.remove();
+});
+
+test('setStereo ipdScale/parallaxScale are RELATIVE to each asset’s own and re-apply across setSource; exclusive with the absolute keys', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  const withDxr = (ipd) => {
+    const r = fakeFlat(600, 0);
+    r.gsplatData.meta = { camera: { ...CAM_BLOCK, dxr: { ipd_factor: ipd, parallax_factor: 1 } } };
+    return r;
+  };
+  rec.queue = [withDxr(0.8), withDxr(0.5)];
+  const { wall, pushed } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  assert.equal(out.rig.stereoDefault.ipdFactor, 0.8);
+  out.setStereo({ ipdScale: 0.5 });
+  near(pushed.at(-1).ipdFactor, 0.4, 1e-12, 'asset 1 × 0.5');
+  await out.setSource('b.sog');
+  near(pushed.at(-1).ipdFactor, 0.25, 1e-12, 'asset 2 × 0.5 — no page-side re-read');
+  out.setStereo({ ipdFactor: 0.3 });
+  assert.equal(pushed.at(-1).ipdFactor, 0.3, 'absolute replaces the scale');
+  out.setStereo({ ipdScale: 2 });
+  assert.equal(pushed.at(-1).ipdFactor, 1, 'and back: the scale replaces the absolute');
+  assert.throws(() => out.setStereo({ ipdFactor: 1, ipdScale: 1 }), /exclusive/);
+  out.setStereo({ ipdScale: null });
+  assert.equal(pushed.at(-1).ipdFactor, 0.5);
+  out.remove();
+});
+
+test('splat handle displayMetrics() resolves from the tile’s getDisplayInfo, defaults without one', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const info = { displayWidthMeters: 0.6, displayHeightMeters: 0.3375, displayPixelWidth: 3840, displayPixelHeight: 2160, nominalViewerPosition: { z: 0.8 } };
+  const wall = { supported: true, addScene: () => ({ exclude() {}, unexclude() {}, remove() {}, setViewRig() {}, getDisplayInfo: async () => info }) };
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  const m = await out.displayMetrics();
+  assert.equal(m.nominalViewerM, 0.8);
+  assert.equal(m.source.size, 'display');
+  near(m.canvasSizeM[0], 320 * (0.6 / 3840) * (globalThis.devicePixelRatio || 1), 1e-12, 'w');
+  out.remove();
+  const bare = {};
+  await attachPlayCanvasSplat(bare, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  assert.equal((await bare.displayMetrics()).source.size, 'default');
+  bare.remove();
+});
+
+test('the deferred PlayCanvas handle carries every method the adapter adds (a call right after addSplat must not be "not a function")', async () => {
+  const fs = await import('node:fs');
+  const stub = fs.readFileSync(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8');
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  // adapter-only by design: engine accessors and calls that need a loaded engine are listed here
+  const adapterOnly = new Set(['setRenderScale', 'layerRigs', 'getLayerRig', 'debugCapture', 'diag', 'setPerf']);
+  const missing = Object.keys(out).filter((k) => typeof out[k] === 'function' && !k.startsWith('_') && !adapterOnly.has(k) && !new RegExp(`\\b${k}\\s*[:(]`).test(stub));
+  assert.deepEqual(missing.filter((k) => ['setStereo', 'setDepthEnvelope', 'displayMetrics'].includes(k)), [], 'the new ones');
+  out.remove();
+});
+
+// ── handle.setDepthEnvelope: the frame envelope, tile-wide and live ─────────────────────────────
+
+const ENV = (rec, k) => rec.tileParams.get(`dxrFx_envelope_${k}`);
+const ENV_OPTS = { maxFrontM: 0.02, edgeM: 0.001, bandM: 0.016, canvasSizeM: [0.32, 0.18], viewerM: 0.6 };
+
+test('setDepthEnvelope: a hidden tile-scope effect fed from the DECLARED camera rig; setStereo moves it; off on a display rig; null removes it', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const { wall, pushed } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  assert.equal(out.setDepthEnvelope(ENV_OPTS), out);
+  assert.deepEqual(out.effects(), [], "the SDK's, not a page effect");
+  assert.match([...rec.tileChunks.values()].join('\n'), /dxrFx_envelope_center/, 'in the tile chunk');
+  out.viewer._tick();
+  const rig = pushed.at(-1);
+  assert.equal(rig.type, 'camera');
+  assert.equal(ENV(rec, 'on'), 1);
+  const fr = out.viewer.monoFrame();
+  const tanY = Math.tan(rig.verticalFov / 2);
+  const K = ENV(rec, 'K');
+  near(K[0], rig.convergenceDiopters / fr.scale, 1e-12, '1/D in world units');
+  near(K[1], fr.scale * rig.ipdFactor * rig.metersToVirtual * (0.18 / (2 * tanY)), 1e-12, 'k·f_p');
+  assert.deepEqual([K[2], K[3]], [0.6, 0.02]);
+  const T = ENV(rec, 'T');
+  near(T[0], tanY * (320 / 180), 1e-12);
+  assert.deepEqual([T[2], T[3]], [0.16, 0.09]);
+  assert.deepEqual(ENV(rec, 'O'), fr.origin);
+  out.setStereo({ ipdFactor: 0.5 });
+  out.viewer._tick();
+  near(ENV(rec, 'K')[1], K[1] / 2, 1e-12, 'half the eye baseline: half the disparity per depth');
+  addMesh(pc, out, [0, 0, 0], [0.1, 0.1, 0.1]);
+  await out.setRig('display', { environment: 'none' });
+  out.viewer._tick();
+  assert.equal(ENV(rec, 'on'), 0, 'a display rig is a portal: inert');
+  await out.setRig('camera');
+  out.viewer._tick();
+  assert.equal(ENV(rec, 'on'), 1);
+  out.stopEffect();
+  out.viewer._tick();
+  assert.equal(ENV(rec, 'on'), 1, 'stopEffect() leaves it');
+  out.setDepthEnvelope(null);
+  assert.doesNotMatch([...rec.tileChunks.values()].join('\n'), /dxrFx_envelope_/, 'gone from the chunk');
+  out.remove();
+});
+
+test('setDepthEnvelope before the first asset installs with it; a key given replaces; rects land canvas-normalised, y up', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.queue = [camFlat(), camFlat()];
+  const { wall } = rigWall();
+  const out = {};
+  const p = attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  out.setDepthEnvelope({ ...ENV_OPTS, rects: [{ x: 0.75, y: 0, w: 0.25, h: 0.1, weight: 0.5 }] });
+  await p;
+  out.viewer._tick();
+  assert.equal(ENV(rec, 'on'), 1);
+  assert.deepEqual(ENV(rec, 'F0'), [0.5, 1, 0.8, 1]);
+  assert.deepEqual(ENV(rec, 'W0'), [0.5, 0, 0, 0]);
+  assert.deepEqual(ENV(rec, 'F1'), [1, -1, 1, -1], 'an unused slot is empty');
+  out.setDepthEnvelope({ maxFrontM: 0.01 });
+  out.viewer._tick();
+  assert.equal(ENV(rec, 'K')[3], 0.01);
+  assert.deepEqual(ENV(rec, 'F0'), [0.5, 1, 0.8, 1], 'rects kept');
+  await out.setSource('b.sog');
+  out.viewer._tick();
+  assert.equal(ENV(rec, 'on'), 1, 'the incoming asset is under it from its first frame');
+  out.remove();
+});
+
+test("setDepthEnvelope reads the panel from the tile's getDisplayInfo (metres per CSS px, nominal viewer)", async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const info = { displayWidthMeters: 0.6, displayHeightMeters: 0.3375, displayPixelWidth: 3840, displayPixelHeight: 2160, nominalViewerPosition: { z: 0.8 } };
+  const wall = { supported: true, addScene: () => ({ exclude() {}, unexclude() {}, remove() {}, setViewRig() {}, getDisplayInfo: async () => info }) };
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  out.setDepthEnvelope({});
+  await new Promise((r) => setTimeout(r, 0));
+  out.viewer._tick();
+  const mpp = (0.6 / 3840) * (globalThis.devicePixelRatio || 1);
+  near(ENV(rec, 'T')[2], (320 * mpp) / 2, 1e-12);
+  assert.equal(ENV(rec, 'K')[2], 0.8);
+  out.remove();
+});
+
+test('setStereo throws at the call on a bad value or an unknown key', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const out = {};
+  await attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  assert.throws(() => out.setStereo({ ipdFactor: -1 }), RangeError);
+  assert.throws(() => out.setStereo({ ipdFactor: NaN }), RangeError);
+  assert.throws(() => out.setStereo({ ipd: 1 }), /unknown option/);
+  assert.throws(() => out.setStereo(3), TypeError);
+  out.remove();
+});
+
 test("setRig throws at the call: controls:'page', an unknown type, a bad option", async () => {
   assert.throws(() => validateSetRig('display', {}, true), /controls:'page'/);
   assert.throws(() => validateSetRig('photo'), /expected 'display', 'camera' or 'auto'/);
@@ -2843,7 +3101,9 @@ test("setRig throws at the call: controls:'page', an unknown type, a bad option"
 });
 
 test('./splat: setRig on the deferred stub queues until ready; Spark refuses it (source check)', async () => {
-  const src = await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const src = ((await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8')) +
+    // the engine:'playcanvas' handle lives in its own module since ./splat/playcanvas
+    (await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8')));
   assert.match(src, /setRig: page\s*\?\s*pageOnly\('setRig'\)/);
   assert.match(src, /setRig\(\) is implemented on the PlayCanvas backend only/);
 });
@@ -2884,7 +3144,7 @@ function fakeVideo({ w = 3840, h = 1080, ready = 4, rvfc = true } = {}) {
     emit(t) { for (const f of [...(ls.get(t) || [])]) f(); },
     play() { this.paused = false; this.plays++; return Promise.resolve(); },
     pause() { this.paused = true; },
-    load() { this.loads++; },
+    load() { this.loads++; if (!this.src) { this.videoWidth = 0; this.videoHeight = 0; this.readyState = 0; } }, // as a real <video>: load() with no src drops to HAVE_NOTHING
     removeAttribute(k) { if (k === 'src') this.src = ''; },
   };
   if (rvfc) {
@@ -2905,7 +3165,8 @@ async function videoRig({ camera = true, stereo = false, opts = {} } = {}) {
   const textures = [];
   pc.Texture = class {
     constructor(d, o) { this.o = o; this.width = o.width; this.height = o.height; this.uploads = 0; textures.push(this); }
-    setSource(s) { this.src = s; this.uploads++; }
+    // As PlayCanvas 2.22.3: the upload takes the size from `video.width || videoWidth` (the HTML attribute first).
+    setSource(s) { this.src = s; this.uploads++; if (s) { this.width = s.width || s.videoWidth || this.width; this.height = s.height || s.videoHeight || this.height; } }
     upload() { this.uploads++; }
     destroy() { this.destroyed = true; }
   };
@@ -2913,7 +3174,7 @@ async function videoRig({ camera = true, stereo = false, opts = {} } = {}) {
     setView(p, v) { this.proj = Float64Array.from(p); this.pose = Float64Array.from(v); }
     setViewport(...a) { this.vp = a; }
   };
-  Object.assign(pc, { LAYERID_WORLD: 0, FILTER_LINEAR: 1, ADDRESS_CLAMP_TO_EDGE: 1, PIXELFORMAT_RGBA8: 7 });
+  Object.assign(pc, { LAYERID_WORLD: 0, FILTER_LINEAR: 1, ADDRESS_CLAMP_TO_EDGE: 1, PIXELFORMAT_RGBA8: 7, BLENDMODE_ONE: 'ONE', BLENDMODE_ONE_MINUS_SRC_ALPHA: 'ONE_MINUS_SRC_ALPHA' });
   pc.GraphNode = class { constructor(name) { this.name = name; } setLocalScale(x, y, z) { this.scale = [x, y, z]; } };
   pc.Entity.prototype.removeChild = function (c) { this.children = this.children.filter((x) => x !== c); c.parent = null; };
   const removedMI = [];
@@ -3089,6 +3350,513 @@ test('setVideo upload gating: a new frame (rVFC) uploads once; no new frame, no 
   out.remove();
 });
 
+test('setVideo transition options: cut by default; crossfade 600 ms easeInOutSine; splat-only names, outgoing:live, bad duration and easing throw', async () => {
+  const { validateSetVideo, resolveVideoTransition } = await import('../js/inline3d-splat-video.js');
+  const el = fakeVideo();
+  assert.deepEqual(validateSetVideo(el).transition, { type: 'cut', durationMs: 600, easing: 'easeInOutSine' });
+  assert.deepEqual(resolveVideoTransition({ transition: 'crossfade', durationMs: 250, easing: 'linear' }), { type: 'crossfade', durationMs: 250, easing: 'linear' });
+  const f = (x) => x;
+  assert.equal(resolveVideoTransition({ transition: 'crossfade', easing: f }).easing, f);
+  assert.throws(() => resolveVideoTransition({ transition: 'flip' }), /transition 'flip'.*a video frame has none/);
+  assert.throws(() => resolveVideoTransition({ transition: { type: 'sequence' } }), /transition 'sequence'/);
+  assert.throws(() => resolveVideoTransition({ outgoing: 'live' }), /outgoing 'live'/);
+  assert.throws(() => resolveVideoTransition({ durationMs: -1 }), /durationMs must be/);
+  assert.throws(() => resolveVideoTransition({ easing: 'bounce' }), /unknown easing 'bounce'/);
+});
+
+test('setVideo crossfade: video -> video fades a FROZEN ghost over the incoming quad, then drops it; from the splat it is a cut', async () => {
+  const realPerf = globalThis.performance;
+  let t = 1000;
+  Object.defineProperty(globalThis, 'performance', { value: { now: () => t }, configurable: true, writable: true });
+  try {
+    const { out, rec, textures, removedMI, frame } = await videoRig();
+    const planes = () => rec.meshInstances.filter((mi) => mi.material?.desc?.uniqueName === 'inline3dVideoPlane' && !removedMI.includes(mi));
+    const a = fakeVideo();
+    const ha = await out.setVideo(a, { transition: 'crossfade' });
+    assert.equal(ha.transition, 'cut', 'entering from the splat is a cut');
+    frame();
+    assert.equal(planes().length, 1);
+    const texA = textures.at(-1);
+    const b = fakeVideo({ w: 1920, h: 540 });
+    const hb = await out.setVideo(b, { transition: 'crossfade', durationMs: 400, easing: 'linear' });
+    assert.equal(hb.transition, 'crossfade');
+    const [ghost, cur] = planes();
+    assert.equal(planes().length, 2, 'the ghost and the incoming quad');
+    assert.equal(ghost.material.params.get('dxrVid'), texA, 'the ghost keeps the outgoing texture');
+    assert.ok(ghost.material.blendState, 'the ghost blends');
+    assert.equal(ghost.material.blendState.args[5], 'ONE', 'alpha channel: ONE, so the buffer stays opaque under the incoming quad');
+    assert.equal(ghost.material.depthTest, false);
+    assert.equal(cur.material.blendState, undefined, 'the incoming quad is opaque');
+    assert.equal(cur.material.params.get('dxrVidAlpha'), 1);
+    assert.equal(a.pendingRvfc(), 0, 'the outgoing element is unwatched');
+    const ua = texA.uploads;
+    frame(); // the fade's clock starts here
+    assert.equal(ghost.material.params.get('dxrVidAlpha'), 1);
+    t += 100;
+    a.present();
+    frame();
+    assert.equal(ghost.material.params.get('dxrVidAlpha'), 0.75, 'linear: 1 - 100/400');
+    assert.equal(texA.uploads, ua, 'the ghost is frozen: never uploaded again');
+    t += 300;
+    frame();
+    assert.equal(planes().length, 1, 'gone at the end of the fade');
+    assert.ok(removedMI.includes(ghost));
+    assert.equal(texA.destroyed, true);
+    // A cut (the default) between two videos: no ghost.
+    await out.setVideo(fakeVideo());
+    assert.equal(planes().length, 1);
+    await out.setVideo(null);
+    assert.equal(planes().length, 0);
+    out.remove();
+  } finally {
+    Object.defineProperty(globalThis, 'performance', { value: realPerf, configurable: true, writable: true });
+  }
+});
+
+test('setVideo crossfade: a swap during a fade drops the old ghost and fades from the video on screen; setVideo(null) mid-fade drops everything', async () => {
+  const { out, rec, removedMI, frame } = await videoRig();
+  const planes = () => rec.meshInstances.filter((mi) => mi.material?.desc?.uniqueName === 'inline3dVideoPlane' && !removedMI.includes(mi));
+  await out.setVideo(fakeVideo(), {});
+  frame();
+  await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 10000 });
+  frame();
+  const [g1] = planes();
+  await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 10000 });
+  assert.equal(planes().length, 2, 'one ghost at a time');
+  assert.ok(removedMI.includes(g1), 'the first ghost is dropped');
+  await out.setVideo(null);
+  assert.equal(planes().length, 0);
+  out.remove();
+});
+
+test('setVideo band (A5.2): parse, the slot, contain = a smaller quad, cover = the band with a centred texture crop', async () => {
+  const { validateSetVideo, parseBandAspect, videoBandSlot, videoPlaneSize, videoCrop, cropRegion } = await import('../js/inline3d-splat-video.js');
+  const el = fakeVideo();
+  assert.equal(validateSetVideo(el).band, null);
+  near(validateSetVideo(el, { band: '2.39:1' }).band, 2.39, 1e-12);
+  assert.equal(validateSetVideo(el, { band: 2 }).band, 2);
+  near(parseBandAspect('21/9'), 21 / 9, 1e-12);
+  assert.equal(parseBandAspect('wide'), null);
+  assert.throws(() => validateSetVideo(el, { band: 0 }), /bad band/);
+  assert.throws(() => validateSetVideo(el, { band: 'wide' }), /bad band/);
+  // A 2.39 band in a 16:9 window (vH 0.3): full width, bars top and bottom.
+  const W = 0.3 * 16 / 9;
+  const b = videoBandSlot(W, 0.3, 2.39);
+  near(b.w, W, 1e-12); near(b.h, W / 2.39, 1e-12);
+  // contain, a 16:9 eye in the 2.39 band: pillarboxed inside the band.
+  const c = videoPlaneSize({ boxAspect: 16 / 9, eyeAspect: 16 / 9, vH: 0.3, fit: 'contain', band: 2.39 });
+  near(c.h, b.h, 1e-12); near(c.w, b.h * 16 / 9, 1e-12);
+  assert.deepEqual(videoCrop({ boxAspect: 16 / 9, eyeAspect: 16 / 9, fit: 'contain', band: 2.39 }), [1, 1]);
+  // cover: the quad is the band, and the eye is cropped vertically to 16:9 -> 2.39.
+  const k = videoPlaneSize({ boxAspect: 16 / 9, eyeAspect: 16 / 9, vH: 0.3, fit: 'cover', band: 2.39 });
+  near(k.w, b.w, 1e-12); near(k.h, b.h, 1e-12);
+  const [fx, fy] = videoCrop({ boxAspect: 16 / 9, eyeAspect: 16 / 9, fit: 'cover', band: 2.39 });
+  near(fx, 1, 1e-12); near(fy, (16 / 9) / 2.39, 1e-12);
+  const r = cropRegion([0.5, 0, 0.5, 1], [0.5, 0.8]);
+  near(r[0], 0.625, 1e-12); near(r[1], 0.1, 1e-12); near(r[2], 0.25, 1e-12); near(r[3], 0.8, 1e-12);
+  // No band: exactly the old sizes.
+  assert.deepEqual(videoPlaneSize({ boxAspect: 4 / 3, eyeAspect: 2, vH: 0.3, fit: 'contain' }), videoPlaneSize({ boxAspect: 4 / 3, eyeAspect: 2, vH: 0.3, fit: 'contain', band: null }));
+});
+
+test('setVideo band on the plane: the quad takes the band, cover crops each eye about its centre, the result reports it', async () => {
+  const { out, rec, frame, v } = await videoRig();
+  const h = await out.setVideo(fakeVideo({ w: 3840, h: 1080 }), { band: 2.39, fit: 'cover' });
+  assert.equal(h.band, 2.39);
+  frame();
+  const mi = plane(rec);
+  const W = v.vH * v.boxAspect;
+  const bandH = Math.min(v.vH, W / 2.39);
+  near(mi.node.scale[1], bandH, 1e-9);
+  const L = mi.material.params.get('dxrVidL');
+  const eyeA = 16 / 9;
+  const ba = Math.min(2.39, v.boxAspect) === 2.39 ? 2.39 : v.boxAspect;
+  if (eyeA < ba) {
+    near(L[3], eyeA / ba, 1e-9, 'rows cropped');
+    near(L[1], (1 - eyeA / ba) / 2, 1e-9, 'about the centre');
+  }
+  near(L[0], 0, 1e-12);
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('videoScreenRect (A5.3): window units map onto the canvas box, centred, clipped', async () => {
+  const { videoScreenRect } = await import('../js/inline3d-splat-video.js');
+  // A quad half as tall as the window, full width, on a 320x180 canvas: bars 45 px top and bottom.
+  assert.deepEqual({ ...videoScreenRect({ w: 1.6, h: 0.45, W: 1.6, H: 0.9 }, 320, 180) }, { x: 0, y: 45, width: 320, height: 90 });
+  // A cover quad wider than the window: clipped to the canvas.
+  assert.deepEqual({ ...videoScreenRect({ w: 2.4, h: 0.9, W: 1.6, H: 0.9 }, 320, 180) }, { x: 0, y: 0, width: 320, height: 180 });
+  // Pillarbox.
+  assert.deepEqual({ ...videoScreenRect({ w: 0.8, h: 0.9, W: 1.6, H: 0.9 }, 320, 180) }, { x: 80, y: 0, width: 160, height: 180 });
+});
+
+test('setVideo rect (A5.3): the picture rect after the first frame; onRectChange on a band change and a resize; null once replaced', async () => {
+  const { out, frame, v, canvas } = await videoRig();
+  const h = await out.setVideo(fakeVideo({ w: 3840, h: 1080 }), { band: 2.39 });
+  assert.equal(h.rect, null, 'nothing drawn yet');
+  frame();
+  const W = v.boxCss.w;
+  const H = v.boxCss.h;
+  const r = h.rect;
+  assert.ok(r, 'a rect after the first drawn frame');
+  // 16:9 eye contained in a 2.39 band of a 16:9 canvas: the band is full width, W/2.39 tall; the
+  // eye is as tall as the band and pillarboxed inside it.
+  near(r.height, W / 2.39, 0.02);
+  near(r.width, (W / 2.39) * (16 / 9), 0.02);
+  near(r.y, (H - W / 2.39) / 2, 0.02);
+  const seen = [];
+  const off = h.onRectChange((x) => seen.push(x));
+  frame();
+  await new Promise((res) => setTimeout(res, 0));
+  assert.equal(seen.length, 0, 'no change, no call');
+  canvas.setBox(640, 180); // a wider box (the viewer re-measures on resize)
+  v._updateMonoProjection();
+  frame();
+  await new Promise((res) => setTimeout(res, 0));
+  assert.equal(seen.length, 1, 'one call for the resize');
+  assert.notDeepEqual({ ...seen[0] }, { ...r });
+  off();
+  const h2 = await out.setVideo(fakeVideo());
+  frame();
+  assert.equal(h.rect, null, 'the replaced result answers null');
+  assert.ok(h2.rect);
+  await out.setVideo(null);
+  out.remove();
+});
+
+// ── #107 review regressions (B1, S1-S4, N1, N3, blend factors, eye split) ──────────────────
+
+const livePlanes = (rec, removedMI) => rec.meshInstances.filter((mi) => mi.material?.desc?.uniqueName === 'inline3dVideoPlane' && !removedMI.includes(mi));
+
+test('#107 B1: a CUT between two same-size videos re-points the texture at the new element', async () => {
+  const { out, textures, frame } = await videoRig();
+  const a = fakeVideo({ w: 1280, h: 360 });
+  const b = fakeVideo({ w: 1280, h: 360 });
+  await out.setVideo(a);
+  frame();
+  const tex = textures.at(-1);
+  assert.equal(tex.src, a);
+  await out.setVideo(b); // a cut (no transition), same size
+  frame();
+  assert.equal(textures.at(-1), tex, 'same size: the texture is reused');
+  assert.equal(tex.src, b, 'but it samples the NEW element');
+  // and a crossfade after that cut fades from B, not from A
+  const c = fakeVideo({ w: 1280, h: 360 });
+  await out.setVideo(c, { transition: 'crossfade', durationMs: 1000 });
+  const ghostTex = out.viewer._videoPlane.ghost.tex;
+  assert.equal(ghostTex.src, b, 'the ghost is B, the picture that was on screen');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 S1: a cut during a running crossfade drops the ghost at once', async () => {
+  const { out, rec, removedMI, frame } = await videoRig();
+  await out.setVideo(fakeVideo());
+  frame();
+  await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 });
+  frame();
+  assert.equal(livePlanes(rec, removedMI).length, 2, 'fading');
+  const ghost = out.viewer._videoPlane.ghost.mi;
+  await out.setVideo(fakeVideo()); // a cut
+  assert.equal(out.viewer._videoPlane.ghost, null);
+  assert.ok(removedMI.includes(ghost), 'the old ghost is gone, not fading over the new video');
+  assert.equal(livePlanes(rec, removedMI).length, 1);
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 S2: onRectChange subscriptions do not outlive their video (10 swaps leave at most one)', async () => {
+  const { out, frame, canvas } = await videoRig();
+  const calls = [];
+  for (let i = 0; i < 10; i++) {
+    const h = await out.setVideo(fakeVideo({ w: 1280 + i * 2, h: 360 }));
+    h.onRectChange((r) => calls.push([i, r]));
+    frame();
+  }
+  const plane = out.viewer._videoPlane;
+  assert.ok(plane._rectListeners.size <= 1, `listeners after 10 swaps: ${plane._rectListeners.size}`);
+  await new Promise((r) => setTimeout(r, 0));
+  calls.length = 0;
+  canvas.setBox(640, 180); // a resize after all ten swaps
+  out.viewer._updateMonoProjection();
+  frame();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(calls.map((c) => c[0]), [9], 'only the current video hears the resize');
+  const h = await out.setVideo(fakeVideo());
+  const off = h.onRectChange(() => {});
+  off();
+  assert.ok(plane._rectListeners.size <= 1, 'an unsubscribe removes it');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 S3: rect is null after a swap until the new video has drawn a frame', async () => {
+  const { out, frame } = await videoRig();
+  const h1 = await out.setVideo(fakeVideo({ w: 3840, h: 1080 }));
+  frame();
+  assert.ok(h1.rect);
+  const h2 = await out.setVideo(fakeVideo({ w: 3840, h: 1080 }), { band: 2.39 });
+  assert.equal(h2.rect, null, "no stale rect: the new video hasn't drawn yet");
+  assert.equal(h1.rect, null, 'the replaced one answers null');
+  frame();
+  assert.ok(h2.rect, 'a rect after its first frame');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 S4: the ghost keeps its on-screen size when the incoming video refits the rig (new virtualDisplayHeight)', async () => {
+  const { out, frame, v } = await videoRig();
+  await out.setVideo(fakeVideo(), { virtualDisplayHeight: 0.2 });
+  frame();
+  const plane = v._videoPlane;
+  const before = [...plane.node.scale];
+  const frac0 = before[1] / 0.2;
+  await out.setVideo(fakeVideo(), { virtualDisplayHeight: 0.4, transition: 'crossfade', durationMs: 60000 });
+  frame();
+  const g = plane.ghost;
+  assert.ok(g, 'fading');
+  near(g.node.scale[1] / 0.4, frac0, 1e-9, 'same fraction of the (refitted) window');
+  near(g.node.scale[1], before[1] * 2, 1e-9, 'scaled by vH_new / vH_old');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 N1: transition reports what happened, not what was asked', async () => {
+  const { out, frame } = await videoRig();
+  const el = fakeVideo();
+  const h0 = await out.setVideo(el, { transition: 'crossfade' });
+  assert.equal(h0.transition, 'cut', 'from the splat');
+  frame();
+  const h1 = await out.setVideo(el, { transition: 'crossfade' });
+  assert.equal(h1.transition, 'cut', 'the same element again: nothing to fade from');
+  const h2 = await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 0 });
+  assert.equal(h2.transition, 'cut', 'durationMs 0');
+  frame();
+  const h3 = await out.setVideo(fakeVideo(), { transition: 'crossfade' });
+  assert.equal(h3.transition, 'crossfade');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 N3: an unchanged frame keeps the same rect object (no per-frame allocation)', async () => {
+  const { out, frame } = await videoRig();
+  const h = await out.setVideo(fakeVideo());
+  frame();
+  const r = h.rect;
+  const n = out.viewer._videoPlane.rectComputes;
+  frame(); frame(); frame();
+  assert.equal(h.rect, r, 'identical object');
+  assert.equal(out.viewer._videoPlane.rectComputes, n, 'not recomputed on an unchanged frame');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107: the ghost blend factors are pinned — straight colour over, ONE on alpha — and it draws over, depth off', async () => {
+  const { out, frame } = await videoRig();
+  await out.setVideo(fakeVideo());
+  frame();
+  await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 });
+  const m = out.viewer._videoPlane.ghost.mat;
+  assert.deepEqual(m.blendState.args, [true, 'ADD', 'SRC_ALPHA', 'ONE_MINUS_SRC_ALPHA', 'ADD', 'ONE', 'ONE_MINUS_SRC_ALPHA']);
+  assert.equal(m.depthTest, false);
+  assert.equal(m.depthWrite, false);
+  assert.equal(out.viewer._videoPlane.mat.blendState, undefined, 'the incoming quad stays opaque');
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107: in stereo the ghost gets the same eye split as the incoming quad, every tick of the fade', async () => {
+  const { out, frame } = await videoRig({ stereo: true });
+  await out.setVideo(fakeVideo());
+  frame();
+  await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 });
+  frame();
+  const plane = out.viewer._videoPlane;
+  assert.equal(plane.mat.params.get('dxrVidSplit'), 320, 'incoming: the right eye starts at x = 320');
+  assert.equal(plane.ghost.mat.params.get('dxrVidSplit'), 320, 'ghost: the same split, not mono');
+  // The split moves mid-fade (a 1-view frame: the panel went 2D): the ghost follows it.
+  out.viewer._tick(); out.viewer._drawMono();
+  assert.equal(plane.mat.params.get('dxrVidSplit'), 1e9);
+  assert.equal(plane.ghost.mat.params.get('dxrVidSplit'), 1e9, 'the ghost follows the split, tick by tick');
+  await out.setVideo(null);
+  out.remove();
+});
+
+// ── our own review of #107 (R1, R2, R4, R5, R7, R8) ─────────────────────────────────────────
+
+test('#107 R1: two crossfades before a frame is drawn: the undrawn middle video is a cut, never a sizeless ghost', async () => {
+  const { out, frame } = await videoRig();
+  await out.setVideo(fakeVideo());
+  frame();
+  const hb = await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 });
+  assert.equal(hb.transition, 'crossfade', 'A was drawn: a real fade');
+  const hc = await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 }); // B never drawn
+  assert.equal(hc.transition, 'cut', 'B was never drawn: no ghost from it');
+  assert.equal(out.viewer._videoPlane.ghost, null);
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 R2: an easing that overshoots is clamped; one that throws ends the fade instead of breaking the draw', async () => {
+  const realPerf = globalThis.performance;
+  let t = 1000;
+  Object.defineProperty(globalThis, 'performance', { value: { now: () => t }, configurable: true, writable: true });
+  const realErr = console.error;
+  const errs = [];
+  console.error = (...a) => errs.push(a.join(' '));
+  try {
+    const { out, frame } = await videoRig();
+    await out.setVideo(fakeVideo());
+    frame();
+    await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 100, easing: (x) => (x < 0.5 ? -0.5 : 1.7) });
+    frame();
+    t += 10;
+    frame();
+    const g = out.viewer._videoPlane.ghost;
+    assert.equal(g.mat.params.get('dxrVidAlpha'), 1, 'undershoot clamped: alpha stays at most 1');
+    t += 60;
+    frame();
+    assert.equal(g.mat.params.get('dxrVidAlpha'), 0, 'overshoot clamped: alpha at least 0');
+    await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 100000, easing: () => { throw new Error('boom'); } });
+    frame();
+    t += 10;
+    assert.doesNotThrow(() => frame(), 'the draw survives');
+    assert.equal(out.viewer._videoPlane.ghost, null, 'the fade ended');
+    assert.ok(errs.some((e) => e.includes('easing threw')));
+    await out.setVideo(null);
+    out.remove();
+  } finally {
+    console.error = realErr;
+    Object.defineProperty(globalThis, 'performance', { value: realPerf, configurable: true, writable: true });
+  }
+});
+
+test('#107 R4: a canvas resize mid-fade re-fits the ghost from its own aspect (no stretch)', async () => {
+  const { out, frame, v, canvas } = await videoRig();
+  await out.setVideo(fakeVideo({ w: 3840, h: 1080 })); // 16:9 eye
+  frame();
+  await out.setVideo(fakeVideo({ w: 1920, h: 1080 }), { transition: 'crossfade', durationMs: 60000 }); // 8:9 eye
+  frame();
+  canvas.setBox(640, 180); // much wider box
+  v._updateMonoProjection();
+  frame();
+  const s = v._videoPlane.ghost.node.scale;
+  near(s[0] / s[1], 16 / 9, 1e-9, "the ghost keeps the OUTGOING picture's 16:9");
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 R5 + R7: the ghost mesh instance is destroyed with it; inherited names are not easings', async () => {
+  const { resolveVideoTransition } = await import('../js/inline3d-splat-video.js');
+  assert.throws(() => resolveVideoTransition({ easing: 'constructor' }), /unknown easing 'constructor'/);
+  assert.throws(() => resolveVideoTransition({ easing: 'toString' }), /unknown easing/);
+  const { out, frame } = await videoRig();
+  await out.setVideo(fakeVideo());
+  frame();
+  await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 });
+  const mi = out.viewer._videoPlane.ghost.mi;
+  let destroyed = false;
+  mi.destroy = () => { destroyed = true; };
+  await out.setVideo(fakeVideo()); // a cut drops it
+  assert.equal(destroyed, true);
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 R8: a listener removed after a change was queued is not called', async () => {
+  const { out, frame, v, canvas } = await videoRig();
+  const h = await out.setVideo(fakeVideo());
+  frame();
+  let n = 0;
+  const off = h.onRectChange(() => n++);
+  canvas.setBox(640, 180);
+  v._updateMonoProjection();
+  frame(); // queues the notification
+  off(); // ...and unsubscribes before it runs
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(n, 0);
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 re-review: a URL-sourced crossfade keeps the ghost at the OUTGOING aspect although setVideo released that element', async () => {
+  const { out, frame, v } = await videoRig();
+  const made = [];
+  globalThis.document = { createElement: (t) => (assert.equal(t, 'video'), made.push(fakeVideo({ w: made.length ? 3840 : 2880, h: 1080, ready: 4 })), made.at(-1)) };
+  try {
+    await out.setVideo('c_4x3_sbs.mp4'); // eye 1440x1080 = 4:3, in a 16:9 window: pillarboxed
+    frame();
+    const out4x3 = [...v._videoPlane.node.scale];
+    await out.setVideo('a_16x9_sbs.mp4', { transition: 'crossfade', durationMs: 60000 }); // the SDK releases C here
+    assert.equal(made[0].src, '', 'C was released (load() zeroed it)');
+    assert.equal(made[0].videoWidth, 0);
+    frame();
+    const g = v._videoPlane.ghost;
+    assert.ok(g, 'fading');
+    near(g.node.scale[0] / g.node.scale[1], 4 / 3, 1e-9, 'the ghost stays 4:3 (pillarboxed), not stretched to the window');
+    near(g.node.scale[0], out4x3[0], 1e-9);
+    near(g.node.scale[1], out4x3[1], 1e-9);
+    await out.setVideo(null);
+  } finally {
+    delete globalThis.document;
+  }
+  out.remove();
+});
+
+// ── deep review of #107 (S-A, N-A, N-B) ──────────────────────────────────────────────────────
+
+test('#107 S-A: the same callback on two results keeps its own subscription; unsubscribe is idempotent', async () => {
+  const { out, frame, v, canvas } = await videoRig();
+  const h1 = await out.setVideo(fakeVideo());
+  frame();
+  const place = () => calls++;
+  let calls = 0;
+  const u1 = h1.onRectChange(place);
+  const h2 = await out.setVideo(fakeVideo()); // the swap unsubscribes u1
+  frame();
+  const u2 = h2.onRectChange(place); // the SAME function, on the new result
+  u1(); // a page cleaning up the old title late: must not remove the new subscription
+  u1();
+  canvas.setBox(640, 180);
+  v._updateMonoProjection();
+  frame();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(calls, 1, 'the new subscription still hears the resize');
+  u2();
+  u2();
+  assert.equal(v._videoPlane._rectListeners.size, 0);
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 N-A: a <video width="640"> playing 1920 wide keeps one texture across a same-size swap (the rebind path)', async () => {
+  const { out, frame, textures } = await videoRig();
+  const a = Object.assign(fakeVideo({ w: 3840, h: 1080 }), { width: 640, height: 180 }); // the HTML attributes
+  const b = Object.assign(fakeVideo({ w: 3840, h: 1080 }), { width: 640, height: 180 });
+  await out.setVideo(a);
+  frame();
+  const n = textures.length;
+  const tex = textures.at(-1);
+  await out.setVideo(b); // same size: must re-point, not re-make
+  frame();
+  assert.equal(textures.length, n, 'no new texture');
+  assert.equal(tex.src, b);
+  await out.setVideo(null);
+  out.remove();
+});
+
+test('#107 N-B: an option change on the same element, then a crossfade before the next frame, is a cut (the quad was never drawn that way)', async () => {
+  const { out, frame } = await videoRig();
+  const a = fakeVideo();
+  await out.setVideo(a, { format: 'sbs' });
+  frame();
+  await out.setVideo(a, { format: 'tb' }); // same element, new layout: not drawn yet
+  const h = await out.setVideo(fakeVideo(), { transition: 'crossfade', durationMs: 60000 });
+  assert.equal(h.transition, 'cut');
+  assert.equal(out.viewer._videoPlane.ghost, null);
+  await out.setVideo(null);
+  out.remove();
+});
+
 test('setVideo guards: throws during an in-flight setSource; setSource / setRig refuse while a video is on; prepareSource is allowed; controls:page throws', async () => {
   const { out } = await videoRig();
   const swap = out.setSource('b.sog');
@@ -3145,7 +3913,9 @@ test('setVideo(url): the SDK makes, autoplays and releases its own <video>; a pe
 });
 
 test('./splat: setVideo on the deferred stub waits for ready; controls:page and Spark refuse it (source check)', async () => {
-  const src = await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8');
+  const src = ((await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat.js', import.meta.url), 'utf8')) +
+    // the engine:'playcanvas' handle lives in its own module since ./splat/playcanvas
+    (await (await import('node:fs/promises')).readFile(new URL('../js/inline3d-splat-deferred.js', import.meta.url), 'utf8')));
   assert.match(src, /setVideo: page \? pageOnly\('setVideo'\)/);
   assert.match(src, /setVideo\(\) is implemented on the PlayCanvas backend only/);
 });
@@ -3603,4 +4373,323 @@ test('pick index: an empty cone declines (the full scan owns the nearest-by-angl
   const ix = buildPickIndex(xyz, 2, null, [0, 0, 1], [0, 0, -1], [1, 0, 0], [0, 1, 0], 1, 1, 16);
   assert.equal(queryPickIndex(ix, xyz, [0, 0, 0.9], [0, 0, -1]), undefined);
   assert.equal(buildPickIndex(new Float32Array([0, 0, 5]), 1, null, [0, 0, 1], [0, 0, -1], [1, 0, 0], [0, 1, 0], 1, 1), null, 'nothing in front');
+});
+
+// ── warmEntity: a glTF's lit programs through the renderer's OWN call, linked off the frame ──
+
+test("warmEntity issues each mesh's forward program via getShaderInstance with exactly the renderer's arguments, skips layers the camera never draws, finalizes when linked, resolves the count", async () => {
+  installDom();
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const calls = [];
+  let linkPolls = 0;
+  const mkShader = (id) => {
+    const sh = { id, ready: false, failed: false };
+    sh.impl = { isLinked: () => ++linkPolls > 2, finalize: (dev, s) => ((s.ready = true), true) };
+    return sh;
+  };
+  const shaders = new Map();
+  const viewUniformFormat = { vuf: true };
+  const sortedLights = [['sun'], [], []];
+  const layers = new Map([
+    [0, { getLightHash: (c) => (c ? 7 : 42), splitLights: sortedLights }],
+    [5, { getLightHash: () => 99, splitLights: [[], [], []] }],
+  ]);
+  const shaderParams = { hash: 1234 };
+  const mi = (name) => ({
+    mesh: {},
+    shaderPassMask: ~0,
+    material: { prepareForRender() { this.prepared = true; } },
+    ensureMaterial() { this.ensured = true; },
+    getShaderInstance(pass, lightHash, scene, sp, vuf, sl) {
+      calls.push({ name, pass, lightHash, sp, vuf, sl });
+      const key = `${name}|${lightHash}`;
+      if (!shaders.has(key)) shaders.set(key, mkShader(key));
+      return { shader: shaders.get(key) };
+    },
+  });
+  const a = mi('a');
+  const b = mi('b');
+  const hidden = mi('ui'); // in layer 5, which the eye camera does not draw
+  const entity = {
+    findComponents: (t) =>
+      t === 'render'
+        ? [
+            { meshInstances: [a, b], layers: [0] },
+            { meshInstances: [hidden], layers: [5] },
+          ]
+        : [],
+  };
+  const fake = {
+    pc: { SHADER_FORWARD: 0, LAYERID_WORLD: 0 },
+    app: { graphicsDevice: {}, scene: { clusteredLightingEnabled: false, layers: { getLayerById: (id) => layers.get(id) } }, renderer: { viewUniformFormat } },
+    eye: { camera: { layers: [0], camera: { shaderParams } } },
+    _views: [],
+    _viewPath: 'renderViews',
+    _disposed: false,
+    logTag: '[t]',
+  };
+  const n = await PlayCanvasSplatViewer.prototype.warmEntity.call(fake, entity);
+  assert.equal(n, 2, 'two distinct programs');
+  assert.deepEqual(calls.map((c) => c.name), ['a', 'b'], 'the layer-5 mesh is not warmed for a camera that never draws layer 5');
+  for (const c of calls) {
+    assert.equal(c.pass, 0);
+    assert.equal(c.lightHash, 42, "the layer's light hash (non-clustered)");
+    assert.equal(c.sp, shaderParams, "the camera's LIVE shaderParams object (its hash keys the cache)");
+    assert.equal(c.vuf, viewUniformFormat, "the renderer's viewUniformFormat");
+    assert.equal(c.sl, sortedLights, "the layer's splitLights");
+  }
+  assert.ok(a.ensured && a.material.prepared, 'ensureMaterial + prepareForRender, as the renderer does');
+  assert.ok([...shaders.values()].every((s) => s.ready), 'every issued program finalized');
+  assert.ok(linkPolls > 2, 'waited on isLinked before finalizing');
+  assert.equal(await PlayCanvasSplatViewer.prototype.warmEntity.call(fake, { findComponents: () => [] }), 0, 'nothing to warm');
+});
+
+test('warmEntity on the PlayCanvas 2.23+ renderer shape: the layer light list and its own view uniform format (no renderer.viewUniformFormat)', async () => {
+  installDom();
+  const { PlayCanvasSplatViewer, rendererViewArgs } = await import('../js/inline3d-splat-playcanvas.js');
+  const calls = [];
+  const lightList = { hash: 77, key: 'L' };
+  const fmt = { vuf: 'for-L' };
+  const formatCalls = [];
+  const renderer = {
+    // 2.23+: no viewUniformFormat property; a format per (clustered, lightList)
+    getViewUniformFormat(isClustered, ll) { formatCalls.push([isClustered, ll]); return fmt; },
+  };
+  const layer = { getLightList: (c) => (c ? null : lightList) };
+  const sh = { ready: true };
+  const mi = {
+    mesh: {},
+    shaderPassMask: ~0,
+    material: { prepareForRender() {} },
+    ensureMaterial() {},
+    getShaderInstance(...args) { calls.push(args); return { shader: sh }; },
+  };
+  const fake = {
+    pc: { SHADER_FORWARD: 0, LAYERID_WORLD: 0 },
+    app: { graphicsDevice: {}, scene: { clusteredLightingEnabled: false, layers: { getLayerById: () => layer } }, renderer },
+    eye: { camera: { layers: [0], camera: { shaderParams: { hash: 1 } } } },
+    _views: [], _viewPath: 'renderViews', _disposed: false, logTag: '[t]',
+  };
+  const n = await PlayCanvasSplatViewer.prototype.warmEntity.call(fake, { findComponents: (t) => (t === 'render' ? [{ meshInstances: [mi], layers: [0] }] : []) });
+  assert.equal(n, 1, 'warmed (before the fix: 0, it gave up on the missing renderer.viewUniformFormat)');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][1], lightList, "the layer's light list, not a hash");
+  assert.equal(calls[0][4], fmt, 'the view uniform format the renderer builds for that light list');
+  assert.deepEqual(formatCalls, [[false, lightList]]);
+  // neither shape: nothing
+  assert.equal(rendererViewArgs({}, {}, layer), null);
+  assert.equal(rendererViewArgs({ viewUniformFormat: 'old' }, {}, { getLightHash: () => 5, splitLights: 's' }).light, 5);
+});
+
+test('warmEntity also warms through the layer rig cameras: a mesh on a display-rig layer is drawn ONLY by them, with their own shaderParams', async () => {
+  installDom();
+  const { PlayCanvasSplatViewer } = await import('../js/inline3d-splat-playcanvas.js');
+  const seen = [];
+  const eyeParams = { hash: 1 };
+  const rigParams = { hash: 2 };
+  const mi = {
+    mesh: {},
+    material: { prepareForRender() {} },
+    getShaderInstance(pass, lh, scene, sp) {
+      seen.push(sp);
+      return { shader: { ready: false, failed: false, impl: { isLinked: () => true, finalize: (d, s) => ((s.ready = true), true) } } };
+    },
+  };
+  const fake = {
+    pc: { SHADER_FORWARD: 0, LAYERID_WORLD: 0 },
+    app: { graphicsDevice: {}, scene: { layers: { getLayerById: () => ({ getLightHash: () => 0, splitLights: [[], [], []] }) } }, renderer: { viewUniformFormat: {} } },
+    eye: { camera: { layers: [0], camera: { shaderParams: eyeParams } } }, // the eye no longer draws layer 9 (moved to the rig)
+    layerRigs: { cams: { display: [{ camera: { layers: [9], camera: { shaderParams: rigParams } } }], post: [] } },
+    _views: [],
+    _viewPath: 'renderViews',
+    _disposed: false,
+    logTag: '[t]',
+  };
+  const entity = { findComponents: (t) => (t === 'render' ? [{ meshInstances: [mi], layers: [9] }] : []) };
+  const n = await PlayCanvasSplatViewer.prototype.warmEntity.call(fake, entity);
+  assert.equal(n, 1);
+  assert.deepEqual(seen, [rigParams], "warmed with the RIG camera's shaderParams only — the eye never draws layer 9");
+});
+
+// ── depth: 'auto' (opt-in comfort depth) on the PlayCanvas splat ────────────────────────────
+
+import { comfortDepthFactor } from '../js/inline3d-depth-budget.js';
+import { framedSubjectBounds } from '../js/inline3d-splat-shared.js';
+
+/** rigWall plus displayMetrics: a small, close panel (H 0.12 m, nominal viewer 0.3 m). */
+function metricsRigWall() {
+  const pushed = [];
+  const counts = { metrics: 0 };
+  return {
+    pushed,
+    counts,
+    wall: {
+      supported: true,
+      addScene: () => ({
+        exclude() {},
+        unexclude() {},
+        remove() {},
+        setViewRig: (r) => pushed.push(JSON.parse(JSON.stringify(r))),
+        displayMetrics: async () => {
+          counts.metrics++;
+          return { canvasSizeM: [0.21, 0.12], nominalViewerM: 0.3, source: { size: 'display', viewer: 'display', eyeSeparation: 'default' } };
+        },
+      }),
+    },
+  };
+}
+const tickOnce = () => new Promise((r) => setTimeout(r, 0));
+
+test("depth absent on a display-rig splat: the shorthand stays the only declaration, nothing measured", async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = fakeFlat(600, 0);
+  const { wall, pushed, counts } = metricsRigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  await tickOnce();
+  assert.equal(out.rig.type, 'display');
+  assert.equal(pushed.length, 0);
+  assert.equal(counts.metrics, 0);
+  assert.equal(out.depthFactor, 1);
+  out.remove();
+});
+
+test("depth on a display-rig splat: the declared rig's factors = k, × setStereo's; a camera rig ignores it (one warning)", async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = fakeFlat(600, 0);
+  const { wall, pushed } = metricsRigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false, depth: { zone: 0.05 } }, []);
+  await tickOnce();
+  const b = framedSubjectBounds(out.viewer);
+  const k = comfortDepthFactor({ frontH: b.front / 0.24, backH: -b.back / 0.24, tileHeightM: 0.12, viewerM: 0.3, zone: 0.05 });
+  assert.ok(k < 1, String(k));
+  near(out.depthFactor, k, 1e-12);
+  assert.equal(pushed.at(-1).type, 'display');
+  near(pushed.at(-1).ipdFactor, k, 1e-12);
+  near(pushed.at(-1).parallaxFactor, k, 1e-12);
+  out.setStereo({ ipdFactor: 0.5 });
+  near(pushed.at(-1).ipdFactor, 0.5 * k, 1e-12);
+  near(pushed.at(-1).parallaxFactor, k, 1e-12);
+  out.remove();
+
+  // A camera-rig asset: ignored, said once, the rig sent as declared.
+  const fake2 = makeFakePc();
+  fake2.rec.resource = camFlat();
+  const w2 = metricsRigWall();
+  const warns = [];
+  const real = console.warn;
+  console.warn = (...a) => warns.push(a.map(String).join(' '));
+  const cam = {};
+  try {
+    await attachPlayCanvasSplat(cam, w2.wall, makeCanvas(320, 180), 'a.sog', { playcanvas: fake2.pc, focusInput: false, depth: 'auto' }, []);
+    await tickOnce();
+  } finally {
+    console.warn = real;
+  }
+  assert.equal(cam.rig.type, 'camera');
+  assert.equal(cam.depthFactor, 1);
+  assert.equal(warns.filter((w) => /depth: 'auto' applies to the display rig only/.test(w)).length, 1);
+  assert.equal(w2.pushed.at(-1).ipdFactor, 1, 'the camera rig untouched');
+  cam.remove();
+});
+
+test('a camera-rig focus at or behind the camera never declares convergence at infinity (keeps the last rig)', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const { wall, pushed } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  out.viewer._tick();
+  const good = pushed.filter((r) => r.type === 'camera');
+  assert.ok(good.length > 0 && good.every((r) => r.convergenceDiopters > 0), 'a finite convergence first');
+  const n = pushed.length;
+  // A focus far behind the camera, along +z of the content frame (three looks down −z).
+  const pose = out.viewer.mono.pose;
+  out.viewer.setFocus([pose[12] + 10 * pose[8], pose[13] + 10 * pose[9], pose[14] + 10 * pose[10]], { snap: true });
+  out.viewer._tick();
+  const after = pushed.slice(n).filter((r) => r.type === 'camera');
+  assert.ok(after.every((r) => r.convergenceDiopters > 0), `no convergence-0 rig after the focus went behind (got ${after.map((r) => r.convergenceDiopters)})`);
+  out.remove();
+});
+
+// ── roll on the PlayCanvas viewer (the two-hand twist; SceneViewer's axis, test/viewer-roll.test.mjs) ──
+
+test('pivotMatrix: roll is Rz OUTSIDE Rx·Ry, and roll 0 is the old quaternion bit for bit', () => {
+  const base = { yaw: 37, pitch: -22, scale: 1, focus: [0, 0, 0], orbitCentre: [0, 0, 0], depthOffset: 0 };
+  assert.deepEqual(Array.from(pivotMatrix({ ...base, roll: 0 })), Array.from(pivotMatrix(base)), 'roll 0 == no roll, bit for bit');
+  assert.deepEqual(pivotInverseTRS({ ...base, roll: 0 }), pivotInverseTRS(base));
+  // R(roll) = Rz(roll) · R(0): rotating the display-space result of the unrolled pivot about Z.
+  const M0 = pivotMatrix(base);
+  const M = pivotMatrix({ ...base, roll: 90 });
+  for (const p of [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0.3, -0.7, 2]]) {
+    const [x, y, z] = transformPoint(M0, ...p);
+    nearArr(transformPoint(M, ...p), [-y, x, z], 1e-12, `Rz(90°) of ${p}`);
+  }
+  // …and the inverse TRS still inverts it (POSES carries a rolled pose through the test above too).
+  const s = { ...base, roll: -33, scale: 2.5, focus: [0.2, 0.1, -1], orbitCentre: [0.2, 0.1, -1] };
+  const t = pivotInverseTRS(s);
+  const Minv = poseMatrix(t.position, t.rotation);
+  for (let i = 0; i < 12; i++) if (i % 4 !== 3) Minv[i] *= t.scale;
+  nearArr(Array.from(mat4Mul(pivotMatrix(s), Minv)), I16, 1e-9, 'M·M⁻¹ with roll');
+});
+
+test('PlayCanvasSplatViewer: setPose / getPose / nudgePose / resetPose carry roll; _tick eases it; the rig follows', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const { wall } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  const v = out.viewer;
+  assert.equal(v.getPose().roll, 0, 'rest');
+  const rig0 = Array.from(v.rigMatrix());
+  v.setPose({ roll: 45 });
+  assert.equal(v.getPose().roll, 45);
+  assert.equal(v.getPose({ target: true }).roll, 45);
+  assert.equal(v.pivotState().roll, 45, 'the pivot carries it');
+  const rig45 = Array.from(v.rigMatrix());
+  assert.notDeepEqual(rig45, rig0, 'the rig node moved under the roll');
+  // nudgePose moves the TARGET; the eased value waits for _tick.
+  v.nudgePose({ roll: -45 });
+  assert.equal(v.getPose({ target: true }).roll, 0);
+  assert.equal(v.getPose().roll, 45, 'eased value unchanged until the tick');
+  v._lastTick = 1;
+  v._tick();
+  const r = v.getPose().roll;
+  assert.ok(r < 45 && r > 0, `roll eases toward the target: ${r}`);
+  v.setPose({ yaw: 12, pitch: 5, roll: 0 });
+  v.setPose({ yaw: 0, pitch: 0 });
+  nearArr(Array.from(v.rigMatrix()), rig0, 1e-12, 'back at rest the rig is the rest rig');
+  v.nudgePose({ roll: 30 });
+  v.resetPose();
+  assert.equal(v.getPose().roll, 0);
+  assert.equal(v.getPose({ target: true }).roll, 0, 'resetPose clears the target too');
+  out.remove();
+});
+
+test('PlayCanvasSplatViewer.getSubjectBounds: a 90° roll swaps the x and y extents; depth never changes under a roll', async () => {
+  installDom();
+  const { pc, rec } = makeFakePc();
+  rec.resource = camFlat();
+  const { wall } = rigWall();
+  const out = {};
+  await attachPlayCanvasSplat(out, wall, makeCanvas(320, 180), 'a.sog', { playcanvas: pc, focusInput: false }, []);
+  const v = out.viewer;
+  v.fitTo([0, 0, 0], [2, 1, 0.5]);
+  const b0 = v.getSubjectBounds();
+  assert.ok(b0.extent.x > b0.extent.y && b0.extent.y > b0.extent.z, 'unrolled: x > y > z');
+  v.setPose({ roll: 90 });
+  const b = v.getSubjectBounds();
+  near(b.extent.x, b0.extent.y, 1e-12, 'x takes the old y');
+  near(b.extent.y, b0.extent.x, 1e-12, 'y takes the old x');
+  near(b.extent.z, b0.extent.z, 1e-12, 'z unchanged');
+  v.setPose({ yaw: 40, pitch: 15, roll: 0 });
+  const z0 = v.getSubjectBounds().extent.z;
+  v.setPose({ roll: 33 });
+  near(v.getSubjectBounds().extent.z, z0, 1e-12, 'depth under yaw+pitch is roll-invariant');
+  out.remove();
 });

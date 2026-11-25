@@ -1,0 +1,312 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>cursor: 'depth' — e2e harness</title>
+<style>html,body{margin:0;background:#111;color:#ddd;font:12px monospace}canvas{display:block;width:600px;height:400px}</style>
+</head>
+<body>
+<!--
+  Drives the REAL ./model PlayCanvas backend with two hand-built off-axis views (what the
+  DisplayXR Browser would hand addScene) and a scripted pointer, then checks the depth cursor:
+
+    over the cube  → the arrow's disparity ≈ (cube front disparity − margin), i.e. in front of it
+                     (margin 0.015 baselines, ADR-046 Amendment 2 A.2), its TIP on the placement;
+    off the cube   → NOTHING drawn (the sprite hidden) and the CSS cursor back: on the plane the
+                     OS cursor is the cursor (the policy's draw threshold).
+
+  runtime=1: the fake layer also has runtime ADR-046 Amendment 4's setCursorDepth +
+  getCursorDepthSupport() → "runtime" (the browser draws the cursor). Then NO sprite may be drawn,
+  the CSS cursor is never hidden, and the depth handed to the layer over the cube is the cube
+  front's RAW disparity (no margin) in device px; off it, no disparityPx; on pointerleave, a
+  withdrawal.
+
+  No DisplayXR Browser needed: `wall` is a fake whose addScene hands us viewer.onFrame. Results
+  land in <pre id="out"> as JSON (read with `--dump-dom`), plus a snapshot of the SBS frame.
+  Serve the repo root and open test/e2e/cursor-depth/?engine=playcanvas (or three).
+-->
+<canvas id="c"></canvas>
+<pre id="out">running</pre>
+<img id="shot">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+  "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs",
+  "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js",
+  "@displayxr/inline3d/model": "../../../js/inline3d-model-entry.js",
+  "@displayxr/inline3d/splat": "../../../js/inline3d-splat.js"
+} }
+</script>
+<script type="module">
+import { addModel } from '@displayxr/inline3d/model';
+const kind = new URLSearchParams(location.search).get('kind') || 'model';
+const { addSplat } = kind === 'splat' ? await import('@displayxr/inline3d/splat') : {};
+import { solveCursorGeometry, cursorPointDisparity, CURSOR_DEFAULT_TUNING } from '../../../js/inline3d-cursor-depth.js';
+
+const out = document.getElementById('out');
+const engine = new URLSearchParams(location.search).get('engine') || 'playcanvas';
+const canvas = document.getElementById('c');
+const log = (o) => (out.textContent = JSON.stringify(o, null, 1));
+window.onerror = (m) => log({ error: String(m) });
+
+// ── two off-axis views, as the runtime builds them (display rig: canvas = vH tall at z = 0) ──
+const vH = 0.24, aspect = 600 / 400, s = vH / 0.2; // 0.2 m physical canvas, 0.6 m viewer
+const W = vH * aspect;
+function kooima(ex, ey, ez) {
+  const l = (-W / 2 - ex) / ez, r = (W / 2 - ex) / ez, u = (vH / 2 - ey) / ez, d = (-vH / 2 - ey) / ez;
+  const n = 0.01, f = 100;
+  return {
+    projectionMatrix: new Float32Array([2 / (r - l), 0, 0, 0, 0, 2 / (u - d), 0, 0, (r + l) / (r - l), (u + d) / (u - d), -(f + n) / (f - n), -1, 0, 0, (-2 * f * n) / (f - n), 0]),
+    transform: { matrix: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ex, ey, ez, 1]) },
+  };
+}
+let headX = 0;
+const makeViews = () => [kooima(headX - 0.032 * s, 0, 0.6 * s), kooima(headX + 0.032 * s, 0, 0.6 * s)];
+let views = makeViews();
+const layer = { getViewport: (v) => ({ x: views.indexOf(v) * (canvas.width / 2), y: 0, width: canvas.width / 2, height: canvas.height }) };
+const runtime = new URLSearchParams(location.search).get('runtime') === '1';
+const depthCalls = []; // runtime=1: every setCursorDepth call's arguments
+if (runtime) {
+  layer.setCursorDepth = (...a) => depthCalls.push(a.map((d) => ({ ...d })));
+  layer.getCursorDepthSupport = async () => 'runtime';
+}
+const anchor = new URLSearchParams(location.search).get('anchor') || undefined;
+const soften = new URLSearchParams(location.search).get('soften') || undefined;
+const cursorOpt = anchor || soften ? { ...(anchor ? { anchor } : {}), ...(soften ? { soften } : {}) } : 'depth';
+
+let onFrame = null;
+const wall = {
+  supported: true,
+  addScene(_c, cb) {
+    onFrame = cb;
+    return new Proxy({ firstWoven: new Promise(() => {}) }, { get: (t, k) => (k in t ? t[k] : () => {}) });
+  },
+};
+const pcOnly = engine === 'playcanvas' ? { preserveDrawingBuffer: true } : {};
+const handle = kind === 'splat'
+  ? addSplat(wall, canvas, '../../../samples/splat/assets/butterfly.sog', { engine: engine === 'three' ? 'spark' : engine, cursor: cursorOpt, idleSpin: 0, orbit: false, ...pcOnly })
+  : addModel(wall, canvas, './cube.gltf', { engine, cursor: cursorOpt, idleSpin: 0, orbit: false, ...pcOnly });
+
+// The sprite the cursor draws (null while hidden).
+let lines = null;
+let frames = 0;
+// A timer, not rAF: headless Chrome throttles rAF to nothing under --dump-dom.
+setInterval(() => {
+  if (onFrame) onFrame(views, layer, null);
+  frames++;
+}, 16);
+
+// touch=1: every pointer event is a finger — the browser shows no cursor, so nothing may be drawn.
+const touch = new URLSearchParams(location.search).get('touch') === '1';
+const point = (u, v) => canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: u * 600, clientY: v * 400, bubbles: true, ...(touch ? { pointerType: 'touch', buttons: 1 } : {}) }));
+const wait = (n) => new Promise((res) => { const f0 = frames; const t = () => (frames - f0 >= n ? res() : setTimeout(t, 16)); t(); });
+
+const prog = (m) => (out.textContent = `running: ${m} (frames ${frames})`);
+prog('loading');
+setInterval(() => { if (out.textContent.startsWith('running')) out.textContent = out.textContent.replace(/\(frames \d+\)/, `(frames ${frames})`); }, 200);
+await handle.ready;
+prog('ready');
+// backdrop=1 (playcanvas): a plane behind the cube with an app-style pc.ShaderMaterial whose
+// fragment shader writes ONE output — the kind of mesh the depth picker's two-target pass used to
+// draw (and WebGL reject, GL_INVALID_OPERATION per draw). The harness fails on any GL error.
+if (new URLSearchParams(location.search).get('backdrop') === '1' && engine === 'playcanvas') {
+  const pc = await import('playcanvas');
+  const app = handle.engine.app;
+  const mat = new pc.ShaderMaterial({
+    uniqueName: 'e2e-backdrop',
+    vertexGLSL: 'attribute vec3 vertex_position; uniform mat4 matrix_model; uniform mat4 matrix_viewProjection; void main(void) { gl_Position = matrix_viewProjection * matrix_model * vec4(vertex_position, 1.0); }',
+    fragmentGLSL: 'void main(void) { gl_FragColor = vec4(0.2, 0.3, 0.4, 1.0); }',
+    attributes: { vertex_position: pc.SEMANTIC_POSITION },
+  });
+  mat.update();
+  const plane = new pc.Entity('e2e-backdrop', app);
+  plane.addComponent('render', { type: 'plane', material: mat });
+  plane.setLocalScale(40, 1, 40);
+  plane.setLocalEulerAngles(90, 0, 0);
+  plane.setLocalPosition(0, 0, -6);
+  app.root.addChild(plane);
+}
+// shadermat=1 (playcanvas): the cube drawn with an app pc.ShaderMaterial that OPTS IN to the depth
+// pick (CURSOR_DEPTH_PICK_GLSL, issue #185). Without the opt-in the pick pass leaves such a material
+// out (#182) and the cursor would stay on the glass over the cube; with it the cube is hit as before.
+if (new URLSearchParams(location.search).get('shadermat') === '1' && engine === 'playcanvas') {
+  const pc = await import('playcanvas');
+  const { CURSOR_DEPTH_PICK_GLSL } = await import('../../../js/inline3d-cursor-depth.js');
+  const mat = new pc.ShaderMaterial({
+    uniqueName: 'e2e-optin',
+    vertexGLSL: 'attribute vec3 vertex_position; uniform mat4 matrix_model; uniform mat4 matrix_viewProjection; void main(void) { gl_Position = matrix_viewProjection * matrix_model * vec4(vertex_position, 1.0); }',
+    fragmentGLSL: `${CURSOR_DEPTH_PICK_GLSL.declarations}
+      void main(void) {
+        #ifdef PICK_PASS
+          ${CURSOR_DEPTH_PICK_GLSL.output}
+        #else
+          gl_FragColor = vec4(0.8, 0.4, 0.2, 1.0);
+        #endif
+      }`,
+    attributes: { vertex_position: pc.SEMANTIC_POSITION },
+  });
+  mat.update();
+  let n = 0;
+  for (const r of handle.engine.root.findComponents('render')) for (const mi of r.meshInstances || []) { mi.material = mat; n++; }
+  if (!n) throw new Error('shadermat: no mesh instance to swap');
+}
+// Where the arrow is, per engine: its node / matrix translation = the TIP = the hotspot, in world
+// space (PlayCanvas: views carried through the rig node; three: the views ARE world space).
+let rig = null;
+let sprite = null;
+let modelWorld = null; // () => column-major world matrix of the cube's root (unit cube, ±0.5)
+if (engine === 'playcanvas') {
+  const app = handle.engine.app;
+  rig = app.root.findByName('inline3d-rig');
+  modelWorld = () => handle.engine.root.getWorldTransform().data;
+  if (kind === 'splat') modelWorld = null;
+} else {
+  let root = handle.model || handle.mesh;
+  while (root.parent) root = root.parent;
+  root.traverse((o) => { if (o.name === 'inline3d-cursor') sprite = o; });
+  modelWorld = kind === 'splat' ? null : () => handle.model.matrixWorld.elements;
+}
+// The arrow's world position (its tip) + its depth-test flag, or null while hidden.
+const spriteLines = () => {
+  if (rig) {
+    const app = handle.engine.app;
+    const node = app.root.findByName('inline3d-cursor');
+    const ui = app.scene.layers.getLayerById(4); // LAYERID_UI
+    const mi = node && (ui.meshInstances || []).find((m) => m.node === node);
+    if (!mi || !mi.visible) return null;
+    const p = node.getPosition();
+    const desc = mi.material.shaderDesc || mi.material._shaderDesc || {};
+    return { pts: [p.x, p.y, p.z], depthTest: mi.material.depthTest, soft: desc.uniqueName === 'inline3dDepthCursorSoft' };
+  }
+  if (!sprite || !sprite.visible) return null;
+  const e = sprite.matrix.elements;
+  return { pts: [e[12], e[13], e[14]], depthTest: sprite.material.depthTest, soft: !!(sprite.material.uniforms && sprite.material.uniforms.inline3dCursorSoft) };
+};
+const worldViews = () => {
+  if (!rig) return views.map((v) => ({ projectionMatrix: v.projectionMatrix, transformMatrix: v.transform.matrix }));
+  const R = rig.getWorldTransform().data;
+  const mul = (a, b) => { const o = []; for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let x = 0; for (let k = 0; k < 4; k++) x += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = x; } return o; };
+  return views.map((v) => ({ projectionMatrix: v.projectionMatrix, transformMatrix: mul(R, v.transform.matrix) }));
+};
+// The cube's front along the cyclopean ray through (u, v): analytic slab test in its local frame.
+function cubeFront(g) {
+  const M = invert4(modelWorld()); // world → model root (cube = unit, ±0.5)
+  const tp = (m, p, w) => [0, 1, 2].map((i) => m[i] * p[0] + m[4 + i] * p[1] + m[8 + i] * p[2] + (w ? m[12 + i] : 0));
+  const o = tp(M, g.eye, 1), e = tp(M, g.canvasPoint, 1), d = [e[0] - o[0], e[1] - o[1], e[2] - o[2]];
+  let t0 = -Infinity, t1 = Infinity;
+  for (let i = 0; i < 3; i++) { let a = (-0.5 - o[i]) / d[i], b = (0.5 - o[i]) / d[i]; if (a > b) [a, b] = [b, a]; t0 = Math.max(t0, a); t1 = Math.min(t1, b); }
+  if (!(t0 <= t1) || t1 < 0) return null;
+  return [0, 1, 2].map((i) => g.eye[i] + t0 * (g.canvasPoint[i] - g.eye[i]));
+}
+function invert4(m) {
+  // General 4x4 inverse (column-major), cofactor expansion.
+  const a = Array.from(m), o = new Array(16);
+  o[0] = a[5]*a[10]*a[15]-a[5]*a[11]*a[14]-a[9]*a[6]*a[15]+a[9]*a[7]*a[14]+a[13]*a[6]*a[11]-a[13]*a[7]*a[10];
+  o[4] = -a[4]*a[10]*a[15]+a[4]*a[11]*a[14]+a[8]*a[6]*a[15]-a[8]*a[7]*a[14]-a[12]*a[6]*a[11]+a[12]*a[7]*a[10];
+  o[8] = a[4]*a[9]*a[15]-a[4]*a[11]*a[13]-a[8]*a[5]*a[15]+a[8]*a[7]*a[13]+a[12]*a[5]*a[11]-a[12]*a[7]*a[9];
+  o[12] = -a[4]*a[9]*a[14]+a[4]*a[10]*a[13]+a[8]*a[5]*a[14]-a[8]*a[6]*a[13]-a[12]*a[5]*a[10]+a[12]*a[6]*a[9];
+  o[1] = -a[1]*a[10]*a[15]+a[1]*a[11]*a[14]+a[9]*a[2]*a[15]-a[9]*a[3]*a[14]-a[13]*a[2]*a[11]+a[13]*a[3]*a[10];
+  o[5] = a[0]*a[10]*a[15]-a[0]*a[11]*a[14]-a[8]*a[2]*a[15]+a[8]*a[3]*a[14]+a[12]*a[2]*a[11]-a[12]*a[3]*a[10];
+  o[9] = -a[0]*a[9]*a[15]+a[0]*a[11]*a[13]+a[8]*a[1]*a[15]-a[8]*a[3]*a[13]-a[12]*a[1]*a[11]+a[12]*a[3]*a[9];
+  o[13] = a[0]*a[9]*a[14]-a[0]*a[10]*a[13]-a[8]*a[1]*a[14]+a[8]*a[2]*a[13]+a[12]*a[1]*a[10]-a[12]*a[2]*a[9];
+  o[2] = a[1]*a[6]*a[15]-a[1]*a[7]*a[14]-a[5]*a[2]*a[15]+a[5]*a[3]*a[14]+a[13]*a[2]*a[7]-a[13]*a[3]*a[6];
+  o[6] = -a[0]*a[6]*a[15]+a[0]*a[7]*a[14]+a[4]*a[2]*a[15]-a[4]*a[3]*a[14]-a[12]*a[2]*a[7]+a[12]*a[3]*a[6];
+  o[10] = a[0]*a[5]*a[15]-a[0]*a[7]*a[13]-a[4]*a[1]*a[15]+a[4]*a[3]*a[13]+a[12]*a[1]*a[7]-a[12]*a[3]*a[5];
+  o[14] = -a[0]*a[5]*a[14]+a[0]*a[6]*a[13]+a[4]*a[1]*a[14]-a[4]*a[2]*a[13]-a[12]*a[1]*a[6]+a[12]*a[2]*a[5];
+  o[3] = -a[1]*a[6]*a[11]+a[1]*a[7]*a[10]+a[5]*a[2]*a[11]-a[5]*a[3]*a[10]-a[9]*a[2]*a[7]+a[9]*a[3]*a[6];
+  o[7] = a[0]*a[6]*a[11]-a[0]*a[7]*a[10]-a[4]*a[2]*a[11]+a[4]*a[3]*a[10]+a[8]*a[2]*a[7]-a[8]*a[3]*a[6];
+  o[11] = -a[0]*a[5]*a[11]+a[0]*a[7]*a[9]+a[4]*a[1]*a[11]-a[4]*a[3]*a[9]-a[8]*a[1]*a[7]+a[8]*a[3]*a[5];
+  o[15] = a[0]*a[5]*a[10]-a[0]*a[6]*a[9]-a[4]*a[1]*a[10]+a[4]*a[2]*a[9]+a[8]*a[1]*a[6]-a[8]*a[2]*a[5];
+  const det = a[0]*o[0]+a[1]*o[4]+a[2]*o[8]+a[3]*o[12];
+  return o.map((x) => x / det);
+}
+
+async function measure(u, v, settle = SETTLE) {
+  // Re-sent: the opt-in module loads asynchronously, and a real pointer keeps moving.
+  for (let i = 0; i < 3; i++) { point(u, v); await wait(5); }
+  lines = null;
+  await wait(settle);
+  const g = solveCursorGeometry(...[worldViews()[0], worldViews()[1]], u, v);
+  const front = modelWorld ? cubeFront(g) : null;
+  let cursor = null;
+  lines = spriteLines();
+  if (lines) {
+    const P = lines.pts, n = P.length / 3;
+    const c = [0, 1, 2].map((i) => { let x = 0; for (let k = 0; k < n; k++) x += P[k * 3 + i]; return x / n; });
+    cursor = cursorPointDisparity(g, c);
+  }
+  // runtime=1: the depth the layer was handed last, and what the cube front's RAW disparity is in
+  // device px (eye-baseline units × the outer views' baseline / canvas height × canvas device px).
+  const sent = runtime ? depthCalls.at(-1) ?? null : undefined;
+  const ra = g && worldViews()[0].transformMatrix, rb = g && worldViews()[1].transformMatrix;
+  const pxPerBaseline = g ? (Math.hypot(ra[12] - rb[12], ra[13] - rb[13], ra[14] - rb[14]) / g.canvasHeight) * canvas.getBoundingClientRect().height * devicePixelRatio : null;
+  return { u, v, cursorDisparity: cursor, cubeFrontDisparity: front ? cursorPointDisparity(g, front) : null, depthTest: lines?.depthTest ?? null, soft: lines?.soft ?? null, cssCursor: getComputedStyle(canvas).cursor, sent, pxPerBaseline };
+}
+// Frames to settle: the picker's readback is async and, under headless virtual time, slow.
+const SETTLE = Number(new URLSearchParams(location.search).get('settle') || 240);
+const over = await measure(0.5, 0.5);
+prog('over done ' + JSON.stringify(over));
+// Off the subject the cursor SINKS back to the glass, slowly by design (250 ms time constant), and
+// once it is within the draw threshold of it nothing is drawn: the OS cursor is the cursor.
+const off = await measure(0.05, 0.08, SETTLE * 2);
+canvas.dispatchEvent(new PointerEvent('pointerleave'));
+await wait(5);
+const left = { cssCursor: getComputedStyle(canvas).cursor, linesQueued: !!spriteLines(), sent: runtime ? depthCalls.at(-1) ?? null : undefined };
+if (runtime) {
+  // The runtime draws: no sprite, no CSS hide; the RAW depth (the cube front's, no margin) in device px.
+  const pxOk = kind === 'splat'
+    ? over.sent?.[0]?.disparityPx < -0.01 * over.pxPerBaseline
+    : over.cubeFrontDisparity < 0 && Math.abs(over.sent?.[0]?.disparityPx - over.cubeFrontDisparity * over.pxPerBaseline) < 0.003 * over.pxPerBaseline;
+  const uvOk = Math.abs(over.sent?.[0]?.u - 0.5) < 1e-3 && Math.abs(over.sent?.[0]?.v - 0.5) < 1e-3;
+  const offOk = kind === 'splat' || (off.sent?.length === 1 && !('disparityPx' in off.sent[0]));
+  const leaveOk = left.sent?.length === 0;
+  const neverDrawn = over.cursorDisparity === null && off.cursorDisparity === null && over.cssCursor !== 'none' && off.cssCursor !== 'none';
+  const pass = !!(pxOk && uvOk && offOk && leaveOk && neverDrawn);
+  log({ engine, kind, runtime: true, pass, pxOk, uvOk, offOk, leaveOk, neverDrawn, calls: depthCalls.length, over, off, afterLeave: left, frames });
+  await new Promise(() => {}); // stop here: the head-move and softening checks are about the SDK sprite
+}
+// Head motion with the pointer STILL: hybrid (default) and world keep the sprite fixed in the
+// world (it parallaxes like the content); screen keeps it on the line of sight (it slides).
+for (let i = 0; i < 3; i++) { point(0.5, 0.5); await wait(5); }
+await wait(SETTLE);
+const before = spriteLines();
+headX = 0.06 * s; // 6 cm to the right
+views = makeViews();
+await wait(Math.round(SETTLE / 2));
+const after = spriteLines();
+// LATERAL movement only (across the display plane): with the pointer still, the sprite's DEPTH
+// still follows the content under the line of sight (a splat's surface is not flat), by design.
+const lateral = (d) => {
+  const m = worldViews()[0].transformMatrix;
+  const l = Math.hypot(m[8], m[9], m[10]);
+  const n = [m[8] / l, m[9] / l, m[10] / l];
+  const k = d[0] * n[0] + d[1] * n[1] + d[2] * n[2];
+  return Math.hypot(d[0] - k * n[0], d[1] - k * n[1], d[2] - k * n[2]);
+};
+const headMove = before && after ? lateral([0, 1, 2].map((i) => after.pts[i] - before.pts[i])) : null;
+headX = 0;
+views = makeViews();
+await wait(10);
+document.getElementById('shot').src = canvas.toDataURL('image/png');
+const margin = CURSOR_DEFAULT_TUNING.margin;
+const expectFixed = (anchor || 'hybrid') !== 'screen';
+const headOk = headMove !== null && (expectFixed ? headMove < 1e-3 : headMove > 1e-3);
+// Off the subject: nothing drawn (not "drawn at 0") and the CSS cursor back.
+const offOk = off.cursorDisparity === null && off.cssCursor !== 'none';
+const depthOk = kind === 'splat'
+  ? over.cursorDisparity !== null && over.cursorDisparity < -0.01 && offOk && over.cssCursor === 'none'
+  : over.cursorDisparity !== null && over.cubeFrontDisparity !== null && over.cubeFrontDisparity < 0 &&
+    over.cursorDisparity < over.cubeFrontDisparity && Math.abs(over.cursorDisparity - (over.cubeFrontDisparity - margin)) < 0.003 &&
+    offOk && over.cssCursor === 'none' && over.depthTest === false;
+// Crosstalk softening (ADR-046 Amendment 2 §B.7): the lifted arrow draws with the soft material
+// by default, the crisp mesh with soften 'off'.
+const softOk = over.soft === (soften !== 'off');
+const hiddenAttr = canvas.hasAttribute('data-inline3d-cursor-hidden') || document.documentElement.hasAttribute('data-inline3d-cursor-hidden');
+// touch: no sprite anywhere (over the subject too), the CSS cursor never hidden.
+const touchOk = over.cursorDisparity === null && off.cursorDisparity === null && headMove === null && !hiddenAttr;
+const pass = touch ? touchOk : headOk && depthOk && softOk;
+log({ engine, kind, touch, anchor: anchor || 'hybrid', soften: soften || 'both', margin, pass, headMove, softOk, over, off, afterLeave: left, frames });
+</script>
+</body>
+</html>

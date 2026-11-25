@@ -21,6 +21,8 @@
 // engine import fails, one warning names what to install, and the tile renders on three. With
 // neither, `ready` rejects naming both. An explicit `engine` never falls back.
 
+import { guardedAttach, validateSetStereo, resolveDepthOption } from './inline3d-splat-shared.js';
+import { resolveFraming } from './inline3d-model-frame.js';
 /** The engines `addModel` renders with; the first is the default. */
 export const MODEL_ENGINES = Object.freeze(['playcanvas', 'three']);
 
@@ -54,7 +56,7 @@ export function resolveModelEngine(opts = {}) {
 }
 
 /** Options that exist only on the PlayCanvas backend: an error on an explicit engine:'three'. */
-const PLAYCANVAS_ONLY = ['playcanvas', 'environmentRotation', 'controls', 'comfortDepth', 'onBeforeFrame', 'antialias', 'preserveDrawingBuffer', 'nearClip', 'farClip', 'orbitMaxDeg', 'orbitEase', 'zoom'];
+const PLAYCANVAS_ONLY = ['playcanvas', 'environmentRotation', 'controls', 'comfortDepth', 'onBeforeFrame', 'antialias', 'preserveDrawingBuffer', 'nearClip', 'farClip', 'orbitMaxDeg', 'orbitEase', 'orbitStyle', 'zoom'];
 
 /**
  * Everything that can be checked before a module loads. Throws at CALL time — a page bug is true
@@ -67,6 +69,11 @@ export function validateModelCall(canvas, src, opts, route) {
   if (typeof src !== 'string' || !src) {
     throw new Error('@displayxr/inline3d/model: addModel(wall, canvas, src) — `src` must be the URL of a .glb or .gltf.');
   }
+  if (opts.orbitStyle !== undefined && opts.orbitStyle !== 'turntable' && opts.orbitStyle !== 'tilt') {
+    throw new Error(`@displayxr/inline3d/model: orbitStyle must be 'turntable' or 'tilt' (got ${String(opts.orbitStyle)}).`);
+  }
+  resolveDepthOption(opts.depth, '@displayxr/inline3d/model');
+  resolveFraming(opts.framing);
   if (route.engine === 'three' && route.explicit) {
     const bad = PLAYCANVAS_ONLY.filter((k) => opts[k] !== undefined && !(k === 'controls' && opts[k] === 'viewer'));
     if (bad.length) {
@@ -95,6 +102,12 @@ export function validateModelCall(canvas, src, opts, route) {
  *          fill in as the backend loads.
  */
 export function addModel(wall, canvas, src, opts = {}) {
+  // A second call on a canvas still registered on this wall warns once, then proceeds as before
+  // (see guardedAttach).
+  return guardedAttach(wall, canvas, 'addModel', opts, (o) => addModelUnguarded(wall, canvas, src, o));
+}
+
+function addModelUnguarded(wall, canvas, src, opts = {}) {
   const route = resolveModelEngine(opts);
   validateModelCall(canvas, src, opts, route);
   if (route.engine === 'playcanvas') {
@@ -131,7 +144,22 @@ export function addModel(wall, canvas, src, opts = {}) {
     remove: queue('remove'),
     exclude: queue('exclude'),
     unexclude: queue('unexclude'),
+    // Validated now (a bad argument throws at the call, as once the backend is in), replayed then.
+    setStereo(o) {
+      validateSetStereo(o, null, '@displayxr/inline3d/model');
+      pending.push(['setStereo', [o]]);
+      return out;
+    },
+    rig: null,
+    // The `depth` option's comfort factor in force (1 until measured, and always without it).
+    depthFactor: 1,
+    // Before the backend lands: once it has, the backend's own (PlayCanvas); three has none (0).
+    warmEntity: (entity, o) => out.ready.then(() => (out.warmEntity !== stubWarm && typeof out.warmEntity === 'function' ? out.warmEntity(entity, o) : 0)),
+    // PlayCanvas replaces this once it has loaded; before that (and on three) there is nothing of
+    // the engine's to release.
+    releaseEntity: () => ({ programs: 0, container: null }),
   };
+  const stubWarm = out.warmEntity;
   out.firstWoven = new Promise((resolve) => {
     out._resolveFirstWoven = resolve;
   });
@@ -214,12 +242,18 @@ function preValidatePlayCanvas(opts) {
  */
 async function attachThree(out, wall, canvas, src, opts, pending, mod) {
   const m = mod || (await import('./inline3d-model.js'));
-  const inner = m.addModel(wall, canvas, src, opts);
+  // `hands` is already wired on THIS handle (guardedAttach); the inner attach must not wire a
+  // second controller on the inner one.
+  const inner = m.addModel(wall, canvas, src, opts.hands ? { ...opts, hands: undefined } : opts);
   for (const k of ['viewer', 'model', 'frame']) {
     Object.defineProperty(out, k, { get: () => inner[k], set: (v) => (inner[k] = v), enumerable: true, configurable: true });
   }
   out.backend = 'three';
   out.engine = null;
+  for (const k of ['rig', 'viewRig', 'depthFactor']) {
+    Object.defineProperty(out, k, { get: () => inner[k], enumerable: true, configurable: true });
+  }
+  out.setStereo = (o) => (inner.setStereo(o), out);
   out.setPose = inner.setPose;
   out.resetPose = inner.resetPose;
   out.remove = inner.remove;

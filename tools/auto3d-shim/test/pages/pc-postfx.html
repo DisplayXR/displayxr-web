@@ -1,0 +1,231 @@
+<!doctype html>
+<!-- TEST PAGE — PlayCanvas 2.x (ESM, no globals) with LEGACY post effects: camera.postEffects, the
+     engine's PostEffectQueue, what PlayCanvas Editor apps use (posteffect-bloom.js and friends). Two
+     pc.PostEffect subclasses written the way the engine's scripts are: a bloom (extract -> blur H ->
+     blur V into its own half-size targets -> combine) and a vignette, so the queue holds a CHAIN (the
+     bloom's output target is the vignette's input target). The scene is pc-cf-mesh.html's: a bright
+     emissive sphere in front of a lit box on a mid-grey clear colour, a dark bar low in the frame,
+     symmetric about x = 0, the camera 8 units in front: expected convergence 8. Render on demand
+     after 60 frames (window.__frozen).
+       ?gpu=webgpu   a WebGPU device (the effects carry WGSL too), else WebGL2
+       ?bloom=0 ?vignette=0   leave one effect out (both on by default)
+       ?glow=<n>     the bloom's intensity (1 by default)
+       ?aa=1         an MSAA device: the queue's input target is multisampled, the eye copy reads its resolve
+       ?depth=1      the vignette declares needsDepthBuffer (as posteffect-ssao / bokeh do): must stay 2D
+       ?rect=1       the camera has a viewport rect (the left 60 %): must stay 2D
+       ?ui=1         a white screen-space element in the UI layer (drawn AFTER the effects, straight to the canvas)
+     Hooks: window.__grabFrame() (read in the drawing task), __deviceType, __camera (the camera
+     component), __fx ({ bloom, vignette }). -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>PlayCanvas legacy post effects (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#000}canvas{display:block;width:100%;height:100%}</style>
+<script type="importmap">{ "imports": { "playcanvas": "/deps/playcanvas/playcanvas.mjs" } }</script>
+</head><body>
+<canvas id="pe-canvas"></canvas>
+<script type="module">
+import * as pc from 'playcanvas';
+const q = new URLSearchParams(location.search);
+const on = (k) => q.get(k) !== '0';
+const canvas = document.getElementById('pe-canvas');
+const device = await pc.createGraphicsDevice(canvas, { deviceTypes: [q.get('gpu') === 'webgpu' ? 'webgpu' : 'webgl2'], antialias: q.get('aa') === '1' });
+window.__deviceType = device.deviceType;
+const opts = new pc.AppOptions();
+opts.graphicsDevice = device;
+opts.componentSystems = [pc.CameraComponentSystem, pc.RenderComponentSystem, pc.LightComponentSystem, pc.ScreenComponentSystem, pc.ElementComponentSystem];
+opts.resourceHandlers = [];
+const app = new pc.AppBase(canvas);
+app.init(opts);
+app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(pc.RESOLUTION_AUTO);
+addEventListener('resize', () => app.resizeCanvas());
+window.__expectedConvergence = 8;
+
+const camera = new pc.Entity('camera');
+camera.addComponent('camera', { clearColor: new pc.Color(0.5, 0.5, 0.5), fov: 40, nearClip: 0.1, farClip: 100 });
+camera.setPosition(0, 1, 8);
+camera.lookAt(0, 1, 0);
+app.root.addChild(camera);
+if (q.get('rect') === '1') camera.camera.rect = new pc.Vec4(0, 0, 0.6, 1);
+const light = new pc.Entity('sun');
+light.addComponent('light', { type: 'directional', intensity: 1.2 });
+light.setEulerAngles(45, 30, 0);
+app.root.addChild(light);
+app.scene.ambientLight = new pc.Color(0.3, 0.3, 0.35);
+
+const mat = (r, g, b, emissive) => {
+  const m = new pc.StandardMaterial();
+  m.diffuse = new pc.Color(r, g, b);
+  if (emissive) { m.emissive = new pc.Color(1, 0.9, 0.6); m.emissiveIntensity = 12; m.useLighting = false; }
+  m.update(); return m;
+};
+const add = (type, m, x, y, z, s, sy) => { const e = new pc.Entity(type); e.addComponent('render', { type, material: m }); e.setLocalPosition(x, y, z); e.setLocalScale(s, sy ?? s, s); app.root.addChild(e); return e; };
+add('box', mat(0.2, 0.55, 0.9), 0, 1, -1.2, 2.2, 2.2);
+add('sphere', mat(1, 1, 1, true), 0, 1, 0.6, 0.7);       // the bloom source
+add('box', mat(0.85, 0.35, 0.2), -1.6, 1, 0, 0.5);
+add('box', mat(0.85, 0.35, 0.2), 1.6, 1, 0, 0.5);
+add('box', mat(0.08, 0.1, 0.12), 0, -1.1, -1.2, 5, 0.5); // not up-down symmetric (the out-cover check)
+
+if (q.get('ui') === '1') {
+  const screen = new pc.Entity('screen');
+  screen.addComponent('screen', { referenceResolution: new pc.Vec2(1280, 720), scaleBlend: 0.5, scaleMode: pc.SCALEMODE_BLEND, screenSpace: true });
+  app.root.addChild(screen);
+  const img = new pc.Entity('badge');
+  img.addComponent('element', { type: 'image', anchor: [0.5, 0.9, 0.5, 0.9], pivot: [0.5, 0.5], width: 120, height: 40, color: new pc.Color(1, 1, 1), opacity: 1 });
+  screen.addChild(img);
+}
+
+// ---- the effects: pc.PostEffect subclasses, shaped like the engine's scripts/posteffects/*.js
+// (WGSL: one resource declaration per line, as the engine's WGSL processor reads them.)
+const VS_GLSL = `
+  attribute vec2 aPosition;
+  varying vec2 uv0;
+  void main(void) { gl_Position = vec4(aPosition, 0.0, 1.0); uv0 = getImageEffectUV((aPosition.xy + 1.0) * 0.5); }`;
+const VS_WGSL = `
+  attribute aPosition: vec2f;
+  varying uv0: vec2f;
+  @vertex fn vertexMain(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    output.position = vec4f(input.aPosition, 0.0, 1.0);
+    output.uv0 = getImageEffectUV((input.aPosition + 1.0) * 0.5);
+    return output;
+  }`;
+const shader = (name, fragmentGLSL, fragmentWGSL) => (pc.ShaderUtils && pc.ShaderUtils.createShader
+  ? pc.ShaderUtils.createShader(device, { uniqueName: name, attributes: { aPosition: pc.SEMANTIC_POSITION }, vertexGLSL: VS_GLSL, vertexWGSL: VS_WGSL, fragmentGLSL, fragmentWGSL })
+  : pc.createShaderFromCode(device, VS_GLSL, fragmentGLSL, name, { aPosition: pc.SEMANTIC_POSITION }));
+
+class TestBloom extends pc.PostEffect {
+  constructor(dev) {
+    super(dev);
+    this.extract = shader('TestBloomExtract', `
+      varying vec2 uv0; uniform sampler2D uBaseTexture; uniform float uThreshold;
+      void main(void) { vec4 c = texture2D(uBaseTexture, uv0); gl_FragColor = clamp((c - uThreshold) / (1.0 - uThreshold), 0.0, 1.0); }`, `
+      varying uv0: vec2f;
+      var uBaseTexture: texture_2d<f32>;
+      var uBaseTextureSampler: sampler;
+      uniform uThreshold: f32;
+      @fragment fn fragmentMain(input: FragmentInput) -> FragmentOutput {
+        var output: FragmentOutput;
+        let c = textureSample(uBaseTexture, uBaseTextureSampler, input.uv0);
+        output.color = clamp((c - vec4f(uniform.uThreshold)) / (1.0 - uniform.uThreshold), vec4f(0.0), vec4f(1.0));
+        return output;
+      }`);
+    this.blur = shader('TestBloomBlur', `
+      varying vec2 uv0; uniform sampler2D uBloomTexture; uniform vec2 uStep;
+      void main(void) {
+        vec4 sum = vec4(0.0); float ws = 0.0;
+        for (int i = -6; i <= 6; i++) { float w = exp(-float(i * i) / 18.0); sum += texture2D(uBloomTexture, uv0 + uStep * float(i)) * w; ws += w; }
+        gl_FragColor = sum / ws;
+      }`, `
+      varying uv0: vec2f;
+      var uBloomTexture: texture_2d<f32>;
+      var uBloomTextureSampler: sampler;
+      uniform uStep: vec2f;
+      @fragment fn fragmentMain(input: FragmentInput) -> FragmentOutput {
+        var output: FragmentOutput;
+        var sum = vec4f(0.0); var ws = 0.0;
+        for (var i: i32 = -6; i <= 6; i++) {
+          let w = exp(-f32(i * i) / 18.0);
+          sum += textureSampleLevel(uBloomTexture, uBloomTextureSampler, input.uv0 + uniform.uStep * f32(i), 0.0) * w; ws += w;
+        }
+        output.color = sum / ws;
+        return output;
+      }`);
+    this.combine = shader('TestBloomCombine', `
+      varying vec2 uv0; uniform sampler2D uBaseTexture; uniform sampler2D uBloomTexture; uniform float uIntensity;
+      void main(void) { gl_FragColor = texture2D(uBaseTexture, uv0) + texture2D(uBloomTexture, uv0) * uIntensity; }`, `
+      varying uv0: vec2f;
+      var uBaseTexture: texture_2d<f32>;
+      var uBaseTextureSampler: sampler;
+      var uBloomTexture: texture_2d<f32>;
+      var uBloomTextureSampler: sampler;
+      uniform uIntensity: f32;
+      @fragment fn fragmentMain(input: FragmentInput) -> FragmentOutput {
+        var output: FragmentOutput;
+        output.color = textureSample(uBaseTexture, uBaseTextureSampler, input.uv0) + textureSample(uBloomTexture, uBloomTextureSampler, input.uv0) * uniform.uIntensity;
+        return output;
+      }`);
+    this.targets = [];
+    this.threshold = 0.8; this.intensity = q.has('glow') ? +q.get('glow') : 1.0; this.step = 4;
+    this.resizes = 0; // a per-eye chain must NOT make this effect rebuild its targets every eye
+  }
+  _resize(target) {
+    const w = target.colorBuffer.width, h = target.colorBuffer.height;
+    if (w === this.width && h === this.height) return;
+    this.width = w; this.height = h; this.resizes++;
+    for (const t of this.targets) { t.destroyTextureBuffers(); t.destroy(); }
+    this.targets.length = 0;
+    for (let i = 0; i < 2; i++) {
+      const tex = new pc.Texture(this.device, { name: `test-bloom-${i}`, format: pc.PIXELFORMAT_RGBA8, width: w >> 1, height: h >> 1, mipmaps: false,
+        minFilter: pc.FILTER_LINEAR, magFilter: pc.FILTER_LINEAR, addressU: pc.ADDRESS_CLAMP_TO_EDGE, addressV: pc.ADDRESS_CLAMP_TO_EDGE });
+      this.targets.push(new pc.RenderTarget({ name: `test-bloom-rt-${i}`, colorBuffer: tex, depth: false }));
+    }
+  }
+  render(inputTarget, outputTarget, rect) {
+    this._resize(inputTarget);
+    const scope = this.device.scope, T = this.targets;
+    scope.resolve('uThreshold').setValue(this.threshold);
+    scope.resolve('uBaseTexture').setValue(inputTarget.colorBuffer);
+    this.drawQuad(T[0], this.extract);
+    scope.resolve('uStep').setValue([this.step / T[1].width, 0]);
+    scope.resolve('uBloomTexture').setValue(T[0].colorBuffer);
+    this.drawQuad(T[1], this.blur);
+    scope.resolve('uStep').setValue([0, this.step / T[0].height]);
+    scope.resolve('uBloomTexture').setValue(T[1].colorBuffer);
+    this.drawQuad(T[0], this.blur);
+    scope.resolve('uIntensity').setValue(this.intensity);
+    scope.resolve('uBloomTexture').setValue(T[0].colorBuffer);
+    scope.resolve('uBaseTexture').setValue(inputTarget.colorBuffer);
+    this.drawQuad(outputTarget, this.combine, rect);
+  }
+}
+class TestVignette extends pc.PostEffect {
+  constructor(dev) {
+    super(dev);
+    this.shader = shader('TestVignette', `
+      varying vec2 uv0; uniform sampler2D uColorBuffer; uniform float uDarkness;
+      void main(void) { vec4 c = texture2D(uColorBuffer, uv0); float d = length(uv0 - vec2(0.5)); gl_FragColor = vec4(c.rgb * (1.0 - uDarkness * smoothstep(0.3, 0.6, d)), c.a); }`, `
+      varying uv0: vec2f;
+      var uColorBuffer: texture_2d<f32>;
+      var uColorBufferSampler: sampler;
+      uniform uDarkness: f32;
+      @fragment fn fragmentMain(input: FragmentInput) -> FragmentOutput {
+        var output: FragmentOutput;
+        let c = textureSample(uColorBuffer, uColorBufferSampler, input.uv0);
+        let d = length(input.uv0 - vec2f(0.5));
+        output.color = vec4f(c.rgb * (1.0 - uniform.uDarkness * smoothstep(0.3, 0.6, d)), c.a);
+        return output;
+      }`);
+    this.darkness = 0.7;
+    if (q.get('depth') === '1') this.needsDepthBuffer = true;
+  }
+  render(inputTarget, outputTarget, rect) {
+    const scope = this.device.scope;
+    scope.resolve('uColorBuffer').setValue(inputTarget.colorBuffer);
+    scope.resolve('uDarkness').setValue(this.darkness);
+    this.drawQuad(outputTarget, this.shader, rect);
+  }
+}
+const fx = (window.__fx = { bloom: new TestBloom(device), vignette: new TestVignette(device) });
+window.__camera = camera.camera;
+if (on('bloom')) camera.camera.postEffects.addEffect(fx.bloom);
+if (on('vignette')) camera.camera.postEffects.addEffect(fx.vignette);
+
+let n = 0;
+app.on('update', () => { if (n >= 60) { app.autoRender = false; window.__frozen = true; return; } n++; window.__pageFrames = n; });
+
+const CW = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width');
+const CH = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height');
+window.__grabFrame = () => new Promise((res) => {
+  app.once('postrender', () => {
+    if (app.graphicsDevice.isWebGPU) app.graphicsDevice.submit();
+    const w = CW.get.call(canvas), h = CH.get.call(canvas);
+    const c2 = document.createElement('canvas'); c2.width = w; c2.height = h;
+    const g = c2.getContext('2d', { willReadFrequently: true }); g.drawImage(canvas, 0, 0);
+    const d = g.getImageData(0, 0, w, h).data;
+    let s = ''; for (let i = 0; i < d.length; i += 32768) s += String.fromCharCode.apply(null, d.subarray(i, i + 32768));
+    res({ w, h, b64: btoa(s), png: c2.toDataURL('image/png') });
+  });
+  app.renderNextFrame = true;
+});
+app.start();
+</script>
+</body></html>

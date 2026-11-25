@@ -1,0 +1,726 @@
+// @displayxr/inline3d/camera (RFC 0003 §4, C2): the pure parts and the StereoCamera / CameraView
+// contracts under `node --test`. What is pinned:
+//   - the self-view mirror is mirror-EACH-HALF-AND-SWAP: with a synthetic L/R pair whose subject
+//     sits in FRONT of the screen (crossed disparity), the output keeps it crossed, and the view
+//     the LEFT eye should see (the mirrored right camera) ends up on the left; the naive per-half
+//     mirror inverts it (pseudoscopic);
+//   - the stereo record round-trips through the file bytes (XMP in a JPEG, Tags in a WebM);
+//   - suggestedName carries the `_2x1` layout suffix for a pair, nothing for mono;
+//   - openCamera's error codes and the StereoCamera lifecycle (`ended` once, `close()` silent);
+//   - addCameraView's routes on a 2D / 3D wall and its wall-lost path.
+// The pixel path (a real canvas) is test/e2e/camera.e2e.mjs.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { installCallDom, doc, FakeTrack, FakeStream } from './call-dom.mjs';
+import { mirrorSwapOps, mirrorSwapPixels, eyeCropRect, looksSbs } from '../js/camera/geometry.js';
+import { buildStereoXmp, parseStereoXmp, jpegWithXmp, readJpegXmp, readJpegStereoMeta, webmWithTags, readWebmTags, readWebmStereoMeta, stereoTagEntries, buildWebmTags, normalizeStereoMeta } from '../js/camera/metadata.js';
+import { noCameraCode, isDeniedError, isBusyError } from '../js/camera/capture.js';
+import { isHalfSbsCamera, unsqueezedSize, unsqueezeHalfSbs } from '../js/camera/half-sbs.js';
+
+installCallDom();
+const { openCamera, addCameraView, isStereoCamera, suggestedName, CAMERA_SDK, readJpegStereoMeta: fromEntry } = await import('../js/inline3d-camera.js');
+
+// ── the mirroring trap ─────────────────────────────────────────────────────────────────────
+
+/** A W×H single-channel SBS frame with one bright marker per eye; `lx`/`rx` are per-eye x positions. */
+function pair(W, H, lx, rx) {
+  const px = new Uint8Array(W * H);
+  const half = W / 2;
+  for (let y = 0; y < H; y++) {
+    px[y * W + lx] = 200; // left eye's marker
+    px[y * W + half + rx] = 200; // right eye's marker
+  }
+  return px;
+}
+const markerX = (px, W, half, y = 0) => {
+  let l = -1;
+  let r = -1;
+  for (let x = 0; x < half; x++) if (px[y * W + x] === 200) l = x;
+  for (let x = 0; x < half; x++) if (px[y * W + half + x] === 200) r = x;
+  return { l, r };
+};
+
+test('mirror-and-swap keeps a crossed disparity crossed; the naive per-half mirror inverts it', () => {
+  const W = 16;
+  const H = 2;
+  const half = 8;
+  // Subject IN FRONT of the screen: the left eye sees it further right than the right eye does.
+  const src = pair(W, H, 5, 3);
+  assert.equal(markerX(src, W, half).l - markerX(src, W, half).r, 2, 'source disparity (left x − right x) is +2: crossed');
+  const out = mirrorSwapPixels(src, W, H);
+  const o = markerX(out, W, half);
+  assert.equal(o.l - o.r, 2, 'after mirror+swap the disparity is still +2 — the face stays in front, not inside out');
+  // The output's LEFT half is the mirrored RIGHT camera (what the left eye should see in a mirror).
+  assert.equal(o.l, half - 1 - 3, 'left half = mirrored right eye');
+  assert.equal(o.r, half - 1 - 5, 'right half = mirrored left eye');
+  // The naive mirror (each half flipped in place, no swap) — the bug this guards against.
+  const naive = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) for (const off of [0, half]) for (let x = 0; x < half; x++) naive[y * W + off + x] = src[y * W + off + (half - 1 - x)];
+  const n = markerX(naive, W, half);
+  assert.equal(n.l - n.r, -2, 'naive per-half mirror: disparity inverted (pseudoscopic)');
+  // And the ops themselves: right source → left half, left source → right half, both mirrored.
+  const ops = mirrorSwapOps(W, H);
+  assert.deepEqual(ops.map((op) => [op.src, op.sx, op.dx, op.mirror]), [['R', half, 0, true], ['L', 0, half, true]]);
+  // Mirror+swap equals a whole-frame flip (the pixels are the same; the ops just spell the intent).
+  const flipped = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) flipped[y * W + x] = src[y * W + (W - 1 - x)];
+  assert.deepEqual([...out], [...flipped]);
+});
+
+test('geometry: looksSbs and eyeCropRect', () => {
+  assert.equal(looksSbs(1280, 480), true);
+  assert.equal(looksSbs(1280, 720), false);
+  const r = eyeCropRect(640, 480, 16 / 9, 0, 0);
+  assert.equal(r.sw, 640);
+  assert.equal(Math.round(r.sh), 360);
+  assert.equal(r.sy, 60);
+});
+
+// ── the stereo record in the file ──────────────────────────────────────────────────────────
+
+const META = { layout: 'sbs', convergencePx: 12.3456, baselineMm: 63, horizontalFovDeg: 70, rectified: true, eyeWidth: 1280, eyeHeight: 720, software: 'x "y" <z> & w' };
+// SOI + APP0 (JFIF) + a DQT stub + SOS + EOI: enough JPEG to carry an APP1.
+const tinyJpeg = () => new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xdb, 0, 4, 0, 1, 0xff, 0xda, 0, 2, 1, 2, 3, 0xff, 0xd9]);
+
+test('XMP: the stereo record round-trips through a JPEG, is inserted after JFIF, replaced on rewrite, and absent reads null', () => {
+  const xmp = buildStereoXmp(META);
+  assert.match(xmp, /^<\?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"\?>/);
+  assert.ok(xmp.includes('xmlns:dxr="http://displayxr.org/ns/stereo/1.0/"'));
+  const jpeg = tinyJpeg();
+  const out = jpegWithXmp(jpeg, xmp);
+  assert.equal(readJpegXmp(out), xmp);
+  // Inserted right after the APP0 segment (byte 20), before the DQT.
+  assert.deepEqual([...out.slice(20, 22)], [0xff, 0xe1]);
+  assert.deepEqual(readJpegStereoMeta(out), { layout: 'sbs', columns: 2, rows: 1, convergencePx: 12.346, baselineMm: 63, horizontalFovDeg: 70, rectified: true, eyeWidth: 1280, eyeHeight: 720, software: 'x "y" <z> & w' });
+  assert.equal(fromEntry, readJpegStereoMeta, 'the reader is public on the entry');
+  const again = jpegWithXmp(out, buildStereoXmp({ layout: 'mono' }));
+  assert.equal(readJpegStereoMeta(again).layout, 'mono', 'a second write replaces, never appends');
+  assert.equal(readJpegStereoMeta(again).columns, 1);
+  assert.equal(readJpegXmp(jpeg), null);
+  assert.equal(readJpegStereoMeta(jpeg), null);
+  assert.equal(parseStereoXmp('<x:xmpmeta/>'), null, 'an XMP without our namespace is not a stereo record');
+  assert.throws(() => jpegWithXmp(new Uint8Array([1, 2, 3, 4, 5]), xmp), /not a JPEG/);
+  // Unknown fields are null, not NaN; a mono record carries no convergence.
+  assert.deepEqual(normalizeStereoMeta({ layout: 'mono', convergencePx: NaN }), { layout: 'mono', columns: 1, rows: 1, convergencePx: null, baselineMm: null, horizontalFovDeg: null, rectified: null, eyeWidth: null, eyeHeight: null, software: null });
+});
+
+// EBML header + Segment(unknown size) + Cluster(unknown size) + Timecode + a SimpleBlock stub.
+const liveWebm = () => new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x84, 0x42, 0x86, 0x81, 0x01, 0x18, 0x53, 0x80, 0x67, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x1f, 0x43, 0xb6, 0x75, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xe7, 0x81, 0x00, 0xa3, 0x82, 0x12, 0x54]);
+// EBML header + Segment(known size, 1-byte vint) + Timecode.
+const sizedWebm = () => new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x84, 0x42, 0x86, 0x81, 0x01, 0x18, 0x53, 0x80, 0x67, 0x83, 0xe7, 0x81, 0x00]);
+
+test('WebM: the stereo record round-trips as DXR_* tags, on a live (unknown-size) and a sized Segment', () => {
+  const entries = stereoTagEntries(META);
+  assert.equal(entries.DXR_LAYOUT, 'side-by-side');
+  assert.equal(entries.DXR_CONVERGENCE_PX, '12.346');
+  const live = webmWithTags(liveWebm(), entries);
+  assert.equal(live.length, liveWebm().length + buildWebmTags(entries).length, 'an unknown-size Segment just grows');
+  assert.deepEqual(readWebmStereoMeta(live), readJpegStereoMeta(jpegWithXmp(tinyJpeg(), buildStereoXmp(META))), 'the same record either way');
+  assert.equal(readWebmTags(liveWebm()), null);
+  const sized = webmWithTags(sizedWebm(), { DXR_LAYOUT: 'mono', DXR_ROWS: '1', DXR_COLUMNS: '1' });
+  assert.equal(sized[13], 0x80 | (3 + buildWebmTags({ DXR_LAYOUT: 'mono', DXR_ROWS: '1', DXR_COLUMNS: '1' }).length), 'the known size is patched in place');
+  assert.equal(readWebmStereoMeta(sized).layout, 'mono');
+  assert.deepEqual(readWebmTags(sized), { DXR_LAYOUT: 'mono', DXR_ROWS: '1', DXR_COLUMNS: '1' });
+  assert.throws(() => webmWithTags(new Uint8Array([0, 1, 2, 3, 4, 5]), entries), /not a WebM/);
+  assert.equal(readWebmStereoMeta(new Uint8Array([0, 1, 2, 3, 4, 5])), null);
+});
+
+test('suggestedName: `_2x1` for a pair, nothing for mono; the extension from the MIME type; a safe base', () => {
+  assert.equal(suggestedName('photo-20260101-120000', 'sbs', 'image/jpeg'), 'photo-20260101-120000_2x1.jpg');
+  assert.equal(suggestedName('photo', 'mono', 'image/png'), 'photo.png');
+  assert.equal(suggestedName('clip', 'sbs', 'video/webm;codecs=vp9'), 'clip_2x1.webm');
+  assert.equal(suggestedName('clip', 'sbs', 'video/mp4'), 'clip_2x1.mp4');
+  assert.equal(suggestedName('my selfie / 1', 'sbs', 'image/webp'), 'my-selfie-1_2x1.webp');
+  assert.equal(suggestedName('', 'mono', 'application/x'), 'capture.bin');
+  assert.equal(CAMERA_SDK, 'inline3d-camera/1');
+});
+
+// ── openCamera: codes and the StereoCamera contract ───────────────────────────────────────
+
+function fakeMedia(behaviour) {
+  return {
+    async getUserMedia({ video }) {
+      const id = video && video.deviceId ? video.deviceId.exact : undefined;
+      const r = behaviour(id);
+      if (r instanceof Error) throw r;
+      const track = Object.assign(new FakeTrack('video'), { label: id || 'default', getSettings: () => ({ width: r.w, height: r.h, deviceId: id || 'cam0', ...(r.stereo ? { displayxrStereo: r.stereo } : {}) }) });
+      return new FakeStream([track]);
+    },
+    async enumerateDevices() {
+      return [{ kind: 'videoinput', deviceId: 'cam0', label: 'Built-in' }, { kind: 'videoinput', deviceId: 'cam1', label: 'Tracker stereo' }];
+    },
+  };
+}
+const err = (name) => Object.assign(new Error(name), { name });
+
+test('openCamera: every device busy → camera-busy; a refused prompt → permission-denied; nothing → no-camera', async () => {
+  await assert.rejects(openCamera({ prefer: 'auto', mediaDevices: fakeMedia(() => err('NotReadableError')) }), (e) => e.code === 'camera-busy' && e.skipped.length > 0 && e.skipped.every((s) => s.busy));
+  await assert.rejects(openCamera({ prefer: 'auto', mediaDevices: fakeMedia(() => err('NotAllowedError')) }), (e) => e.code === 'permission-denied' && e.skipped.every((s) => s.denied));
+  await assert.rejects(openCamera({ prefer: 'mono', mediaDevices: fakeMedia(() => err('OverconstrainedError')) }), (e) => e.code === 'no-camera');
+  await assert.rejects(openCamera({ prefer: 'auto', mediaDevices: null }), (e) => e.code === 'no-camera');
+  assert.equal(noCameraCode([{ busy: true }, { busy: true }]), 'camera-busy');
+  assert.equal(noCameraCode([{ busy: true }, { denied: true }]), 'permission-denied');
+  assert.equal(noCameraCode([{ busy: false }]), 'no-camera');
+  assert.equal(isDeniedError(err('SecurityError')), true);
+  assert.equal(isBusyError(err('TrackStartError')), true);
+});
+
+test('openCamera: a stereo device (displayxrStereo) → format sbs + stereo info; the public spellings; `prefer` shorthand', async () => {
+  const stereo = { layout: 'side-by-side', rectified: true, baselineMm: 120, horizontalFovDeg: 64 };
+  const cam = await openCamera({ prefer: 'stereo', mediaDevices: fakeMedia((id) => (id === 'cam1' ? { w: 2560, h: 720, stereo } : { w: 1280, h: 720 })) });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.width, 2560);
+  assert.equal(cam.eyeWidth, 1280);
+  assert.deepEqual(cam.stereo, { rectified: true, baselineMm: 120, horizontalFovDeg: 64 });
+  assert.equal(cam.owned, true);
+  assert.equal(cam.state, 'live');
+  assert.equal(isStereoCamera(cam), true);
+  assert.equal(isStereoCamera({ stream: {} }), false);
+  const mono = await openCamera('mono', { mediaDevices: fakeMedia(() => ({ w: 1280, h: 720 })) }).catch(() => null);
+  // `openCamera('mono')` is the shorthand: the second argument is not an options bag.
+  assert.equal(mono, null, 'shorthand takes no second argument (no mediaDevices → rejects)');
+  const mono2 = await openCamera({ prefer: 'mono', mediaDevices: fakeMedia(() => ({ w: 1280, h: 720 })) });
+  assert.equal(mono2.format, 'mono');
+  assert.equal(mono2.stereo, null);
+  assert.equal(mono2.eyeWidth, 1280);
+});
+
+test('openCamera: a page-supplied MediaStream declares its format; calibration uses the public `horizontalFovDeg`', async () => {
+  const stream = new FakeStream([Object.assign(new FakeTrack('video'), { getSettings: () => ({ width: 1280, height: 480 }) })]);
+  const cam = await openCamera({ prefer: stream, format: 'sbs', calibration: { baselineMm: 63, horizontalFovDeg: 70 } });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.owned, false, 'never stops a stream it did not open');
+  assert.deepEqual(cam.stereo, { rectified: false, baselineMm: 63, horizontalFovDeg: 70 });
+  assert.deepEqual(cam.calibration, { baselineMm: 63, hfovDeg: 70 }, 'the hello-shaped calibration the call reads');
+  const guessed = await openCamera({ prefer: stream });
+  assert.equal(guessed.format, 'mono', '3D-ness is never guessed from a stream');
+  // Shorthand: the stream itself.
+  assert.equal((await openCamera(stream)).format, 'mono');
+});
+
+test("StereoCamera: 'ended' fires once when a track ends under us; close() is silent, idempotent, and stops only owned tracks", async () => {
+  const track = Object.assign(new FakeTrack('video'), { getSettings: () => ({ width: 1280, height: 480 }), listeners: {}, addEventListener(t, f) { (this.listeners[t] ||= []).push(f); }, removeEventListener(t, f) { this.listeners[t] = (this.listeners[t] || []).filter((x) => x !== f); } });
+  const stream = new FakeStream([track]);
+  const cam = await openCamera({ prefer: stream, format: 'sbs' });
+  const ended = [];
+  const off = cam.on('ended', (e) => ended.push(e.reason));
+  for (const f of track.listeners.ended) f();
+  for (const f of track.listeners.ended) f();
+  assert.deepEqual(ended, ['ended']);
+  assert.equal(cam.state, 'ended');
+  off();
+  cam.close();
+  cam.close();
+  assert.equal(cam.state, 'closed');
+  assert.equal(track.readyState, 'live', 'a page-supplied track is not stopped');
+  assert.deepEqual(ended, ['ended'], 'close() fires no ended');
+  const owned = await openCamera({ prefer: 'mono', mediaDevices: fakeMedia(() => ({ w: 640, h: 480 })) });
+  const t = owned.stream.getVideoTracks()[0];
+  owned.close();
+  assert.equal(t.readyState, 'ended', 'an owned track is stopped');
+  await assert.rejects(owned.capturePhoto(), (e) => e.code === 'closed');
+  assert.throws(() => owned.record(), (e) => e.code === 'closed');
+});
+
+test('openCamera: the rectify hook replaces a raw pair and marks it rectified; a throwing hook keeps the raw pair', async () => {
+  const md = fakeMedia((id) => (id === 'cam1' ? { w: 1280, h: 480 } : { w: 1280, h: 720 }));
+  const rectified = new FakeStream([Object.assign(new FakeTrack('video'), { getSettings: () => ({ width: 1280, height: 480 }) })]);
+  const cam = await openCamera({ prefer: 'stereo', mediaDevices: md, rectify: async (s, info) => (info.width === 1280 ? rectified : s) });
+  assert.equal(cam.stream, rectified);
+  assert.equal(cam.stereo.rectified, true);
+  const raw = await openCamera({ prefer: 'stereo', mediaDevices: md, rectify: () => { throw new Error('no calibration'); } });
+  assert.equal(raw.stereo.rectified, false);
+  assert.match(raw.rectifyError.message, /no calibration/);
+  const mono = await openCamera({ prefer: 'mono', mediaDevices: md, rectify: () => { throw new Error('never called'); } });
+  assert.equal(mono.rectifyError, undefined, 'a mono camera never goes through rectify');
+});
+
+// ── addCameraView: routes ─────────────────────────────────────────────────────────────────
+
+const sbsCam = () => openCamera({ prefer: new FakeStream([Object.assign(new FakeTrack('video'), { getSettings: () => ({ width: 1280, height: 480 }) })]), format: 'sbs' });
+
+test('addCameraView: a pair on a 3D wall is woven (addImage) and mirrored; on a 2D wall it is the left eye; mono is flat', async () => {
+  const added = [];
+  const wall = { supported: true, addImage: (canvas, src) => { const h = { canvas, src, removed: 0, remove() { this.removed++; } }; added.push(h); return h; } };
+  const cam = await sbsCam();
+  const canvas = doc.createElement('canvas');
+  const view = addCameraView(wall, canvas, cam);
+  assert.equal(view.route, 'woven-sbs');
+  assert.equal(view.woven, true);
+  assert.equal(view.mirror, true);
+  assert.equal(added.length, 1);
+  assert.equal(added[0].canvas, canvas, 'the tile canvas is the one on the wall');
+  assert.notEqual(added[0].src, canvas, 'painted from an intermediate SBS buffer the view owns');
+  assert.equal(view.handle, added[0]);
+  assert.equal(view.setDepth(3), 1, 'depth clamps to [-1, 1]');
+  assert.equal(view.setDepth(null), 0);
+  assert.equal(view.setMirror(), false);
+  assert.equal(view.setMirror(true), true);
+  assert.equal(view.setAutoConverge(true), true);
+  assert.equal(view.disparityPx, null);
+  view._onWallLost();
+  assert.equal(view.route, 'flat-left', 'wall lost → the left eye, flat');
+  assert.equal(added[0].removed, 1);
+  view._reroute(true, wall);
+  assert.equal(view.route, 'woven-sbs');
+  assert.equal(added.length, 2, 're-registered on the wall');
+  view.remove();
+  assert.equal(added[1].removed, 1);
+  assert.equal(view.route, 'woven-sbs', 'route is a record of the last registration');
+  view.remove(); // idempotent
+  assert.equal(added[1].removed, 1);
+  const flat = addCameraView({ supported: false }, doc.createElement('canvas'), cam);
+  assert.equal(flat.route, 'flat-left');
+  assert.equal(flat.handle, null);
+  flat.remove();
+  const mono = await openCamera({ prefer: new FakeStream([new FakeTrack('video')]) });
+  const m = addCameraView(wall, doc.createElement('canvas'), mono);
+  assert.equal(m.route, 'flat', 'mono is never woven');
+  assert.equal(added.length, 2);
+  m.remove();
+  // close() removes every view of the camera.
+  const v2 = addCameraView(wall, doc.createElement('canvas'), cam);
+  cam.close();
+  assert.equal(v2.removed, true);
+  assert.equal(added.at(-1).removed, 1);
+  assert.throws(() => addCameraView(wall, null, cam), /needs a canvas/);
+  assert.throws(() => addCameraView(wall, doc.createElement('canvas'), {}), /StereoCamera/);
+});
+
+// ── addCameraView: frames ────────────────────────────────────────────────────────────────
+
+test('addCameraView: the woven buffer starts EMPTY, and frameAgeMs follows the camera clock', async () => {
+  const added = [];
+  const wall = { supported: true, addImage: (canvas, src) => { const h = { canvas, src, remove() {} }; added.push(h); return h; } };
+  const cam = await sbsCam();
+  const view = addCameraView(wall, doc.createElement('canvas'), cam, { _loop: false });
+  // The wall must not see a default 300x150 canvas as a painted stereo frame (core: sourceHasPixels).
+  assert.equal(added[0].src.width, 0);
+  assert.equal(added[0].src.height, 0);
+  assert.equal(view.frameAgeMs, null, 'no frame yet');
+  assert.equal(view.weaveState().frameAgeMs, null);
+  const v = cam.video;
+  Object.assign(v, { readyState: 4, currentTime: 1 });
+  view.paint();
+  assert.equal(typeof view.frameAgeMs, 'number');
+  assert.ok(view.frameAgeMs >= 0);
+  // A stalled track: the clock stops, the age grows (the last frame stays on screen).
+  const at = view._lastFrameAt;
+  view.paint();
+  assert.equal(view._lastFrameAt, at, 'the same frame again is not a new frame');
+  v.currentTime = 1.033;
+  view.paint();
+  assert.ok(view._lastFrameAt >= at);
+  view.remove();
+});
+
+// ── addCameraView: follows firstWoven (web#131) ───────────────────────────────────────────
+
+/** A 3D wall whose addImage handles carry a firstWoven the test settles by hand. */
+function fwWall() {
+  const added = [];
+  const wall = {
+    supported: true,
+    addImage(canvas, src) {
+      let settle;
+      const firstWoven = new Promise((r) => (settle = r));
+      const h = { canvas, src, removed: 0, firstWoven, settle: (woven, reason) => settle({ woven, confirmed: false, reason, ms: 5 }), remove() { this.removed++; } };
+      added.push(h);
+      return h;
+    },
+  };
+  return { wall, added };
+}
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+test('addCameraView: a tile the wall will not weave (layer-failed) drops to the flat left eye, says why, and is retried', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { wall, added } = fwWall();
+  const cam = await sbsCam();
+  const changes = [];
+  const view = addCameraView(wall, doc.createElement('canvas'), cam, { onRouteChange: (route, st) => changes.push([route, st.woven, st.reason]) });
+  assert.equal(view.route, 'woven-sbs');
+  assert.equal(view.weaveState().firstWoven, 'pending');
+  added[0].settle(false, 'layer-failed');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(view.route, 'flat-left', 'never the packed pair: one eye, flat');
+  assert.equal(view.woven, false);
+  assert.equal(view.fallbackReason, 'layer-failed');
+  assert.equal(added[0].removed, 1, 'the dead registration was left');
+  assert.deepEqual(changes.at(-1), ['flat-left', false, 'layer-failed']);
+  assert.deepEqual(view.weaveState(), { route: 'flat-left', woven: false, reason: 'layer-failed', firstWoven: null, layerRetries: 1, frameAgeMs: null });
+  // An unforced reroute (the call's update()) keeps it flat while the fallback stands.
+  view._reroute(false);
+  assert.equal(view.route, 'flat-left');
+  assert.equal(added.length, 1);
+  // The backoff retry re-registers on the same wall.
+  t.mock.timers.tick(1500);
+  assert.equal(view.route, 'woven-sbs');
+  assert.equal(view.fallbackReason, null);
+  assert.equal(added.length, 2);
+  // …and a woven result this time sticks, resets the retry count, and tells the page.
+  added[1].settle(true, 'hold-elapsed');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(view.route, 'woven-sbs');
+  assert.deepEqual(view.weaveState().firstWoven, { woven: true, confirmed: false, reason: 'hold-elapsed', ms: 5 });
+  assert.equal(view.weaveState().layerRetries, 0);
+  assert.deepEqual(changes.at(-1), ['woven-sbs', true, null]);
+  view.remove();
+});
+
+test('addCameraView: retries are bounded; a session that ended waits for _reroute(true, wall)', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { wall, added } = fwWall();
+  const cam = await sbsCam();
+  const view = addCameraView(wall, doc.createElement('canvas'), cam);
+  for (let i = 0; i < 4; i++) {
+    added.at(-1).settle(false, 'layer-failed');
+    await tick0();
+    assert.equal(view.route, 'flat-left');
+    t.mock.timers.tick(20000);
+    assert.equal(view.route, 'woven-sbs', `retry ${i + 1} re-registered`);
+  }
+  added.at(-1).settle(false, 'layer-failed');
+  await tick0();
+  t.mock.timers.tick(60000);
+  assert.equal(view.route, 'flat-left', 'after the last retry the view stays flat');
+  assert.equal(added.length, 5);
+  // The wall comes back (the call's recovery): a forced reroute registers again.
+  view._reroute(true, wall);
+  assert.equal(view.route, 'woven-sbs');
+  assert.equal(view.fallbackReason, null);
+  assert.equal(added.length, 6);
+  // A session that ended is not retried on a timer: flat until a wall is handed back.
+  added.at(-1).settle(false, 'session-ended');
+  await tick0();
+  assert.equal(view.route, 'flat-left');
+  assert.equal(view.fallbackReason, 'session-ended');
+  t.mock.timers.tick(60000);
+  assert.equal(added.length, 6);
+  view._reroute(true, wall);
+  assert.equal(view.route, 'woven-sbs');
+  // A result for a registration the view already left is ignored.
+  const stale = added.at(-1);
+  view._reroute(true, wall);
+  stale.settle(false, 'layer-failed');
+  await tick0();
+  assert.equal(view.route, 'woven-sbs');
+  assert.equal(view.fallbackReason, null);
+  view.remove();
+  added.at(-1).settle(false, 'removed');
+  await tick0();
+  assert.equal(view.fallbackReason, null, 'its own remove() is not a failure');
+});
+
+test('addCameraView: a woven tile stays 3D when firstWoven settles woven', async () => {
+  const { wall, added } = fwWall();
+  const cam = await sbsCam();
+  const view = addCameraView(wall, doc.createElement('canvas'), cam);
+  added[0].settle(true, 'hold-elapsed');
+  await tick();
+  assert.equal(view.route, 'woven-sbs');
+  assert.equal(view.woven, true);
+  assert.equal(view.fallbackReason, null);
+  assert.equal(added.length, 1, 'no re-registration');
+  assert.equal(added[0].removed, 0);
+  view.remove();
+});
+
+/** Two microtask turns: the firstWoven .then and anything it chains (no timer, so mock-safe). */
+async function tick0() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+test('addCameraView mirrors a camera facing the user by default, not one facing the environment', async () => {
+  installCallDom();
+  const camFacing = (facingMode) => openCamera({ prefer: new FakeStream([Object.assign(new FakeTrack('video'), { getSettings: () => ({ width: 2560, height: 720, ...(facingMode ? { facingMode } : {}) }) })]), format: 'sbs' });
+  const flat = { supported: false };
+  const rear = await camFacing('environment');
+  assert.equal(rear.facing, 'environment');
+  const vRear = addCameraView(flat, doc.createElement('canvas'), rear, { _loop: false });
+  assert.equal(vRear.mirror, false, 'a rear 3D camera shows the world as it is');
+  const front = await camFacing('user');
+  assert.equal(addCameraView(flat, doc.createElement('canvas'), front, { _loop: false }).mirror, true, 'a selfie camera mirrors');
+  const unknown = await camFacing(null);
+  assert.equal(unknown.facing, null);
+  assert.equal(addCameraView(flat, doc.createElement('canvas'), unknown, { _loop: false }).mirror, true, 'an unknown facing is a webcam pointed at the viewer');
+  assert.equal(addCameraView(flat, doc.createElement('canvas'), rear, { mirror: true, _loop: false }).mirror, true, 'an explicit mirror wins');
+  assert.equal(addCameraView(flat, doc.createElement('canvas'), front, { mirror: false, _loop: false }).mirror, false);
+});
+
+// A device list whose labels stay hidden until the first getUserMedia succeeds, as before permission.
+function permissionMedia(cams) {
+  let granted = false;
+  const opens = [];
+  return {
+    opens,
+    async getUserMedia({ video }) {
+      const id = video.deviceId ? video.deviceId.exact : null;
+      const facing = video.facingMode ? video.facingMode.ideal : null;
+      const cam = id ? cams.find((c) => c.id === id) : cams.find((c) => facing && c.facing === facing) || cams[0];
+      opens.push(id ? `id:${id}` : facing ? `facing:${facing}` : 'default');
+      granted = true;
+      const track = Object.assign(new FakeTrack('video'), { label: cam.label, getSettings: () => ({ width: cam.w, height: cam.h, deviceId: cam.id, ...(cam.facing ? { facingMode: cam.facing } : {}), ...(cam.stereo ? { displayxrStereo: cam.stereo } : {}) }) });
+      return new FakeStream([track]);
+    },
+    async enumerateDevices() {
+      return cams.map((c) => ({ kind: 'videoinput', deviceId: granted ? c.id : '', label: granted ? c.label : '' }));
+    },
+  };
+}
+
+test('openCamera without permission in the DisplayXR Browser: the bare prime opens the 3D camera (listed first) and no lens', async () => {
+  const md = permissionMedia([
+    { id: 'pair', label: '3D Camera (DisplayXR)', facing: 'user', w: 1440, h: 1280, stereo: { layout: 'side-by-side', rectified: true, baselineMm: 25, horizontalFovDeg: 60 } },
+    { id: 'cam0', label: 'camera 0, facing front', facing: 'user', w: 1280, h: 720 },
+    { id: 'cam1', label: 'camera 1, facing front', facing: 'user', w: 1280, h: 720 },
+  ]);
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.deviceId, 'pair');
+  assert.deepEqual(md.opens, ['default'], 'one start, no constraint that could pick a lens');
+  assert.ok(!md.opens.some((o) => o.startsWith('facing:')), 'never primes by facing');
+});
+
+test('openCamera without permission, pair not listed first: the default primes, then the 3D camera is opened by id', async () => {
+  const md = permissionMedia([
+    { id: 'front', label: 'camera 1, facing front', facing: 'user', w: 1280, h: 720 },
+    { id: 'pair', label: '3D Camera, rear (DisplayXR)', facing: 'environment', w: 2560, h: 720, stereo: { layout: 'side-by-side', rectified: true, baselineMm: 30, horizontalFovDeg: 64 } },
+  ]);
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.deviceId, 'pair');
+  assert.deepEqual(md.opens, ['default', 'id:pair']);
+});
+
+test('openCamera without permission on a desktop: one webcam, opened once and kept as the mono fallback in the usual mode', async () => {
+  const md = permissionMedia([{ id: 'webcam', label: 'FaceTime HD Camera', w: 640, h: 480 }]);
+  const applied = [];
+  const gum = md.getUserMedia.bind(md);
+  md.getUserMedia = async (c) => {
+    const s = await gum(c);
+    const t = s.getVideoTracks()[0];
+    const base = t.getSettings();
+    let mode = null;
+    t.applyConstraints = async (k) => {
+      applied.push(k);
+      mode = { width: k.width.ideal, height: k.height.ideal };
+    };
+    t.getSettings = () => ({ ...base, ...(mode || {}) });
+    return s;
+  };
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.format, 'mono');
+  assert.deepEqual(md.opens, ['default'], 'no second camera start');
+  assert.equal(applied.length, 1);
+  assert.equal(cam.width, 1280);
+  assert.equal(cam.height, 720);
+});
+
+test('openCamera with labels visible: a 3D camera that joins the list late is found by a second read', async () => {
+  const md = permissionMedia([
+    { id: 'cam0', label: 'camera 0, facing front', facing: 'user', w: 1280, h: 720 },
+    { id: 'pair', label: '3D Camera (DisplayXR)', facing: 'user', w: 1440, h: 1280, stereo: { layout: 'side-by-side', rectified: true, baselineMm: 25, horizontalFovDeg: 60 } },
+  ]);
+  await md.getUserMedia({ video: { deviceId: { exact: 'cam0' } } }); // grant: labels now visible
+  md.opens.length = 0;
+  const all = md.enumerateDevices.bind(md);
+  let reads = 0;
+  md.enumerateDevices = async () => {
+    const list = await all();
+    return reads++ === 0 ? list.filter((d) => d.deviceId !== 'pair') : list;
+  };
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.deviceId, 'pair');
+  assert.deepEqual(md.opens, ['id:pair'], 'camera 0 is never opened');
+});
+
+test('openCamera without permission on a phone with no pair: the self view still falls back to the default (front) camera', async () => {
+  const md = permissionMedia([
+    { id: 'front', label: 'camera 1, facing front', facing: 'user', w: 1280, h: 720 },
+    { id: 'rear', label: 'camera 0, facing back', facing: 'environment', w: 1280, h: 720 },
+  ]);
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.format, 'mono');
+  assert.equal(cam.deviceId, 'front');
+});
+
+test('openCamera: a track that declares side-by-side is a pair whatever its aspect (portrait phone eyes, 1440x1280)', async () => {
+  const md = permissionMedia([
+    { id: 'front', label: 'camera 1, facing front', facing: 'user', w: 1280, h: 720 },
+    { id: 'pair', label: '3D Camera (DisplayXR)', facing: 'user', w: 1440, h: 1280, stereo: { layout: 'side-by-side', rectified: true, baselineMm: 25, horizontalFovDeg: 60 } },
+  ]);
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.deviceId, 'pair');
+  assert.equal(cam.eyeWidth, 720);
+  assert.deepEqual(md.opens, ['default', 'id:pair'], 'the prime is let go for the pair, never kept as the camera');
+  // With labels visible, the declared pair is kept by the fast path too.
+  const again = await openCamera({ prefer: 'auto', mediaDevices: md });
+  assert.equal(again.format, 'sbs');
+  assert.equal(again.deviceId, 'pair');
+});
+
+// ── a DisplayXR Browser whose 3D camera is listed late (runtime restart, camera HAL restart) ──
+
+const PAIR = { id: 'pair', label: '3D Camera (DisplayXR)', facing: 'user', w: 1440, h: 1280, stereo: { layout: 'side-by-side', rectified: true, baselineMm: 25, horizontalFovDeg: 60 } };
+const LENSES = [
+  { id: 'cam1', label: 'camera 1, facing front', facing: 'user', w: 640, h: 480 },
+  { id: 'cam0', label: 'camera 0, facing back', facing: 'environment', w: 640, h: 480 },
+];
+/** Labels already visible; the pair is listed only once `listed()` says so. Records when each open happened. */
+function lateMedia(listed) {
+  const md = permissionMedia([...LENSES, PAIR]);
+  const listeners = new Set();
+  md.addEventListener = (ev, fn) => ev === 'devicechange' && listeners.add(fn);
+  md.removeEventListener = (ev, fn) => listeners.delete(fn);
+  md.fireDeviceChange = () => [...listeners].forEach((fn) => fn());
+  return (async () => {
+    await md.getUserMedia({ video: { deviceId: { exact: 'cam1' } } }); // permission granted
+    md.opens.length = 0;
+    md.openedAt = [];
+    const gum = md.getUserMedia.bind(md);
+    md.getUserMedia = async (c) => {
+      md.openedAt.push(Date.now());
+      return gum(c);
+    };
+    const all = md.enumerateDevices.bind(md);
+    md.enumerateDevices = async () => (await all()).filter((d) => d.deviceId !== 'pair' || listed());
+    return md;
+  })();
+}
+
+test('openCamera waits for a 3D camera listed late, and opens no plain lens while it waits', async () => {
+  let reads = 0;
+  const md = await lateMedia(() => ++reads > 3);
+  const t0 = Date.now();
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md, stereoWaitMs: 2000 });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.deviceId, 'pair');
+  assert.deepEqual(md.opens, ['id:pair'], 'no phone lens opened at all');
+  assert.ok(Date.now() - t0 < 2000, 'returns as soon as it is listed, not at the deadline');
+});
+
+test('openCamera: a devicechange re-reads the list at once', async () => {
+  let up = false;
+  const md = await lateMedia(() => up);
+  const t0 = Date.now();
+  setTimeout(() => {
+    up = true;
+    md.fireDeviceChange();
+  }, 50);
+  const cam = await openCamera({ prefer: 'stereo', mediaDevices: md, stereoWaitMs: 2000 });
+  assert.equal(cam.deviceId, 'pair');
+  assert.ok(Date.now() - t0 < 400, `found on the event, not the 500 ms tick (${Date.now() - t0} ms)`);
+});
+
+test('openCamera: no 3D camera within stereoWaitMs → the plain lens, opened only after the wait', async () => {
+  const md = await lateMedia(() => false);
+  const t0 = Date.now();
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md, stereoWaitMs: 300 });
+  assert.equal(cam.format, 'mono');
+  assert.ok(md.openedAt.length > 0 && md.openedAt[0] - t0 >= 290, `first open after the wait (${md.openedAt[0] - t0} ms)`);
+});
+
+test('openCamera: prefer mono never waits; stereoWaitMs 0 reads the list once more and goes on', async () => {
+  const md = await lateMedia(() => false);
+  let t0 = Date.now();
+  assert.equal((await openCamera({ prefer: 'mono', mediaDevices: md, stereoWaitMs: 2000 })).format, 'mono');
+  assert.ok(Date.now() - t0 < 200);
+  t0 = Date.now();
+  assert.equal((await openCamera({ prefer: 'auto', mediaDevices: await lateMedia(() => false), stereoWaitMs: 0 })).format, 'mono');
+  assert.ok(Date.now() - t0 < 200);
+});
+
+test('defaultStereoWaitMs: 2500 in a DisplayXR Browser (navigator.xr + XRDisplayLayer), else 0', async () => {
+  const { defaultStereoWaitMs, STEREO_WAIT_MS } = await import('../js/camera/capture.js');
+  const hadXr = Object.getOwnPropertyDescriptor(globalThis.navigator, 'xr');
+  const hadWindow = 'window' in globalThis;
+  if (!hadWindow) globalThis.window = {};
+  const hadLayer = globalThis.window.XRDisplayLayer;
+  try {
+    Object.defineProperty(globalThis.navigator, 'xr', { value: undefined, configurable: true });
+    assert.equal(defaultStereoWaitMs(), 0);
+    Object.defineProperty(globalThis.navigator, 'xr', { value: {}, configurable: true });
+    globalThis.window.XRDisplayLayer = function XRDisplayLayer() {};
+    assert.equal(defaultStereoWaitMs(), STEREO_WAIT_MS);
+    assert.equal(STEREO_WAIT_MS, 2500);
+  } finally {
+    if (hadXr) Object.defineProperty(globalThis.navigator, 'xr', hadXr);
+    else delete globalThis.navigator.xr;
+    globalThis.window.XRDisplayLayer = hadLayer;
+    if (!hadWindow) delete globalThis.window;
+  }
+});
+
+test('openCamera with labels visible, default delivers 0x0 (camera HAL restarting): a lens that opens by id is KEPT as the fallback', async () => {
+  const opens = [];
+  const md = {
+    async getUserMedia({ video }) {
+      const id = video && video.deviceId ? video.deviceId.exact : null;
+      opens.push(id || 'default');
+      const cam = LENSES.find((c) => c.id === id);
+      const w = cam ? cam.w : 0;
+      const h = cam ? cam.h : 0;
+      const track = Object.assign(new FakeTrack('video'), { label: cam ? cam.label : '', getSettings: () => ({ width: w, height: h, deviceId: id || '' }) });
+      return new FakeStream([track]);
+    },
+    async enumerateDevices() {
+      return LENSES.map((c) => ({ kind: 'videoinput', deviceId: c.id, label: c.label }));
+    },
+  };
+  const cam = await openCamera({ prefer: 'auto', mediaDevices: md, stereoWaitMs: 0 });
+  assert.equal(cam.format, 'mono');
+  assert.equal(cam.deviceId, 'cam1');
+  assert.ok(cam.skipped.some((s) => s.label === 'default' && s.busy), 'the 0x0 default is reported');
+  // Outside a DisplayXR Browser the last-resort loop still probes the other lens for a pair by
+  // shape (a USB stereo webcam is found that way), but never gives up the lens it kept.
+  assert.ok(opens.includes('cam0'));
+  // In a DisplayXR Browser it stops at the first plain lens: a USB pair is the runtime's named
+  // 3D Camera there, and the extra open is the one that can crash a phone's camera HAL.
+  const hadXr = Object.getOwnPropertyDescriptor(globalThis.navigator, 'xr');
+  const hadWindow = 'window' in globalThis;
+  if (!hadWindow) globalThis.window = {};
+  const hadLayer = globalThis.window.XRDisplayLayer;
+  try {
+    Object.defineProperty(globalThis.navigator, 'xr', { value: {}, configurable: true });
+    globalThis.window.XRDisplayLayer = function XRDisplayLayer() {};
+    opens.length = 0;
+    const dxr = await openCamera({ prefer: 'auto', mediaDevices: md, stereoWaitMs: 0 });
+    assert.equal(dxr.deviceId, 'cam1');
+    assert.deepEqual(opens, ['default', 'cam1'], 'no second plain lens');
+  } finally {
+    if (hadXr) Object.defineProperty(globalThis.navigator, 'xr', hadXr);
+    else delete globalThis.navigator.xr;
+    globalThis.window.XRDisplayLayer = hadLayer;
+    if (!hadWindow) delete globalThis.window;
+  }
+});
+
+// ── half-SBS webcams: read natively, eyes un-squeezed ────────────────────────────────
+
+test('half-SBS: known by USB id in the label, never by shape', () => {
+  assert.equal(isHalfSbsCamera('Stereo webcam (0733:011a)'), true);
+  assert.equal(isHalfSbsCamera('STEREO WEBCAM (0733:011A)'), true);
+  assert.equal(isHalfSbsCamera('4K webcam (046d:085e)'), false);
+  assert.equal(isHalfSbsCamera(''), false);
+});
+
+test('half-SBS: a 3840x2160 frame becomes 2560x720, two square-pixel 16:9 eyes', () => {
+  assert.deepEqual(unsqueezedSize(3840, 2160), { width: 2560, height: 720 });
+  // Never upscaled: a smaller native mode keeps its own eye width.
+  assert.deepEqual(unsqueezedSize(640, 360), { width: 1280, height: 360 });
+});
+
+test('half-SBS: without MediaStreamTrackProcessor the source is left as it opened', async () => {
+  let asked = 0;
+  const source = { applyConstraints: async () => asked++, getSettings: () => ({ width: 3840, height: 1080 }) };
+  assert.equal(await unsqueezeHalfSbs(source), null);
+  assert.equal(asked, 0);
+});

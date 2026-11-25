@@ -1,0 +1,95 @@
+# Depth and comfort on a 3D display
+
+The SDK's defaults already give comfortable, real-looking 3D. These rules cover the mistakes seen
+on real panels; everything else about how your scene looks is your call.
+
+1. **The subject straddles the glass: about a quarter in front, the rest just behind. Keep the
+   viewer's placement, and frame the first view.** Put the glass (z = 0) through the subject so a
+   little of it comes out and most of it sits just behind, at its real proportions (no
+   exaggeration). For a mesh, "a quarter" is measured on its surface: `addModel` puts the screen
+   plane at the surface's 75th-percentile depth toward the viewer, turns the model about the
+   surface's median and fits it from trimmed extents, so a thin tail or antenna moves neither its
+   size nor its depth ([authoring-inline-3d.md § How addModel frames a model](authoring-inline-3d.md#how-addmodel-frames-a-model)).
+   `addSplat` and `SceneViewer.fitTo(center, extent)` centre the subject's robust centre on the
+   glass. A scene you build yourself follows the same rule. Don't push it back, shrink it or
+   flatten it to make it "more comfortable": recession costs disparity and crosstalk like pop-out
+   does, and only buys softness. **Too little depth is a failure too**: near-zero disparity reads
+   as a flat picture on these displays. A display rig's `ipdFactor: 1` is the natural depth; don't
+   lower it without a reason. Recede content only where it must clear something flat in front
+   of it (an HTML label over the scene), and only that part; HTML beside the scene needs no room.
+   The first view shows the whole subject, centred: a globe or a tank
+   that starts low and cut off by the frame reads as broken. If the user can zoom, cap zoom-in
+   before the subject comes uncomfortably far out, and leave room to zoom out.
+2. **Tilt flat arrangements; don't push them back.** Orbits, a map, a board game: tilt the plane
+   they lie in about an axis through the glass (about 25–40° from face-on is plenty), so its near
+   edge comes slightly forward, its far edge recedes and its centre stays on the glass. Only the
+   exactly face-on view reads as flat circles; a fairly top-down view is fine. A chart, a figure
+   or a building starts upright.
+3. **Moving things: keep the forward swing small.** Objects that orbit, fly or swing toward the
+   viewer are where pop-out becomes uncomfortable. Keep their paths mostly at or behind the glass,
+   and fade them out as they come close to the viewer. A follow camera keeps its subject in frame
+   on fast moves.
+4. **Worlds: real depth, fixed convergence, near things away.** On a camera rig, set
+   `convergence` to the distance from the camera to the centre of interest, so the subject
+   straddles the glass. Never rescale the world; set `metersToVirtual`: the true conversion if the
+   world has a true scale, else `convergence / 2` (the subject declared 2 m away), re-set per
+   frame if the camera zooms a lot. Then let `ipdFactor` tune the depth: ≈ 1 for an open scene, raised
+   for a bounded one (a board, a room, a track) until the nearest and farthest visible content
+   fill most of the comfort zone (`cameraRigComfortFactor`; typically 1.5–2.5). Rule and worked
+   example: [authoring-inline-3d.md § Aim for real depth](authoring-inline-3d.md#aim-for-real-depth).
+   Set `convergence` once for the scene, or change it slowly when the scene changes, and
+   never lower the depth as the user zooms: budgets are reports, not limits. Never set convergence
+   from where the user is looking: whatever they look at lands on the glass and goes flat. Never
+   set it to 0. Near geometry is where a world goes wrong: a window frame, a wall or a crossbar close to
+   the camera comes far out of the glass and ghosts. Keep the visitor's camera well clear of
+   walls and furniture, or lower `ipdFactor` while it is close.
+5. **Low contrast between the subject and what is behind it.** The display's crosstalk correction
+   works only within the range of the image, so a bright edge on black ghosts first. A light or
+   mid-tone, low-contrast background works best: a real texture or a soft gradient, not generated
+   noise. A dark grey is the minimum (a bright orange beak still ghosts against it), and pure
+   black is the worst case; keep the subject's darkest faces above the background. In front of
+   the glass, contrast matters more than the depth number: the same pop-out read fine on a
+   mid-tone globe and ghosted on a dark one. Keep bright subjects off near-black backgrounds,
+   above all the ones that come closest. Soften high-contrast detail far from the glass in the colours and
+   materials, not with fog, since camera-distance fog follows the viewer's head. A photo behind the
+   subject goes in the scene, behind it (rule 10).
+6. **Text: flat HTML near the glass, at a readable size.** Text drawn in the 3D scene, especially
+   white on dark, ghosts. Put titles, labels and values in HTML, or keep in-scene labels close to
+   the glass, facing the viewer, and show them on hover. Never shrink text to hide ghosting.
+7. **No coplanar surfaces.** Z-fighting (two faces at the same depth flickering through each
+   other) is the most common defect seen on panels, and in 3D it reads as shimmer at one depth.
+   Offset decals, shadows, shelf faces and picture frames from the surface they sit on. Keep
+   geometry solid: no paper-thin or floating floors, no holes in rocks, nothing clipping through
+   glass.
+8. **No detail finer than a few pixels.** Thin lines, single-pixel stars and fine repeating
+   patterns alias and shimmer as the head moves. Draw them thicker, softer or as sprites, and size
+   textures to their surfaces instead of stretching them.
+9. **A cover over the canvas must always come off, and only a lost layer means flat.** If you
+   hide the canvas until `firstWoven`, also remove the cover after a few seconds and if your setup
+   throws; otherwise a missed signal leaves the page with its UI and no scene. A `firstWoven` of
+   `woven: false` is not "no 3D here": drop the cover and keep drawing both eyes (the layer can
+   still join). Go flat only on `onLayerLost` or with no session. And never draw one full-width
+   flat picture into a canvas the browser is still weaving: it splits it, so each eye sees a
+   different half of the room. To show a flat picture on purpose, remove the scene first, or call
+   `setStereoEnabled(false)` and keep drawing every view you are given.
+
+10. **A backdrop sits behind the subject, never on the glass.** A CSS image behind a transparent
+   canvas is drawn identically for both eyes, so it sits on the glass. Any part of the subject
+   behind the glass then hides a surface its disparity puts in front of it, and the eye reads the
+   conflict at the silhouette (a tail that seems cut off). Draw a photo backdrop inside the scene
+   as one plane fixed to the display, not to the subject: it does not turn with the orbit or grow
+   with the zoom. Put it behind the subject's farthest point at any turn and at the largest zoom
+   you allow (cap the zoom so this holds), at roughly 40% of the rear comfort budget, and make it
+   large enough that no head position sees its edge. `backdropPlacement()` in `./depth` gives the
+   depth and the size in tile heights. On PlayCanvas, parent the plane to `handle.viewer.rigNode`,
+   whose local frame is the display (+z toward the viewer, one tile height = `viewer.vH`), and
+   draw it unlit. Pre-blur the image and keep it mid-tone (rule 5): blur weakens its own
+   disparity, so its exact depth matters less, and reads as distance. No skybox or environment
+   map as a backdrop: infinity is far past the rear comfort zone on a display rig, and an
+   environment turns with the subject. A plain colour or a soft gradient needs none of this: it
+   carries no disparity cue to conflict with.
+
+The mechanics (one view per eye, CSS that breaks the weave, the 2D/3D switch) are in
+[woven-canvas-rules.md](woven-canvas-rules.md) and [authoring-inline-3d.md](authoring-inline-3d.md),
+which also gives the comfort zone in diopters and how the same content changes from a large
+monitor to a phone. The samples show how the API works, not how a page should look.

@@ -1,21 +1,33 @@
 // DisplayXR auto-3D — engine-agnostic core. PROTOTYPE, not a product.
 //
-// Loaded by the extension as the FIRST of three MAIN-world content scripts at document_start
-// (manifest.json: core.js → three-adapter.js → playcanvas-adapter.js). MV3 content scripts cannot
-// be ES modules, and a dynamic import() of a chrome-extension:// URL is asynchronous — it would
-// land after the page's first scripts and miss the three.js devtools hook / the PlayCanvas
-// constructor trap. So these files are plain scripts, run in order in the page's own world, and
-// the core hands its API to the adapters on a symbol-keyed, non-enumerable window property
-// (`window[Symbol.for('dxr.auto3d.core')]`). No bundler, no build step.
+// One PART of the build (build.mjs): `function dxrCore(cfg, cap, S)`, concatenated with guard.js,
+// chip.js, dev.js, three-adapter.js, playcanvas-adapter.js and babylon-adapter.js into ONE function body
+// (dist/auto3d-core.js), so every part shares one lexical scope and nothing is handed over on
+// `window`. The sentinel (sentinel.js) runs first, at document start, and calls it with:
+//   cfg  frozen data from the host for this frame: { decision: 'allow'|'offer'|'block',
+//        depths: { camera, display } (each DEPTH_MIN..DEPTH_MAX = 0.02..1), rig: 'camera'|'display',
+//        convScale (CONV_SCALE_MIN..CONV_SCALE_MAX = 0.05..20, 1 = automatic), dev,
+//        engines: { three, playcanvas, babylon }, test }
+//        The host validates cap.save against the same ranges. A user 'block' outside dev never
+//        reaches the core (the sentinel stays detect-only).
+//   cap  the host's capabilities, closures only: { loadCore(), save(partial), report({status, engine?, reason?}) }
+//   S    what the sentinel owns: { intrinsics, xrRequest, foreign(), onForeign(cb), optedOut(), disarm(),
+//        settle(canvas), devtools }. The core calls S.settle(canvas) when a canvas goes live (the
+//        PlayCanvas search is over unless another canvas has a WebGL context) and S.disarm() when it
+//        stands down for good (the page owns XR, opted out, the frame-rate guard blocked).
+// and gets back { ctl, three: { observe, register }, playcanvas: { consider }, babylon: { consider } }.
 //
 // What lives here (everything that is not about one engine):
 //   - document state: one inline-3D session per document (`owner`), standing down for good when
-//     the page owns inline-3D / WebXR itself (`foreign`), the per-origin config + kill switch;
+//     the page owns inline-3D / WebXR itself (`foreign`), the site decision (`site`, `on()`);
 //   - the session + layer lifecycle: activate → armed → flip → per-frame → stand;
 //   - the side-by-side (SBS) sizing rule and the canvas.width/height virtualisation helper;
 //   - the camera rig (unchanged from the three.js prototype) and the convergence estimator, as an
 //     interface fed by the engine (`estimateSubjectDistance(sampler)`);
-//   - the cover (woven-canvas rules, rule 5: firstWoven-style hold), HUD, hotkeys, diagnostics.
+//   - the cover (woven-canvas rules, rule 5: firstWoven-style hold) and the depth fades;
+//   - `ctl`, the controller the chip and the dev hotkeys share, and `notify()`, which fans every
+//     status change out to the chip, the dev HUD and the host (`cap.report`, transitions only).
+// The HUD, the hotkeys and `window.__dxrAuto3D` are dev.js (only when cfg.dev).
 //
 // What an adapter supplies (an object `ad` on each tracked state `st`, see ADAPTER CONTRACT below):
 // how to find the camera, draw a flat / stereo frame, resize the backing store, replay an idle
@@ -23,44 +35,105 @@
 //
 // Every number and behaviour is the three.js prototype's (content.js v0.1.0, PR #47); the split is
 // verified frame-for-frame by tools/auto3d-shim/test (parity: MAE 0.000).
-(() => {
-  'use strict';
-  const KEY = Symbol.for('dxr.auto3d.core');
-  if (window[KEY] || window.__dxrAuto3D) return;
-  if (typeof window.XRDisplayLayer !== 'function' || !navigator.xr) return; // not the DisplayXR Browser: inert
-
+function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.2.0';
+  const VERSION = '__DXR_AUTO3D_VERSION__'; // stamped by build.mjs from manifest.json
 
-  // ------------------------------------------------------------ config (per origin)
-  const DEFAULTS = {
-    v: 1,
-    enabled: true,      // auto-convert qualifying canvases on this origin
-    depth: 0.3,         // comfort number ipd×m2v×diopters×0.5 (runtime rule: <= 1). The runtime's qwerty rig sits at 0.25
-    convScale: 1,       // multiplier on the auto convergence distance
-    eyeScale: 0.5,      // per-eye width / element device width: a 2-view lenticular resolves about half anyway (porting pitfall 26)
+  // The default depth PER RIG (David's call, 2026-09-27). One number per rig, one meaning: the
+  // comfort number, i.e. the disparity of content at infinity in units of the viewer's IPD.
+  //   camera rig: ipd × m2v × diopters × 0.5 — 0.5 (panel pass 2026-09-28; 0.3 read shallow. The runtime's qwerty rig sits at 0.25).
+  //   display rig: ipdFactor (= parallaxFactor) — 1.0, the physically true portal (natural IPD,
+  //     full head parallax). The runtime's display-rig contract is [0, 1] (XR_DXR_view_rig.h), so
+  //     1.0 is also the ceiling: there is no headroom above it on either rig.
+  const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
+  const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
+  // The convergence scale (a multiplier on the automatic convergence distance; 1 = automatic) is
+  // clamped to this range everywhere it is set. The host mirrors it when it validates cap.save.
+  const CONV_SCALE_MIN = 0.05, CONV_SCALE_MAX = 20;
+
+  // ------------------------------------------------------------ tuning (constants)
+  // Not per site. Overridable only by the harness, through cfg.test, and only in a dev build
+  // (risk R8: fakeViews / noLayer / coverImg / outHoldMs are page-controllable otherwise).
+  const TUNING = {
+    eyeScale: 0.5,      // per-eye width / element DEVICE width: the SBS store is the element's full device size, each eye squeezed to half width (a 2-view lenticular resolves about half anyway; the weave un-squeezes)
+    maxEyeDpr: 3,       // the device-pixel ratio the eye is sized at, at most
     maxSbsWidth: 3072,  // browser-pvt#24: wider SBS canvases drop off the zero-copy weave path
     minCssPx: 120,      // smaller canvases stay flat (icons, thumbnails)
     holdMs: 1200,       // keep the cover this long after the layer exists (woven-canvas rules, rule 5)
+    coverMaxMs: 5000,   // ... but never longer than this, stereo or not (R6: a display with nobody seated)
+    releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
+    bindMaxMs: 500,     // go-live: create the layer this long after the flip at the latest, pair drawn or not (#339)
+    rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
+    convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
+    // OPEN scenes (no target, and every sampled bound holds the camera: a room-scale splat world, a
+    // sky + floor). David's call, 2026-09-28: no dynamic convergence; a FIXED focus, as legacy WebXR.
+    openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
+    openSceneConvM: 2,      // 'fixed': converge this far in front of the page camera, scene units read as METRES (Marble worlds and most three.js scenes are metric)
+    openSceneRealDepth: 0.5, // 'fixed': the camera-rig depth that means the viewer's REAL IPD (ipdFactor 1); less scales the eye separation down (0.25 halves it)
+    displayPivot: true, // display rig: the page's rotations pivot about the virtual display's centre (pivotOffset); false = the portal rides the page camera (0.5.4), harness A/B only
+    convRoomPercentile: 0.7, // 'percentile' mode: converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance). 'fixed' mode reads it only for the scale-sanity note
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
-    hud: true,
+    eyesOffMs: 1000,    // the chip's dot goes amber only after this long continuously without 2-view frames ...
+    eyesOnMs: 300,      // ... and back to green after this long with them (eye tracking flips isTracking every few s)
     fakeViews: false,   // TEST ONLY: synthesise a parallel-axis pair when the session reports none
+    guardFps: 15,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ... (David 2026-09-28: heavy splat
+                        // worlds run 25-44 fps on the reference box and read well; 24 still reverted them. 24 in 0.5.2, 40 before)
+    guardMs: 2000,      // ... (and below 0.6 x the page's 2D rate, when it has one; was 0.8)
+    guardWarmupMs: 4000, // ... no guard window starts within this long after the cover drop (a page still loading its assets)
+    guardRetryMs: 6000,  // ... the first trip stands down, then retries once after at least this long, whatever the 2D rate ...
+    guardSteadyMs: 2000, // ... once the page's own 2D rate has been steady this long (a page still streaming is not judged again yet) ...
+    guardRetryMaxMs: 30000, // ... or after this long at the latest
+    guardLoadQuietMs: 1000, // ... no window counts while the page is loading: the document not complete, or a resource
+                            // (fetch / XHR / image / script) finished within this long (v0.7.7) ...
+    guardLoadMaxMs: 20000,  // ... but only up to this long after the cover drop: a page that never stops loading is judged anyway
+    glLimit: 0,         // TEST ONLY: > 0 stands in for the surface's size limit (WebGL or WebGPU) in realSizeFor
+    gpuDepthRange: true, // TEST ONLY (A/B): false hands a WebGPU engine the runtime's GL-clip projection as is (no surface.toClip)
+    gpuVerified: null,   // TEST ONLY: overrides three-adapter's GPU_VERIFIED (case three-webgpu-newer: a revision above it still converts, with the note)
+    gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
+    pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
+    pcPostEffects: true, // TEST ONLY (A/B): false keeps a PlayCanvas camera with legacy post effects (camera.postEffects) 2D; 'unsplit' converts it with ONE chain over the pair (v0.7.9 runs the chain per eye)
+    bindAfterCommit: true, // TEST ONLY (A/B): false creates the layer in the flip task, as v0.7.9 did (one stretched frame at go-live on the panel, #339)
+    pcCameraFrame: true, // TEST ONLY (A/B): false leaves a PlayCanvas CameraFrame UNSPLIT under xrViews (both views through one post chain over the pair)
+    chainMirror: true,   // TEST ONLY (A/B): false skips the three.js post-chain mirror probe (a chain that flips the picture left-right is then drawn pseudoscopic); 'force' draws every chain's eyes mirrored, whatever the probe found (dev, live: __dxrAuto3D.set('chainMirror', 'force'))
+    pcTaaJitter: true,  // TEST ONLY (A/B): false applies no TAA jitter to the eye projections of a split CameraFrame
+    pcCanvasTrap: true, // TEST ONLY (A/B): false lets a PlayCanvas page's own canvas.width / height writes through while converted
+    bjsPostFx: true,    // TEST ONLY (A/B): false keeps a Babylon.js camera with post-processes 2D (true: the engine cascades the chain to the eye cameras)
+    bjsWebGPU: true,    // TEST ONLY (A/B): false keeps a Babylon.js WebGPU engine 2D
+    bjsEyeTarget: true, // TEST ONLY (A/B): false lets Babylon eyes draw straight into their halves (no eye target + pass)
+    bjsIblHistory: true, // TEST ONLY (A/B): false leaves Babylon IBL shadows' accumulation history copied once per frame (the right eye's then mismatches its velocity)
+    bjsCustomRT: true,  // TEST ONLY (A/B): false leaves a Babylon.js scene's customRenderTargets drawn once per frame from the page camera (not again per eye)
+    bjsCustomRTOwnView: true,  // TEST ONLY (A/B): false draws every such target again per eye, even one drawn from a view of its own the same for both eyes (v0.7.1)
+    bjsGBuffer: true,   // EXPERIMENTAL (Babylon.js): true draws the geometry buffer again for the right eye; false keeps a scene with one 2D; 'shared' (TEST ONLY, A/B) converts it without the second draw
   };
-  const LS_KEY = 'dxrAuto3D';
-  let cfg = loadCfg();
-  function loadCfg() {
-    let stored = {};
-    try { stored = JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch (e) { /* opaque origin */ }
-    const base = stored.v === DEFAULTS.v ? { ...DEFAULTS, ...stored } : { ...DEFAULTS };
-    const test = window.__dxrAuto3DTestCfg; // harness override, never persisted
-    return test && typeof test === 'object' ? { ...base, ...test } : base;
+  // Keys of the harness config that are the SITE's (the dev host applies them), not tuning.
+  const SITE_KEYS = ['v', 'enabled', 'decision', 'depth', 'depths', 'rig', 'convScale', 'hud'];
+  const T = { ...TUNING };
+  if (cfg.dev && cfg.test && typeof cfg.test === 'object') {
+    for (const k of Object.keys(cfg.test)) if (!SITE_KEYS.includes(k)) T[k] = cfg.test[k];
   }
-  function saveCfg() {
-    try {
-      const keep = { v: cfg.v, enabled: cfg.enabled, depth: cfg.depth, convScale: cfg.convScale, hud: cfg.hud };
-      localStorage.setItem(LS_KEY, JSON.stringify(keep));
-    } catch (e) { /* opaque origin */ }
-  }
+  // prefers-reduced-motion: no depth fade, but 1 ms, never 0 — rampMs 0 skips the turn-off's
+  // out-cover (turnOff), and the raw side-by-side flash comes back (risk R5).
+  const RAMP_MS = T.rampMs;
+  const reducedMotion = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
+  const applyMotion = () => { T.rampMs = reducedMotion && reducedMotion.matches ? 1 : RAMP_MS; };
+  applyMotion();
+  if (reducedMotion && reducedMotion.addEventListener) reducedMotion.addEventListener('change', applyMotion);
+
+  // ------------------------------------------------------------ the site (this document's copy)
+  // What the host decided for this site, and what the user changes here. Written back through
+  // cap.save (the host validates and keys it); never read back from the page.
+  const cd = cfg.depths || {};
+  const site = {
+    decision: cfg.decision === 'allow' || cfg.decision === 'offer' ? cfg.decision : 'block',
+    depths: { camera: cd.camera > 0 ? cd.camera : DEFAULT_DEPTH.camera, display: cd.display > 0 ? cd.display : DEFAULT_DEPTH.display },
+    rig: cfg.rig === 'display' ? 'display' : 'camera',
+    convScale: typeof cfg.convScale === 'number' && cfg.convScale > 0 ? Math.min(CONV_SCALE_MAX, Math.max(CONV_SCALE_MIN, cfg.convScale)) : 1,
+  };
+  // "Just this time" (setEnabled(v, { remember: false })): true / false overrides the decision for
+  // this document only; null follows it.
+  let once = null;
+  const on = () => (once !== null ? once : site.decision === 'allow');
+  const save = (partial) => { try { cap.save(partial); } catch (e) { warnOnce('save', 'could not save the site setting', e); } };
 
   // ------------------------------------------------------------ small helpers
   const info = (...a) => console.info(TAG, ...a);
@@ -76,33 +149,81 @@
     return s;
   };
   const HAS_RIG = 'setViewRig' in window.XRDisplayLayer.prototype;
-  const CANVAS_W = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width');
-  const CANVAS_H = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height');
+  const surfaces = dxrSurface({ warnOnce }); // the per-graphics-API seam (surface.js)
+  // Snapshotted by the sentinel before any page script could patch them (risk R4).
+  const CANVAS_W = S.intrinsics.canvasWidth;
+  const CANVAS_H = S.intrinsics.canvasHeight;
   const realW = (c) => CANVAS_W.get.call(c);
   const realH = (c) => CANVAS_H.get.call(c);
 
   // ------------------------------------------------------------ document-level state
   const tracked = [];           // WeakRef<state>, for state() and the HUD
   let owner = null;             // the one canvas converted (or converting) — one inline-3D session per document
+  let lastTarget = null;        // the last canvas we converted: the chip keeps pointing at it after release
+  let candidate = null;         // while OFF (offer / block in dev): a canvas that would convert — the chip's target
   let foreign = null;           // why we stood down for good in this document (the page owns inline-3D / XR)
   const engines = [];           // adapter names, for the HUD / console
 
+  // ------------------------------------------------------------ coexistence with Convert to 3D (lift)
+  // The browser's "Convert to 3D" (lift) runs in an isolated world that shares the DOM, so DOM
+  // attributes are the contract between the two features, one in each direction:
+  //
+  // OUT: MARKER on the canvas element we convert, from the claim (activate(): before its store first
+  // becomes side-by-side, so it covers 'converting' and the go-live cover) until its store is mono
+  // again and the layer is released (stand() / release()). Set and removed ONLY by claim() /
+  // unclaim(), which also own `owner`, so the two cannot drift. Output only: no code here reads it.
+  // Lift tests it by PRESENCE. Its name has no '-' suffix, so no `[data-dxr-auto3d-…]` rule of ours
+  // matches it (and nothing of ours uses a prefix selector).
+  //
+  // IN: a canvas that carries (or has an ancestor that carries) any of LIFT_MARKERS is never
+  // converted; one that becomes lifted while live goes back to 2D the normal way (turnOff). Tested by
+  // PRESENCE (any value: 'off' too). `dxr-lift` (browser patch 0328) is what the native live path
+  // puts on a <video> ('auto' live, 'off' while explore owns the pixels; removed on the second
+  // Convert to 3D and on Exit). A lifted <img> / <canvas> source carries no attribute today, and
+  // Convert to 3D is not offered on canvases (browser v1.2.x), so this check is forward-looking: it
+  // fires only when a page puts `dxr-lift` on a canvas or a container, where staying 2D is right.
+  // Not `data-inline3d-lift`: a SIBLING host, not an ancestor, to be replaced by a marker on the
+  // source when canvas lift returns.
+  const MARKER = 'data-dxr-auto3d';
+  const LIFT_MARKERS = ['dxr-lift'];
+  const ATTR = S.intrinsics.attr;
+  function claim(st) {
+    owner = st; lastTarget = st;
+    if (!st.marked) { st.marked = true; try { ATTR.set.call(st.canvas, MARKER, 'live'); } catch (e) { /* ignore */ } }
+  }
+  function unclaim(st) {
+    if (owner === st) owner = null;
+    if (st.marked) { st.marked = false; try { ATTR.remove.call(st.canvas, MARKER); } catch (e) { /* ignore */ } }
+  }
+  // The lift marker on the element or an ancestor (across shadow roots), or null.
+  function liftedBy(el) {
+    for (let e = el; e;) {
+      if (e.nodeType !== 1) { e = e.host || null; continue; } // a ShadowRoot -> its host; the Document -> done
+      for (const n of LIFT_MARKERS) if (ATTR.has.call(e, n)) return n;
+      e = e.parentNode;
+    }
+    return null;
+  }
+  // This canvas is lifted: leave it alone (sticky for the document, until the user turns auto-3D on
+  // again: setEnabled). One console line per canvas; the status is 'standdown' (reason 'lifted').
+  function refuseLifted(st, n) {
+    if (st.lifted) return;
+    st.lifted = n;
+    info(`not converting ${desc(st.canvas)}: element is lifted (Convert to 3D, [${n}])`);
+    if (candidate === st) candidate = null;
+    notify();
+  }
+
   // ------------------------------------------------------------ navigator.xr: yield to the page
-  // Our own requests go straight to the captured original, so the wrapper only ever sees the
-  // page's (or the immersive shim's, which reaches the real XRSystem through this same object).
-  const xrObj = navigator.xr;
-  const xrReqOrig = xrObj.requestSession;
-  const xrRequest = (mode, init) => xrReqOrig.call(xrObj, mode, init);
-  try {
-    xrObj.requestSession = function (mode, init) {
-      if (mode === 'inline-3d' || mode === 'immersive-vr' || mode === 'immersive-ar') yieldTo(`the page requested '${mode}'`);
-      return xrReqOrig.call(xrObj, mode, init);
-    };
-  } catch (e) { warnOnce('xrwrap', 'could not watch navigator.xr.requestSession — SDK pages may conflict', e); }
+  // The requestSession wrapper lives in the sentinel (risk R3: a page may ask for inline-3d before
+  // the core exists). Our own requests go straight to the captured original through S.xrRequest, so
+  // the wrapper only ever sees the page's (or the immersive shim's). The sentinel calls yieldTo on
+  // every such request (wired at the end of dxrCore, with a catch-up for one made before we loaded).
+  const xrRequest = S.xrRequest;
   function yieldTo(reason) {
-    if (!foreign) { foreign = reason; info('standing down for this document:', reason); }
+    if (!foreign) { foreign = reason; info('standing down for this document:', reason); standDownForGood(); }
     if (owner) stand(owner, reason);
-    hud();
+    notify();
   }
 
   // ------------------------------------------------------------ ADAPTER CONTRACT
@@ -119,33 +240,80 @@
   //   afterActive()            -> resize the store to st.R, bind the per-eye path
   //   firstDraw()              -> repaint NOW (a resize just cleared the store)
   //   redraw()                 -> per session frame: redraw / replay so the tile is drawn every frame
-  //   restore(wasLive)         -> undo afterActive/beforeActive (stand-down)
+  //   restore(wasLive)         -> undo afterActive/beforeActive (stand-down); returns true when the
+  //                               mono frame is already drawn, else calls core.monoDrawn(st) once it is
   //   flipIdle()               -> the armed canvas has not drawn for 250 ms: draw + flip now
+  //   wake()                   -> re-enabled: draw one mono frame now, so a render-on-demand page
+  //                               reaches considerActivation without waiting for input
+  //   target()                 -> the page's explicit convergence target in world space
+  //                               ({ x, y, z, via }) or null (controls .target, an orbit script, lookAt)
   //   describe()               -> { page, real } for state()
+  //   surface()                -> the canvas's graphics-API SURFACE (surface.js): core.surfaces.gl(gl) or
+  //                               core.surfaces.gpu({ device, context, flush, alphaMode }), or null while
+  //                               there is none yet. It owns everything API-specific: the size limit, the
+  //                               out-cover read-back, the flush before a read, and toClip() (the eye
+  //                               projection the engine gets: WebGPU clip z is 0..1, the runtime's is GL's
+  //                               -1..1). The core caches it on st.surf (surfaceOf).
+  //   coverAfterDraw           -> true when the engine draws on its own tick: the adapter then calls
+  //                               core.takeOutCover(st) right after that draw
+  // and calls core.drew(st) after every draw / replay on the live SBS store (the first one starts
+  // the no-views timer).
   function newState(engine, canvas, ad) {
     const st = {
       engine, canvas, ad,
-      active: false, pending: false, armed: null, tries: 0, nextTry: 0, lastWhy: null, flatReason: null,
+      active: false, pending: false, armed: null, binding: null, tries: 0, nextTry: 0, lastWhy: null, flatReason: null,
       session: null, ref: null, layer: null, layerAt: 0, rig: { position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } },
       V: [0, 1].map(() => ({ proj: new Float32Array(16), pose: new Float32Array(16) })),
       haveViews: false, near: NaN, far: NaN, R: null,
-      conv: { d: 0 }, cover: null, savedStyle: null, displayOk: null,
+      conv: { d: 0, src: 'estimator', via: null }, cover: null, savedStyle: null, displayOk: null,
+      releasing: null, wakeOnRelease: false, eyeBack: 0, rigs: null, piv: null,
+      lastTwoAt: 0, noDisplay: false, nd: false, eyesOn: false, twoRun: 0, shortRun: 0,
       stats: { calls: 0, stereo: 0, flat: 0, flatAfterEyes: 0, replays: 0, resizes: 0, xrFrames: 0, twoView: 0, shortView: 0 },
     };
     tracked.push(new WeakRef(st));
     return st;
   }
+  // A canvas an adapter can see but will never drive (a three.js WebGPURenderer of an unverified revision): a state that only
+  // carries its flat reason, for statusOf() (the host's 'flat' report), the chip and the HUD. Nothing
+  // on the page is wrapped, and nothing ever calls considerActivation on it. Its `ad` is a stub, so
+  // the loops over `tracked` (setEnabled's wake, the dev state()) find nothing to draw or describe.
+  function noteFlat(engine, canvas, reason) {
+    const st = newState(engine, canvas, { label: () => engine, unqualified: () => reason, describe: () => ({ page: null }) });
+    st.flatReason = reason;
+    info(`${engine} canvas ${desc(canvas)} stays 2D:`, reason);
+    notify();
+    return st;
+  }
 
   // ------------------------------------------------------------ sizing
-  // L is what the PAGE believes: { w, h, pr } (three: CSS-ish size × pixel ratio; PlayCanvas: pixels, pr 1).
-  function realSizeFor(L) {
-    let eyeW = Math.max(2, Math.round(L.w * L.pr * cfg.eyeScale));
-    let eyeH = Math.max(2, Math.round(L.h * L.pr));
-    if (2 * eyeW > cfg.maxSbsWidth) {
-      const s = cfg.maxSbsWidth / (2 * eyeW);
-      eyeW = Math.max(2, Math.floor(eyeW * s));
-      eyeH = Math.max(2, Math.floor(eyeH * s));
+  // st.L is what the PAGE believes: { w, h, pr } (three: CSS-ish size × pixel ratio; PlayCanvas:
+  // pixels, pr 1). The eye is sized from the ELEMENT's device pixels, whatever store the page keeps
+  // (P0.2: Spark's hello-world renders at pixel ratio 1 on a 2.5× panel, a 1038-px store, so a
+  // store-sized eye was 519x703 — "a little low res"): eyeW = CSS width × min(devicePixelRatio,
+  // maxEyeDpr) × eyeScale (0.5), eyeH = CSS height × the same ratio, i.e. the SBS store is the
+  // element's full device size (hello-world: eye 1298x1758, as a three.js page at setPixelRatio(2.5)).
+  // The page keeps seeing its own mono store (the adapters virtualise it; restore() puts it back).
+  // With no layout box (not rendered), the page's store stands in. Each axis is then capped on its
+  // own — the width by the zero-copy cap (maxSbsWidth / 2 per eye) and the context's limits, the height
+  // by the context's limits (surface.limit(): WebGL's MAX_TEXTURE_SIZE / MAX_RENDERBUFFER_SIZE /
+  // MAX_VIEWPORT_DIMS, WebGPU's device maxTextureDimension2D; a 2× wide store is over them on many
+  // Android GPUs).
+  // The eye's aspect is NOT kept: it is squeezed horizontally by design and the weave un-squeezes it,
+  // so capping the width never costs height (panel, 2026-09-28: a joint scale cost ~40 % of the pixels).
+  function realSizeFor(st) {
+    const L = st.L, c = st.canvas;
+    const cw = c.clientWidth, ch = c.clientHeight;
+    const dpr = Math.min(window.devicePixelRatio || 1, T.maxEyeDpr);
+    let eyeW, eyeH;
+    if (cw > 0 && ch > 0) { eyeW = Math.max(2, Math.round(cw * dpr * T.eyeScale)); eyeH = Math.max(2, Math.round(ch * dpr)); }
+    else { eyeW = Math.max(2, Math.round(L.w * L.pr * T.eyeScale)); eyeH = Math.max(2, Math.round(L.h * L.pr)); }
+    if (st.lim === undefined) {
+      const sf = surfaceOf(st);
+      if (sf) st.lim = sf.limit(); // cached per canvas: a context's limits do not change
     }
+    const lim = T.glLimit > 0 ? T.glLimit : st.lim || Infinity;
+    eyeW = Math.max(2, Math.min(eyeW, Math.floor(Math.min(T.maxSbsWidth, lim) / 2)));
+    eyeH = Math.max(2, Math.min(eyeH, Math.floor(lim)));
     return { eyeW, eyeH, W: 2 * eyeW, H: eyeH };
   }
   // The page's view of canvas.width / height stays the mono store it would have made. Reads and
@@ -166,13 +334,24 @@
     def('height', CANVAS_H, false);
   }
   function unvirtualizeCanvas(st) { try { delete st.canvas.width; delete st.canvas.height; } catch (e) { /* ignore */ } }
+  // The canvas's surface (see the contract), cached once the adapter has one; its API for messages.
+  const apiName = (sf) => (!sf ? 'the canvas' : sf.kind === 'webgpu' ? 'WebGPU' : 'WebGL');
+  function surfaceOf(st) {
+    if (!st.surf) { let s = null; try { s = st.ad.surface ? st.ad.surface(st) : null; } catch (e) { s = null; } st.surf = s || null; }
+    return st.surf;
+  }
 
   // ------------------------------------------------------------ activation
   function considerActivation(st) {
-    if (!cfg.enabled || foreign || owner) return;
     const t = now();
+    guard.draw(st, t); // the page's 2D rate (the frame-rate guard's baseline)
+    if (!on()) { if (!foreign && !owner) considerCandidate(st); return; }
+    if (foreign || owner || guard.tripped || guard.retrying || st.lifted) return;
     if (t < st.nextTry) return;
     st.nextTry = t + 500;
+    if (S.optedOut()) { standDownForGood(); notify(); return; } // <meta name="displayxr-auto3d" content="off">
+    const lf = liftedBy(st.canvas); // Convert to 3D took it (first conversion, a chip click, the guard's retry)
+    if (lf) { refuseLifted(st, lf); return; }
     const why = st.ad.unqualified(st);
     if (why) {
       if (why !== st.lastWhy) { st.lastWhy = why; info('not converting', desc(st.canvas), 'yet:', why); }
@@ -180,11 +359,23 @@
     }
     activate(st);
   }
+  // While OFF nothing converts, but the chip still needs a canvas to offer 3D on (offer mode, and
+  // the 'off' pill in dev): the same qualification, throttled the same way, on its own clock.
+  function considerCandidate(st) {
+    const t = now();
+    if (t < (st.candAt || 0)) return;
+    st.candAt = t + 500;
+    const lf = st.lifted || liftedBy(st.canvas);
+    if (lf && !st.lifted) refuseLifted(st, lf); // never offered: a click would convert a lifted canvas
+    const ok = !lf && !st.ad.unqualified(st);
+    const next = ok ? st : candidate === st ? null : candidate;
+    if (next !== candidate) { candidate = next; notify(); }
+  }
   // Where the canvas is: in the document, big enough, on screen.
   function canvasPlacement(c) {
     if (!c.isConnected) return 'canvas is not in the document';
     const rect = c.getBoundingClientRect();
-    if (rect.width < cfg.minCssPx || rect.height < cfg.minCssPx) return `canvas is small (${rect.width | 0}x${rect.height | 0} CSS px)`;
+    if (rect.width < T.minCssPx || rect.height < T.minCssPx) return `canvas is small (${rect.width | 0}x${rect.height | 0} CSS px)`;
     if (rect.bottom <= 0 || rect.right <= 0 || rect.top >= innerHeight || rect.left >= innerWidth) return 'canvas is off screen';
     return null;
   }
@@ -204,13 +395,15 @@
     return null;
   }
   async function activate(st) {
-    owner = st; st.pending = true; st.lastWhy = null; st.tries++;
+    claim(st); st.pending = true; st.lastWhy = null; st.tries++;
     info('converting', desc(st.canvas), `(${st.ad.label(st)})`);
-    hud();
+    notify();
     let session = null;
     try {
       session = await xrRequest('inline-3d');
-      if (!st.pending || foreign || !cfg.enabled) { try { session.end(); } catch (e) { /* ignore */ } return; }
+      if (!st.pending || foreign || !on()) { try { session.end(); } catch (e) { /* ignore */ } return; }
+      const lf = liftedBy(st.canvas); // lifted while the session was being granted: nothing resized yet
+      if (lf) { try { session.end(); } catch (e) { /* ignore */ } refuseLifted(st, lf); stand(st, 'the element was lifted (Convert to 3D)'); return; }
       st.session = session;
       st.ref = await session.requestReferenceSpace('viewer');
       session.addEventListener('end', () => { if (st.session === session) stand(st, 'the inline-3d session ended'); });
@@ -221,43 +414,61 @@
     } catch (e) {
       warnOnce('session', 'inline-3d session refused — staying 2D:', e && e.message);
       if (session) { try { session.end(); } catch (e2) { /* ignore */ } }
-      st.pending = false; if (owner === st) owner = null;
+      st.pending = false; unclaim(st);
       st.nextTry = now() + 10000;
-      hud();
+      notify();
     }
   }
   // Called by the adapter in the task that just drew the page's mono frame.
   function flip(st) {
     const ad = st.ad;
+    // An async surface (WebGPU) reads the go-live cover back first: this mono frame starts the read,
+    // and the flip happens on the first mono frame drawn after it landed (the cover is then one frame
+    // old: a still either way). The page keeps drawing mono meanwhile; a page that does not is asked
+    // for one more frame (flipIdle) when the read lands.
+    const sf = surfaceOf(st);
+    if (sf && sf.async && st.armed) {
+      const a = st.armed;
+      if (!a.pre) {
+        a.pre = makeCover(st, false, true) || { el: null, ready: Promise.resolve() };
+        a.pre.ready.then(() => { a.pre.done = true; if (st.armed === a) { try { ad.flipIdle(st); } catch (e) { /* the 250 ms flipIdle still runs */ } } });
+        return;
+      }
+      if (!a.pre.done) return;
+    }
+    const pre = st.armed && st.armed.pre;
     st.armed = null;
-    makeCover(st);            // the mono frame just drawn, over the canvas, until the join (rule 5)
+    dropCover(st);
+    if (pre && pre.el) { insertCover(st.canvas, pre.el); st.cover = { el: pre.el, fixed: pre.fixed }; } // read back one frame ago (above)
+    else makeCover(st);       // the mono frame just drawn, over the canvas, until the join (rule 5)
     ad.beforeActive(st);
     st.active = true; st.pending = false;
     promote(st);
     ad.afterActive(st);
-    const dr = ad.depthRange(st);
+    const dr = depthRangeFor(st);
     st.near = dr.near; st.far = dr.far;
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
     estimateConvergence(st, true);
-    const rig = buildRig(st, ad.rigFov(st));
-    try {
-      // cfg.noLayer is TEST ONLY: everything but the weave binding, so a 2D instance shows the raw pair.
-      st.layer = cfg.noLayer ? null : new XRDisplayLayer(st.session, st.canvas, HAS_RIG ? { viewRig: rig } : { virtualDisplayHeight: 0.24 });
-    } catch (e) {
-      warnOnce('layer', 'new XRDisplayLayer() failed — staying 2D', e);
-      stand(st, 'XRDisplayLayer refused the canvas');
-      st.nextTry = Infinity;
-      return;
-    }
-    st.layerAt = now();
+    st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
+    buildRig(st, ad.rigFov(st));
+    st.layer = null; st.layerAt = 0; st.coverDropAt = 0;
+    st.stereo0 = st.stats.stereo; st.coverForced = false; // this activation's first stereo frame (status, forced cover)
+    st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store after the layer (drew())
     st.displayOk = null;
-    if (st.layer && !cfg.fakeViews) probeDisplay(st, st.layer); // fakeViews (tests) run where there is no display on purpose
-    if (cfg.noLayer) {
-      // TEST ONLY: no layer means no session frames, so seed the fake eyes here and lift the cover
-      // on a timer — the canvas then shows the raw side-by-side pair a 2D instance can screenshot.
-      if (cfg.fakeViews) { fakeViews(st); st.haveViews = true; }
-      setTimeout(() => dropCover(st), cfg.holdMs);
+    st.lastTwoAt = 0; st.noDisplay = false; st.nd = false; st.eyesOn = false; st.twoRun = 0; st.shortRun = 0;
+    st.rampK = T.rampMs > 0 ? 0 : 1; st.ramp = null; // flat under the cover; fades in once it drops
+    if (!st.cover && st.rampK < 1) startRamp(st, 1);
+    if (T.noLayer) {
+      // TEST ONLY: everything but the weave binding, so a 2D instance shows the raw pair. No layer means
+      // no session frames, so seed the fake eyes here and lift the cover on a timer — the canvas then
+      // shows the raw side-by-side pair a 2D instance can screenshot.
+      st.layerAt = now();
+      guard.onFlip(st);
+      if (T.fakeViews) { fakeViews(st); st.haveViews = true; }
+      setTimeout(() => dropCover(st), T.holdMs);
     }
+    else if (T.bindAfterCommit === false) { makeLayer(st); if (!st.active) return; } // TEST ONLY: v0.7.9's order
+    else bindLayer(st); // once the side-by-side store and the cover are committed (#339)
     const session = st.session;
     const loop = (t, f) => {
       if (!st.active || st.session !== session) return;
@@ -266,23 +477,158 @@
     };
     session.requestAnimationFrame(loop);
     ad.firstDraw(st);
-    info(`live on ${desc(st.canvas)}: SBS ${st.R.W}x${st.R.H} (eye ${st.R.eyeW}x${st.R.eyeH}), rig ${HAS_RIG ? 'camera' : 'display (no setViewRig)'},`,
-      `convergence ${st.conv.d.toPrecision(3)} units, depth ${cfg.depth}`);
-    hud();
+    try { S.settle(st.canvas); } catch (e) { /* the sentinel's search is best-effort */ }
+    info(`live on ${desc(st.canvas)}: SBS ${st.R.W}x${st.R.H} (eye ${st.R.eyeW}x${st.R.eyeH}), rig ${HAS_RIG ? rigMode() : 'display (no setViewRig)'},`,
+      `convergence ${st.conv.d.toPrecision(3)} units (${convText(st)}), depth ${depthOf()}`);
+    st.convLogged = { d: st.conv.d, src: st.conv.src, via: st.conv.via }; st.convPrev = st.conv.d;
+    notify();
   }
-  function stand(st, reason) {
+  // The layer is created only once the side-by-side store AND the go-live cover have been COMMITTED:
+  // a frame drawn on the SBS store, then two animation frames (#339). new XRDisplayLayer() reaches the
+  // browser on its own channel, ahead of the task's commit (as layer.close() does at the stand), and a
+  // canvas the page has had for a while is joined at once. Created in the flip task, the browser could
+  // weave the frame committed before it: the page's MONO picture, with no cover over it yet. Woven as a
+  // pair, each eye got half of it at twice the width: one horizontally stretched frame on the panel at
+  // go-live (three.js keyframes, the PlayCanvas car configurator). Until then the session runs and the
+  // adapter draws the flat pair under the cover; the cover hold, the no-views timer and the guard all
+  // count from the layer, as before. A page that draws nothing gets its layer after bindMaxMs anyway.
+  function bindLayer(st) {
+    const session = st.session, b = (st.binding = { drawn: false, frames: 0, at: now() });
+    const step = () => {
+      if (st.binding !== b) return;
+      if (!st.active || st.session !== session) { st.binding = null; return; }
+      if ((b.drawn && ++b.frames >= 2) || now() - b.at >= T.bindMaxMs) { st.binding = null; makeLayer(st); return; }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+  function makeLayer(st) {
+    const rig = buildRig(st, st.ad.rigFov(st));
+    try {
+      st.layer = new XRDisplayLayer(st.session, st.canvas, HAS_RIG ? { viewRig: { ...rig } } : { virtualDisplayHeight: 0.24 });
+    } catch (e) {
+      warnOnce('layer', 'new XRDisplayLayer() failed — staying 2D', e);
+      stand(st, 'XRDisplayLayer refused the canvas');
+      st.nextTry = Infinity;
+      return;
+    }
+    st.layerAt = now(); st.coverDropAt = 0;
+    guard.onFlip(st);
+    st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store from here
+    if (!T.fakeViews) probeDisplay(st, st.layer); // fakeViews (tests) run where there is no display on purpose
+    notify();
+  }
+  // Back to 2D. Two orders:
+  //
+  //  - immediate (the default): the layer and the session go at once. Used when the page needs the
+  //    session back (it asked for inline-3D / WebXR itself), the canvas or the document is going
+  //    away, or nothing was woven (no display, never live).
+  //  - staged (opts.staged, a LIVE canvas that stays on screen: the site turned off, the camera
+  //    switched, no eyes): MONO FIRST, RELEASE AFTER. The store goes back to its mono size and a
+  //    mono frame is drawn while the layer is still bound; the layer is closed and the session ended
+  //    only on the second animation frame after that frame was drawn, i.e. once it has been
+  //    committed. Closing first would let the browser stop weaving (layer.close() reaches it on its
+  //    own channel) while the last COMMITTED frame is still the side-by-side pair: that pair, unwoven,
+  //    is the raw-SBS flash (woven-canvas rules §1). With this order the frames around the switch are
+  //    either the woven pair or the page's own mono pixels. The one in-between frame, a mono store
+  //    under a still-bound layer, is withheld by the browser (its resource changed, so it cannot
+  //    join: the page's pixels, i.e. mono) rather than woven. The join-window cover, if still up,
+  //    stays until the release.
+  function stand(st, reason, opts) {
+    if (st.releasing) { release(st); return; } // a second stand while one is staged: finish it now
     const was = st.active || st.pending || !!st.armed;
     const wasLive = st.active; // only a live canvas was resized to the SBS store
-    st.active = false; st.pending = false; st.armed = null;
+    st.active = false; st.pending = false; st.armed = null; st.binding = null;
+    st.haveViews = false;
+    const staged = !!(opts && opts.staged) && wasLive && !!st.layer && !!st.session && st.canvas.isConnected;
+    if (staged) {
+      const rel = (st.releasing = { at: now(), drawn: false, frames: 0 });
+      let drew = false;
+      try { drew = st.ad.restore(st, true) === true; } catch (e) { drew = true; }
+      if (drew) rel.drawn = true;
+      const step = () => {
+        if (st.releasing !== rel) return;
+        if (rel.drawn && ++rel.frames >= 2) { release(st); return; }
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+      setTimeout(() => { if (st.releasing === rel) release(st); }, T.releaseMaxMs); // a page that stopped drawing
+    } else {
+      closeLayer(st);
+      st.ad.restore(st, wasLive);
+      unpromote(st);
+      dropCover(st);
+      unclaim(st); // the store is mono and the layer gone: the marker goes last
+    }
+    if (was) info('back to 2D:', reason);
+    notify();
+  }
+  function closeLayer(st) {
     if (st.layer) { try { st.layer.close(); } catch (e) { /* ignore */ } st.layer = null; }
     if (st.session) { const s = st.session; st.session = null; try { s.end().catch(() => {}); } catch (e) { /* ignore */ } }
-    st.haveViews = false;
-    st.ad.restore(st, wasLive);
+  }
+  // The adapter drew (or replayed) a frame on the live SBS store: starts the no-views timer once.
+  function drew(st) {
+    if (!st.active) return;
+    if (st.binding) st.binding.drawn = true; // the SBS store holds a pair: the layer may follow (bindLayer)
+    else if (!st.drawnAt) st.drawnAt = now();
+  }
+  // The adapter's mono frame after a staged stand has been drawn (PlayCanvas draws it on its next tick).
+  function monoDrawn(st) { if (st.releasing) st.releasing.drawn = true; }
+  function release(st) {
+    const rel = st.releasing;
+    if (!rel) return;
+    st.releasing = null;
+    closeLayer(st);
     unpromote(st);
-    dropCover(st);
-    if (owner === st) owner = null;
-    if (was) info('back to 2D:', reason);
-    hud();
+    if (st.cover && st.cover.out) {
+      // Held until layer.close() has landed AND the canvas has re-rastered as a plain 2D layer at its
+      // mono size (the resize clears it; a cover dropped before that shows a blank, white frame).
+      const c = st.cover, t0 = now(); let n = 0;
+      st.cover = null;
+      const tick = () => { if (++n >= 6 && now() - t0 >= (T.outHoldMs || 150)) c.el.remove(); else requestAnimationFrame(tick); }; // outHoldMs: diagnostics only (a long hold shows what the cover holds)
+      requestAnimationFrame(tick);
+    }
+    else dropCover(st);
+    unclaim(st); // mono frame drawn (restore() at the stand), layer released: the marker goes last
+    info(`layer released ${Math.round(now() - rel.at)} ms after the stand (${rel.drawn ? 'mono frame drawn first' : 'no mono frame: timed out'})`);
+    if (st.wakeOnRelease) { st.wakeOnRelease = false; wake(st); }
+    notify();
+  }
+  function wake(st) {
+    if (!on() || foreign || owner) return;
+    try { if (st.ad.wake) st.ad.wake(st); } catch (e) { warnOnce('wake', 'could not draw a frame on re-enable', e); }
+  }
+  // The site switch. remember: false is "Just this time": it overrides the site decision for this
+  // document only and saves nothing.
+  function setEnabled(v, opts) {
+    if (opts && opts.remember === false) once = !!v;
+    else { once = null; site.decision = v ? 'allow' : 'block'; save({ decision: site.decision }); }
+    info('auto-3D', on() ? 'ON' : 'OFF', 'for', location.origin);
+    if (!on() && owner) turnOff(owner, 'turned off for this site');
+    if (on() && owner) owner.offTok = null; // a turn-off still fading / covering out does not stand any more
+    if (on() && owner && owner.active && owner.ramp && owner.ramp.to === 0) startRamp(owner, 1); // turned back on mid-fade: fade back up
+    if (on()) {
+      // A render-on-demand page draws nothing until input, so nothing would ever reach
+      // considerActivation: ask each adapter for one frame (finding 1 of the first panel run).
+      for (const w of tracked) {
+        const st = w.deref();
+        if (!st) continue;
+        st.nextTry = 0; st.tries = 0; st.lastWhy = null;
+        if (!st.offTok && !st.releasing) st.lifted = null; // the user asked: look again (a canvas still lifted is refused again)
+        if (st.releasing) st.wakeOnRelease = true; else wake(st);
+      }
+    }
+    notify();
+  }
+  // A LIVE canvas back to 2D without a visible jump, shared by the site switch and the frame-rate
+  // guard: fade to flat first (both eyes on the page camera), THEN swap to the mono canvas under the
+  // out-cover (the staged stand). The swap is then between two identical pictures.
+  function turnOff(st, reason) {
+    const tok = (st.offTok = {});
+    const go = () => { if (st.offTok === tok && owner === st) { st.offTok = null; stand(st, reason, { staged: true }); } };
+    if (st.active && !st.cover && !st.releasing && T.rampMs > 0) startRamp(st, 0, go);
+    else { st.offTok = null; stand(st, reason, { staged: true }); }
   }
   // Is there a display behind this layer at all? Measured on an instance with no weave slot
   // (browser#162): getDisplayInfo() resolves null and getRenderingModes() resolves []. There a
@@ -304,20 +650,31 @@
     }
     if (st.layer !== layer) return;
     st.displayOk = false;
+    st.noDisplay = true; // the chip's outline "no display" pill, report { flat, no-display }
     stand(st, 'no display behind the layer (getDisplayInfo() null, no rendering modes) — is another DisplayXR Browser holding it? (browser#162)');
     st.nextTry = now() + 30000;
   }
   function promote(st) {
     // The SDK's compositing hint (inline3d.js _register): a distinct quad the weave can track.
-    const s = st.canvas.style;
-    st.savedStyle = { willChange: s.willChange, transform: s.transform };
+    const c = st.canvas, s = c.style, cs = getComputedStyle(c);
+    st.savedStyle = { willChange: s.willChange, transform: s.transform, pin: null };
     s.willChange = 'transform';
-    if (getComputedStyle(st.canvas).transform === 'none') s.transform = 'translateZ(0)';
+    if (cs.transform === 'none') s.transform = 'translateZ(0)';
+    // A canvas with no CSS size is laid out at its STORE size: the SBS store (2 × the device-pixel eye)
+    // would grow it on the page, and the next realSizeFor would read that. Pin its current used size
+    // (the same box: no layout change) while converted; unpromote() takes the pin back out.
+    const isAuto = (p) => { try { const v = c.computedStyleMap().get(p); return !!v && String(v) === 'auto'; } catch (e) { return false; } };
+    const pin = {};
+    if (!s.width && isAuto('width')) pin.width = s.width = cs.width;
+    if (!s.height && isAuto('height')) pin.height = s.height = cs.height;
+    if (pin.width || pin.height) st.savedStyle.pin = pin;
   }
   function unpromote(st) {
     if (!st.savedStyle) return;
-    st.canvas.style.willChange = st.savedStyle.willChange;
-    st.canvas.style.transform = st.savedStyle.transform;
+    const s = st.canvas.style, sv = st.savedStyle;
+    s.willChange = sv.willChange;
+    s.transform = sv.transform;
+    if (sv.pin) for (const k of ['width', 'height']) if (sv.pin[k] && s[k] === sv.pin[k]) s[k] = ''; // unless the page set its own since
     st.savedStyle = null;
   }
 
@@ -325,67 +682,364 @@
   function onSessionFrame(st, frame) {
     const ad = st.ad;
     st.stats.xrFrames++;
+    if (st.stats.xrFrames % 30 === 0 && !st.offTok && S.optedOut()) { standDownForGood(); turnOff(st, 'the page opted out (<meta name="displayxr-auto3d" content="off">)'); }
+    // Convert to 3D took this canvas while it is live: back to 2D the normal way (fade, out-cover,
+    // staged stand). Polled here, ~2/s, rather than by an observer: no new timer, no page-visible hook.
+    if (st.stats.xrFrames % 30 === 15 && !st.offTok) { const lf = liftedBy(st.canvas); if (lf) { refuseLifted(st, lf); turnOff(st, 'the element was lifted (Convert to 3D)'); } }
     if (!st.canvas.isConnected) { stand(st, 'the canvas left the document'); return; }
     let views = null;
     try { const pose = st.ref ? frame.getViewerPose(st.ref) : null; views = pose ? pose.views : null; } catch (e) { /* no pose */ }
     const t = now();
+    let two = false;
     if (views && views.length >= 2) {
+      two = true;
       // COPIES: an XRView is valid only inside this callback (porting pitfall 9).
       for (let i = 0; i < 2; i++) { st.V[i].proj.set(views[i].projectionMatrix); st.V[i].pose.set(views[i].transform.matrix); }
       st.haveViews = true; st.stats.twoView++;
+      // How far behind the page camera the runtime put the eyes (a display rig backs them off to the
+      // nominal viewing distance): the far plane is pushed out by that much so nothing new clips.
+      // The display rig's pivot (pivotOffset) moves the eyes by up to |t| more.
+      st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14])) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0);
     } else {
       st.stats.shortView++;
-      if (cfg.fakeViews && ad.hasCamera(st)) { fakeViews(st); st.haveViews = true; }
+      if (T.fakeViews && ad.hasCamera(st)) { fakeViews(st); st.haveViews = true; two = true; }
     }
-    if (!st.haveViews && st.displayOk !== true && t - st.layerAt > cfg.noViewsMs) {
-      stand(st, `no 2-view frame within ${cfg.noViewsMs} ms (nobody tracked, or this browser instance has no weave slot — browser#162)`);
+    trackEyes(st, t, two);
+    // Timed from the first draw on the SBS store, not from the layer: a render-on-demand page (or
+    // one busy loading) may not draw for a while after activation, and a runtime has nothing to
+    // locate eyes for until the tile has content. No draw yet = no timeout (the join-window cover,
+    // which only drops after a stereo frame, keeps the page's own mono picture up meanwhile).
+    if (!st.haveViews && st.displayOk !== true && st.drawnAt && t - st.drawnAt > T.noViewsMs) {
+      st.noDisplay = !st.lastTwoAt; // never a 2-view frame in this activation: most likely no weave slot
+      stand(st, `no 2-view frame within ${T.noViewsMs} ms (nobody tracked, or this browser instance has no weave slot — browser#162)`, { staged: true });
       st.nextTry = st.tries < 3 ? t + 15000 : Infinity;
       return;
     }
     if (ad.hasCamera(st)) {
       // The depth range follows the camera (porting guide §4 — a camera's far often moves once, after load).
-      const dr = ad.depthRange(st);
+      const dr = depthRangeFor(st);
       if (dr.near !== st.near || dr.far !== st.far) {
         st.near = dr.near; st.far = dr.far;
         try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ending */ }
       }
-      if (st.stats.xrFrames % 30 === 0) estimateConvergence(st, false);
+      // The page's explicit target is cheap and followed every frame; the estimator walks the scene,
+      // so it runs every 30 frames, as before.
+      if (!estimateConvergence(st, false, true) && st.stats.xrFrames % 30 === 0) estimateConvergence(st, false);
+      tickRamp(st, t);
       // Pushed every frame and before any draw: a rig drives the NEXT locate.
       if (HAS_RIG && st.layer) { try { st.layer.setViewRig(buildRig(st, ad.rigFov(st))); } catch (e) { warnOnce('rig', 'setViewRig failed', e); } }
     }
     // Redraw every frame (woven-canvas rules): the adapter replays the page's last frame when the
     // page drew nothing since the last session frame.
     ad.redraw(st);
+    // The out-cover must be read in the task that drew the flat pair (preserveDrawingBuffer false):
+    // three.js draws inside redraw() above (or the page drew in this same animation frame); an
+    // adapter whose engine draws later, on its own tick (PlayCanvas), sets coverAfterDraw and calls
+    // takeOutCover from its post-draw hook instead.
+    if (st.outCoverDue && !ad.coverAfterDraw) takeOutCover(st);
     tickCover(st, t);
-    if (st.stats.xrFrames % 20 === 0) hud();
+    guard.tick(st, t);
+    chip.frame(st);
+    if (st.stats.xrFrames % 20 === 0) notify();
+  }
+
+  // The two-view state, per session frame. lastTwoAt: the last 2-view frame of this activation (0:
+  // none yet). eyes: the DEBOUNCED "eyes tracked" the chip's dot shows — eye tracking flips
+  // isTracking 0/1 every few seconds in normal use, and a dot that followed every flip would blink.
+  // Amber only after eyesOffMs continuously without 2-view frames, green after eyesOnMs with them.
+  // nd: live but no display for this window (P0.2) — the layer found none (displayOk false), or no
+  // 2-view frame has arrived in the coverMaxMs since the layer (a second browser instance whose
+  // session got XR_ERROR_LIMIT_REACHED stays mono). The chip shows the outline pill and the core
+  // reports { status: 'flat', reason: 'no-display' }; the noViewsMs stand-down is unchanged.
+  function trackEyes(st, t, two) {
+    if (two) {
+      st.lastTwoAt = t; st.shortRun = 0;
+      if (!st.twoRun) st.twoRun = t;
+      if (!st.eyesOn && t - st.twoRun >= T.eyesOnMs) st.eyesOn = true;
+    } else {
+      st.twoRun = 0;
+      if (!st.shortRun) st.shortRun = t;
+      if (st.eyesOn && t - st.shortRun >= T.eyesOffMs) st.eyesOn = false;
+    }
+    const nd = st.active && !T.noLayer && (st.displayOk === false || (!st.lastTwoAt && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt > T.coverMaxMs));
+    if (nd !== st.nd) {
+      st.nd = nd;
+      if (nd) info(`no 2-view frame in the ${T.coverMaxMs} ms since the layer: 3D display not available to this window (another browser instance holding it?) — flat until one arrives`);
+      notify();
+    }
+  }
+
+  function takeOutCover(st) {
+    // Turn-off, depth already faded to flat: cover the canvas with one eye of the frame just drawn
+    // (flat, so it IS the mono picture), then swap to the mono canvas and release the layer under it.
+    // Without it, the one frame of mono canvas under a still-bound layer is woven as a pair.
+    const done = st.outCoverDue;
+    if (!done) return;
+    st.outCoverDue = null;
+    makeCover(st, true);
+    const el = st.cover && st.cover.el;
+    const go = () => requestAnimationFrame(() => requestAnimationFrame(done));
+    if (!el || el.isConnected) go(); // no cover, or the canvas cover (already painted in this task)
+    else {
+      // The <img> goes in only once decoded: inserted earlier, its box paints its CSS background
+      // for the frame(s) before the image lands (a blank/white flash at 3D->2D on the panel).
+      const place = () => {
+        if (!st.canvas.isConnected) { done(); return; }
+        try { if (st.cover && st.cover.el === el) insertCover(st.canvas, el); } catch (e) {} // not if released meanwhile; done() always follows
+        go();
+      };
+      const decode = () => { if (typeof el.decode === 'function') el.decode().then(place, place); else place(); };
+      // A WebGPU read-back resolves after this task (mapAsync): its pixels land in the <img> first.
+      const ready = st.cover && st.cover.el === el ? st.cover.ready : null;
+      if (ready) ready.then(decode, decode); else decode();
+    }
   }
 
   // ------------------------------------------------------------ the rig
+  const rigMode = () => (site.rig === 'display' ? 'display' : 'camera');
+  // The ACTIVE rig's depth: the one the HUD shows and Ctrl+Alt+= / - move.
+  const depthOf = (mode) => clamp(site.depths[mode || rigMode()] || DEFAULT_DEPTH[mode || rigMode()], DEPTH_MIN, DEPTH_MAX);
+  function setDepth(v) { site.depths = { ...site.depths, [rigMode()]: clamp(v, DEPTH_MIN, DEPTH_MAX) }; }
+  const convSource = (st) => (site.convScale !== 1 ? 'manual' : st.conv.src);
+  // 'fixed: open scene', 'target: camera.lookAt', 'estimator' — the go-live / settle lines, the HUD.
+  const convText = (st) => convSource(st) + (st.conv.via ? ': ' + st.conv.via : '');
+  function depthRangeFor(st) {
+    const dr = st.ad.depthRange(st);
+    return rigMode() === 'display' && st.eyeBack > 0 ? { near: dr.near, far: dr.far + st.eyeBack } : dr;
+  }
+  // The rig pushed every frame. Both are DECLARED, never computed: the runtime owns the off-axis
+  // math and hands back render-ready views (attach pattern: the rig lives in the page camera's
+  // space, so eye world = page camera world × view.transform on either rig).
+  // ------------------------------------------------------------ the depth fade
+  // rampK scales the rig's ipd and parallax factors: 0 = both eyes on the page camera (a flat,
+  // mono-identical picture), 1 = the configured depth. Smoothstep over T.rampMs.
+  const rampK = (st) => (st.rampK === undefined ? 1 : st.rampK);
+  function startRamp(st, to, done) {
+    const r = (st.ramp = { from: rampK(st), to, t0: now(), done: done || null, held: 0 });
+    // A page whose session frames stop must still finish a turn-off.
+    if (done) setTimeout(() => { if (st.ramp === r || st.outCoverDue === done) { st.ramp = null; st.outCoverDue = null; st.rampK = to; done(); } }, T.rampMs + 1000);
+  }
+  function tickRamp(st, t) {
+    const r = st.ramp;
+    if (!r) return;
+    const u = T.rampMs > 0 ? clamp((t - r.t0) / T.rampMs, 0, 1) : 1;
+    st.rampK = r.from + (r.to - r.from) * u * u * (3 - 2 * u);
+    if (u < 1) return;
+    // At the target: a rig drives the NEXT locate, so let two frames with it reach the screen first.
+    if (r.done && ++r.held < 3) return;
+    st.ramp = null;
+    if (r.done) st.outCoverDue = r.done; // the out-cover is made after this frame's draw, in the drawing task
+  }
   function buildRig(st, verticalFov) {
-    const rig = st.rig;
-    const d = Math.max(1e-6, (st.conv.d || 1) * cfg.convScale);
+    if (!st.rigs) {
+      st.rigs = {
+        camera: st.rig,
+        display: { type: 'display', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } },
+      };
+    }
+    const d = rigDistance(st);
+    if (rigMode() === 'display') {
+      // DISPLAY rig, for object-centric scenes (the P key of legacy WebXR apps): the canvas is a
+      // portal onto a virtual display. Framing: the portal sits on the convergence plane, square to
+      // the page camera, and is exactly as tall as the page camera's view there — what the author
+      // framed at the subject is what the portal shows, and it sits on the glass. The runtime then
+      // places the eyes at the viewer's real distance (m2v = height / physical canvas height), so
+      // the FOV becomes the display's own and depth is scale-invariant (a figurine and an airliner
+      // get the same stereo). Comfort: a display rig's comfort number is its ipdFactor (content at
+      // infinity is ipdFactor × IPD of disparity), so `depth` keeps one meaning on both rigs.
+      // ONE joint control, as on the camera rig (where metersToVirtual scales the eye separation AND
+      // the head motion together): ipdFactor = parallaxFactor = depth. Depth 1 is the true portal;
+      // less flattens the stereo and damps the look-around by the same factor.
+      // The portal stays at (0, 0, -d) in the page camera's space; where that camera is in the world
+      // while in this rig (so that the page's own rotations pivot about the portal) is pivotOffset's
+      // business, applied by the adapters when they compose the eyes (eyePose).
+      const r = st.rigs.display;
+      r.position.x = r.position.y = 0; r.position.z = -d;
+      r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
+      r.virtualDisplayHeight = 2 * d * Math.tan(verticalFov / 2);
+      const k = rampK(st);
+      const dep = depthOf('display');
+      r.ipdFactor = dep * k;
+      r.parallaxFactor = dep * k;
+      r.perspectiveFactor = 1;
+      st.rig = r;
+      return r;
+    }
+    const rig = st.rigs.camera;
     rig.type = 'camera';
+    const k = rampK(st); // the fade (1 when settled): 0 puts both eyes on the page camera, i.e. the mono picture
     // attach: identity pose — the page camera's world transform supplies THIS frame's pose at draw time.
     rig.position.x = rig.position.y = rig.position.z = 0;
     rig.orientation.x = rig.orientation.y = rig.orientation.z = 0; rig.orientation.w = 1;
     rig.verticalFov = verticalFov;
     rig.convergenceDiopters = 1 / d;
+    if (st.conv.src === 'fixed') {
+      // OPEN scene, fixed focus (the legacy-WebXR rule): REAL scale. 1 unit = 1 m, so the viewer's
+      // own IPD applies (metersToVirtual 1), converged T.openSceneConvM (2 m) ahead. The user's depth
+      // scales the eye separation instead of m2v: depth T.openSceneRealDepth (0.5, the default) = the
+      // real IPD, 0.25 = half of it, never above real. Comfort by the formula below, ipd × m2v ×
+      // diopters × 0.5 = 1 × 1 × 0.5 × 0.5 = 0.25 at the defaults: the level legacy WebXR had
+      // (content at infinity reads a quarter of the viewer's IPD of disparity, whatever the room).
+      rig.metersToVirtual = 1;
+      const f = k * clamp(depthOf('camera') / (+T.openSceneRealDepth || 0.5), 0, 1);
+      rig.ipdFactor = f;
+      rig.parallaxFactor = f;
+      st.rig = rig;
+      return rig;
+    }
     // metersToVirtual grows with the convergence distance: the depth budget is then the same for a
     // 10 cm product and a 150 m airliner (what a display rig gives an authored page), and
-    // comfort = ipd × m2v × diopters × 0.5 = cfg.depth by construction.
-    rig.metersToVirtual = (cfg.depth * d) / 0.5;
-    rig.ipdFactor = 1;
-    rig.parallaxFactor = 1;
+    // comfort = ipd × m2v × diopters × 0.5 = the camera rig's depth by construction.
+    rig.metersToVirtual = (depthOf('camera') * d) / 0.5;
+    rig.ipdFactor = k;
+    rig.parallaxFactor = k;
+    st.rig = rig;
     return rig;
   }
-  function estimateConvergence(st, snap) {
+  // The convergence distance both rigs use: the camera rig's convergence plane, the display rig's portal.
+  const rigDistance = (st) => Math.max(1e-6, (st.conv.d || 1) * site.convScale);
+
+  // ------------------------------------------------------------ the display rig's pivot
+  // RULE (David, panel 2026-09-29): in the display rig the virtual display's centre IS the pivot of
+  // the object view, and on entering the rig it is the centre of the screen on the convergence plane
+  // (page camera + forward × the convergence distance) — the point the camera rig converged on, so
+  // nothing at that plane moves on the toggle.
+  //
+  // The portal rides the page camera at (0, 0, -d) (buildRig), which puts it at the right place on
+  // entry. But the page's own navigation pivots wherever the page's controls do: a first-person
+  // page (Spark's SparkControls, any pointer-look / FPS camera) turns the camera about ITSELF, so the
+  // portal — 2 m ahead in an open world — swung across the view on every drag instead of the object
+  // turning in place; an orbit page whose orbit centre is not the convergence point (a focus the
+  // estimator chose) did the same about the wrong point. So, in the display rig only, the eyes are
+  // composed from a RENDER camera instead of the page camera: the page camera's orientation, placed
+  // so that its portal sits at the anchor c. Each change of the page camera is split into a rotation
+  // about the point of its forward axis that moved least (the page's own pivot: the orbit target for
+  // an orbit page, the camera itself for a first-person one) plus what is left, a translation; the
+  // rotation is re-applied about c (it keeps the portal where it is), the translation moves c with
+  // the page. A change of the convergence distance moves c along the view axis (the render camera
+  // stays put). An orbit page that orbits the convergence point is untouched by this (its axis point
+  // does not move); a cut (> 30° or > d in one frame) re-anchors on the page camera's axis, as
+  // entering the rig does. The camera rig never goes through here ("2D to 3D is perfect").
+  //
+  // Returns t, the render camera's offset in the page camera's own axes (null = none), for eyePose;
+  // m is the page camera's column-major world matrix at draw time. Cached per camera pose + distance,
+  // so both eyes (and every chain pass) of one frame see the same t.
+  const PIVOT_CUT_COS = Math.cos(Math.PI / 6);
+  const ZERO3 = Object.freeze([0, 0, 0]);
+  function pivotOffset(st, m) {
+    if (rigMode() !== 'display' || T.displayPivot === false || !m) { st.piv = null; return null; }
+    const d = rigDistance(st), P = st.piv;
+    if (P && P.d === d) {
+      let same = true;
+      for (let k = 0; k < 16; k++) if (P.m[k] !== m[k]) { same = false; break; }
+      if (same) return P.t;
+    }
+    const p = [m[12], m[13], m[14]];
+    const fl = Math.hypot(m[8], m[9], m[10]) || 1;
+    const f = [-m[8] / fl, -m[9] / fl, -m[10] / fl];
+    let c = null;
+    if (P) {
+      const dp = [p[0] - P.p[0], p[1] - P.p[1], p[2] - P.p[2]];
+      const u = [f[0] - P.f[0], f[1] - P.f[1], f[2] - P.f[2]];
+      const uu = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+      // The axis point at depth s moves by dp + s·u; the page's pivot is the s where that is least.
+      const s = uu > 1e-12 ? -(dp[0] * u[0] + dp[1] * u[1] + dp[2] * u[2]) / uu : 0;
+      const tr = [dp[0] + s * u[0], dp[1] + s * u[1], dp[2] + s * u[2]];
+      const cut = f[0] * P.f[0] + f[1] * P.f[1] + f[2] * P.f[2] < PIVOT_CUT_COS || Math.hypot(tr[0], tr[1], tr[2]) > P.d;
+      if (!cut) {
+        const dd = d - P.d;
+        c = [P.c[0] + tr[0] + f[0] * dd, P.c[1] + tr[1] + f[1] * dd, P.c[2] + tr[2] + f[2] * dd];
+      }
+    }
+    let t = ZERO3;
+    if (!c) c = [p[0] + f[0] * d, p[1] + f[1] * d, p[2] + f[2] * d]; // (re-)anchored on the page camera's axis: t = 0
+    else {
+      // The render camera's centre v = c - f·d, in the page camera's own axes (scale included).
+      const w = [c[0] - f[0] * d - p[0], c[1] - f[1] * d - p[1], c[2] - f[2] * d - p[2]];
+      const ax = (k) => { const x = m[k], y = m[k + 1], z = m[k + 2], n = x * x + y * y + z * z || 1; return (x * w[0] + y * w[1] + z * w[2]) / n; };
+      t = [ax(0), ax(4), ax(8)];
+    }
+    st.piv = { m: Float64Array.from(m), p, f, c, d, t };
+    return t;
+  }
+  // Eye i's pose for the adapters' attach pattern (eye world = camera world × this): the runtime's
+  // view transform, moved by the display rig's pivot offset (pivotOffset) when there is one.
+  function eyePose(st, i, m) {
+    const src = st.V[i].pose, t = pivotOffset(st, m);
+    if (!t || t === ZERO3 || (t[0] === 0 && t[1] === 0 && t[2] === 0)) return src;
+    const o = st.Vp || (st.Vp = [new Float32Array(16), new Float32Array(16)]);
+    o[i].set(src);
+    o[i][12] += t[0]; o[i][13] += t[1]; o[i][14] += t[2];
+    return o[i];
+  }
+  // Convergence, three tiers: (1) the page's explicit target when it has one and the camera is
+  // actually looking at it; else (2) the scene estimator on a bounded subject; else, in an OPEN
+  // scene (every sampled bound holds the camera: a room-scale world, a sky + floor), (3) a FIXED
+  // focus T.openSceneConvM (2) units ahead at real scale (buildRig), as legacy WebXR did. David's
+  // call, 2026-09-28 (T.openSceneMode 'percentile' restores the 0.5.3 room rule instead). The
+  // estimator keeps running, so a subject that appears later (a model loads) takes over again.
+  // Returns false when there was nothing to go on (targetOnly: no usable target).
+  function estimateConvergence(st, snap, targetOnly) {
     const s = st.ad.sampler(st);
-    if (!s) return;
-    let d = estimateSubjectDistance(s);
-    if (!(d > 0) || !isFinite(d)) d = st.conv.d || Math.max(s.near * 50, 1);
+    if (!s) return false;
+    let d = T.convTarget ? targetDepth(st, s) : 0, src = 'target';
+    if (!(d > 0)) {
+      if (targetOnly) return false;
+      src = 'estimator'; st.conv.via = null;
+      const o = {};
+      d = estimateSubjectDistance(s, o);
+      if (o.open) {
+        src = 'fixed'; st.conv.via = 'open scene'; d = +T.openSceneConvM || 2;
+        // Scale sanity, a note only: a world whose typical depth in view is millimetres or
+        // kilometres is probably not in metres, and the 2 m focus will read wrong there.
+        if (o.p > 0 && !st.scaleWarned && (o.p < 0.2 || o.p > 200)) {
+          st.scaleWarned = true;
+          info(`open scene: the ${Math.round(clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95) * 100)}th-percentile depth in view is ${o.p.toPrecision(3)} units: the scene may not be metric; use Focus nearer / farther`);
+        }
+      } else if (!(d > 0) || !isFinite(d)) d = st.conv.d || Math.max(s.near * 50, 1);
+    }
     d = clamp(d, s.near * 2, s.far * 0.9);
-    // Eased: a convergence that snaps pulls the whole scene through the glass in one frame.
-    st.conv.d = snap || !st.conv.d ? d : st.conv.d + (d - st.conv.d) * 0.25;
+    // Eased: a convergence that snaps pulls the whole scene through the glass in one frame. The
+    // fixed focus is constant and snaps (entering it changes the rig's scale in the same frame anyway).
+    st.conv.d = snap || !st.conv.d || src === 'fixed' ? d : st.conv.d + (d - st.conv.d) * 0.25;
+    const was = st.conv.src;
+    st.conv.src = src;
+    if (was !== src && st.active) notify(); // the chip shows the source ('fixed')
+    if (st.active && st.convLogged) settleLog(st);
+    return true;
+  }
+  // The go-live line prints the convergence of the first frame, often the fallback (5.00, estimator)
+  // before the page's splats / model / bounds have loaded; the real value arrives later, eased. One
+  // follow-up line once the source or the value has MOVED from what was logged (> 5 %) and the eased
+  // value is at rest (< 1 % per step): "convergence settled: 2.95 units (estimator)". Product log
+  // (the browser's log is where a tester reads it): at most one line per 2 s, three per document.
+  let settleLines = 0, settleAt = -Infinity;
+  function settleLog(st) {
+    const L = st.convLogged, d = st.conv.d, prev = st.convPrev;
+    st.convPrev = d;
+    const moved = st.conv.src !== L.src || st.conv.via !== L.via || Math.abs(d - L.d) > 0.05 * L.d;
+    if (!moved || !(prev > 0) || Math.abs(d - prev) > 0.01 * d) return;
+    if (settleLines >= 3 || now() - settleAt < 2000) return;
+    settleLines++; settleAt = now();
+    st.convLogged = { d, src: st.conv.src, via: st.conv.via };
+    info(`convergence settled: ${d.toPrecision(3)} units (${convText(st)})`);
+  }
+  // The target's depth along the camera's view axis, or 0 when there is no target or the camera is
+  // not looking at it (conservative: a lookAt the camera has since moved away from is stale). A
+  // camera that looked at the point has it on its axis; allow a quarter of the half-FOV of drift.
+  function targetDepth(st, s) {
+    let t = null;
+    try { t = st.ad.target ? st.ad.target(st) : null; } catch (e) { t = null; }
+    if (!t || !isFinite(t.x) || !isFinite(t.y) || !isFinite(t.z)) return 0;
+    const vm = s.viewMatrix || invert4(s.cameraPose);
+    const vx = vm[0] * t.x + vm[4] * t.y + vm[8] * t.z + vm[12];
+    const vy = vm[1] * t.x + vm[5] * t.y + vm[9] * t.z + vm[13];
+    const z = -(vm[2] * t.x + vm[6] * t.y + vm[10] * t.z + vm[14]);
+    if (!(z > s.near * 2) || !(z < s.far * 0.9)) return 0;
+    const tanV = s.tanHalfFov !== undefined ? s.tanHalfFov : Math.tan(s.verticalFov / 2);
+    if (Math.hypot(vx, vy) / z > 0.25 * tanV) return 0;
+    st.conv.via = t.via || null;
+    return z;
   }
   // 4x4 column-major inverse (for samplers that only give the camera pose).
   function invert4(m) {
@@ -418,49 +1072,80 @@
   //   viewMatrix?,   its inverse, if the engine already has one (else inverted here)
   //   verticalFov,   radians, zoom included          tanHalfFov?  tan(verticalFov/2), if the engine has it
   //   aspect, near, far,
-  //   forEachBounds(cb)  calls cb(wx, wy, wz, worldRadius) per drawable in view layers; stop when cb returns false
+  //   forEachBounds(cb)  calls cb(wx, wy, wz, worldRadius, among?) per drawable in view layers; stop when cb returns false.
+  //                      among = true: the item is a piece of a volume that holds the camera (a room-scale splat
+  //                      world fed as its splats in view): the camera stands among the items, so the median rule applies
   // }
-  function estimateSubjectDistance(s) {
+  //
+  // out (optional), T.openSceneMode 'fixed' only: out.open = true when the scene is OPEN (at least
+  // one sampled bound holds the camera and nothing BOUNDED is in view: every item in view is a piece
+  // of such a volume); the caller then uses the fixed focus, and out.p is the T.convRoomPercentile
+  // depth of what is in view (0 if nothing), for a scale-sanity note only. In 'fixed' mode a bounded
+  // subject in view among volume pieces is converged on by itself: the room around it is no subject.
+  function estimateSubjectDistance(s, out) {
     const cw = s.cameraPose;
     const vm = s.viewMatrix || invert4(cw);
     const px = cw[12], py = cw[13], pz = cw[14];
     const tanV = s.tanHalfFov !== undefined ? s.tanHalfFov : Math.tan(s.verticalFov / 2), aspect = s.aspect || 1;
     const near = s.near;
-    const items = [];
-    let n = 0;
-    s.forEachBounds((wx, wy, wz, wr) => {
+    const fixedMode = T.openSceneMode !== 'percentile';
+    let items = [];
+    let n = 0, among = false, enclosing = 0, bounded = 0;
+    s.forEachBounds((wx, wy, wz, wr, inVolume) => {
       if (n >= 4000) return false;
       n++;
-      if (Math.hypot(wx - px, wy - py, wz - pz) <= wr) return true;
+      if (Math.hypot(wx - px, wy - py, wz - pz) <= wr) { enclosing++; return true; }
+      if (inVolume) { among = true; enclosing++; }
       const vx = vm[0] * wx + vm[4] * wy + vm[8] * wz + vm[12];
       const vy = vm[1] * wx + vm[5] * wy + vm[9] * wz + vm[13];
       const z = -(vm[2] * wx + vm[6] * wy + vm[10] * wz + vm[14]);
       if (z <= near) return true;
       if (Math.abs(vx) - wr > z * tanV * aspect * 1.2 || Math.abs(vy) - wr > z * tanV * 1.2) return true; // out of view
-      items.push({ z, r: wr, x: wx, y: wy, w: wz });
+      items.push({ z, r: wr, x: wx, y: wy, w: wz, v: !!inVolume });
+      if (!inVolume) bounded++;
       return true;
     });
+    if (fixedMode && enclosing && !bounded) {
+      if (out) { out.open = true; out.p = items.length ? weightedPercentile(items, clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95)) : 0; }
+      return 0;
+    }
+    if (fixedMode && among) { items = items.filter((it) => !it.v); among = false; }
     if (!items.length) return 0;
     let cx = 0, cy = 0, cz = 0, ws = 0;
     for (const it of items) { const k = it.r * it.r + 1e-12; cx += it.x * k; cy += it.y * k; cz += it.w * k; ws += k; }
     cx /= ws; cy /= ws; cz /= ws;
     let R = 0;
     for (const it of items) R = Math.max(R, Math.hypot(it.x - cx, it.y - cy, it.w - cz) + it.r);
-    if (Math.hypot(cx - px, cy - py, cz - pz) > R) return -(vm[2] * cx + vm[6] * cy + vm[10] * cz + vm[14]);
+    if (!among && Math.hypot(cx - px, cy - py, cz - pz) > R) return -(vm[2] * cx + vm[6] * cy + vm[10] * cz + vm[14]);
+    // 'percentile' mode only (in 'fixed' mode an open scene returned above). Inside a volume (a room): converge on the space the camera looks INTO, not the nearest big
+    // surface. Apparent-size weighting makes the floor / wall just ahead dominate the weight, so the
+    // weighted median lands on it (Marble world, panel 2026-09-28: 1.62 with the room beyond). With
+    // metersToVirtual ∝ d (buildRig), content at depth z sits at depth × (1 − d/z) IPD of disparity:
+    // everything behind the glass is capped at `depth` whatever d is, so a near d packs the whole
+    // room into the far band (z = 3d already reads 2/3 of the maximum) — "disparity is huge". A
+    // farther d spreads the room across the band and costs only crossed disparity on the nearer
+    // share, depth × (d/z − 1). So converge at a HIGH percentile p of the weighted depths
+    // (T.convRoomPercentile): the glass sits inside the room, the nearer p of what is seen comes
+    // forward of it (the floor at the frame's edge), the rest spreads behind it. Outside a volume
+    // (a subject seen among other meshes) the median stands.
+    return weightedPercentile(items, among ? clamp(+T.convRoomPercentile || 0.5, 0.05, 0.95) : 0.5);
+  }
+  // The q-percentile of the items' depths, each weighted by its apparent size (r/z)^2, capped at 1.
+  function weightedPercentile(items, q) {
     items.sort((a, b) => a.z - b.z);
     let tot = 0;
     for (const it of items) { it.k = Math.min(1, (it.r / it.z) ** 2); tot += it.k; }
     let acc = 0;
-    for (const it of items) { acc += it.k; if (acc >= tot * 0.5) return it.z; }
+    for (const it of items) { acc += it.k; if (acc >= tot * q) return it.z; }
     return items[items.length - 1].z;
   }
-  // TEST ONLY (cfg.fakeViews): a parallel-axis pair with sheared frusta converging at the rig's
+  // TEST ONLY (T.fakeViews): a parallel-axis pair with sheared frusta converging at the rig's
   // distance, so the SBS plumbing can be exercised on an instance whose session reports no eyes.
   // A real session never takes this path: the runtime owns the off-axis math.
   function fakeViews(st) {
     const p = st.ad.fakeViewParams(st);
-    const d = Math.max(1e-6, (st.conv.d || 1) * cfg.convScale);
-    const b = (0.063 * cfg.depth * d) / 0.5;
+    const d = Math.max(1e-6, (st.conv.d || 1) * site.convScale);
+    const b = (0.063 * depthOf('camera') * d) / 0.5;
     const nr = p.near, fr = p.far, t = p.t, a = p.aspect;
     for (let i = 0; i < 2; i++) {
       const ex = (i === 0 ? -0.5 : 0.5) * b;
@@ -482,11 +1167,16 @@
     }
     return '#fff';
   }
-  // A STILL of the last mono frame, taken in the task that drew it. It is not refreshed afterwards:
+  // A STILL of the last mono frame, taken in the task that drew it (after surface.flush(): on WebGPU the
+  // engine's frame may still be encoded but not submitted). It is not refreshed afterwards:
   // measured on a weave-less instance, drawImage() from a canvas that has an XRDisplayLayer bound
   // returns an empty image, so a live feed would blank the cover. It sits in the canvas's own
   // stacking context (next sibling, same z-index), so page chrome drawn over the canvas stays over it.
-  function makeCover(st) {
+  // On an ASYNC surface (WebGPU) both covers come from the surface's GPU read-back, never from
+  // drawImage / toDataURL of the canvas (after present that is EMPTY into a GPU-backed 2D canvas,
+  // P-W0 probe): the go-live cover is PREPARED (pre = true: returned, not inserted, st.cover untouched)
+  // one frame before the flip (flip() waits for it), the out-cover is inserted once its read lands.
+  function makeCover(st, eyeOnly, pre) {
     try {
       const cv = st.canvas, cs = getComputedStyle(cv);
       const c = document.createElement('canvas');
@@ -500,18 +1190,86 @@
         position: fixed ? 'fixed' : 'absolute', left: box.left + 'px', top: box.top + 'px', width: box.width + 'px', height: box.height + 'px',
         zIndex: cs.zIndex, pointerEvents: 'none', margin: '0', padding: '0', border: '0', background: coverBackground(cv),
       });
-      c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height); // the mono frame drawn in this same task
-      if (cv.parentNode) cv.parentNode.insertBefore(c, cv.nextSibling);
-      else (document.body || document.documentElement).appendChild(c);
+      const sf = surfaceOf(st);
+      let ready = null;
+      if (eyeOnly && st.R) {
+        // Left eye of the flat pair. drawImage() of the layer-bound canvas is EMPTY on the panel
+        // (above), so the surface reads it back from the page's context instead: WebGL readPixels
+        // (synchronous), WebGPU a copy of the current texture (mapped after this task).
+        let got = false;
+        try { got = sf ? sf.readEye(st, c) : false; } catch (e) { got = false; }
+        if (got && typeof got.then === 'function') {
+          // Async: a drawImage still NOW (the current texture expires with this task), replaced by
+          // the read-back once mapped; the out-cover goes in only after that (takeOutCover).
+          c.getContext('2d').drawImage(cv, 0, 0, st.R.eyeW, st.R.eyeH, 0, 0, c.width, c.height);
+          ready = got.then((ok) => {
+            st.outCoverVia = ok ? 'readback' : 'drawImage';
+            if (!ok) warnOnce('outcover', `could not read the flat frame back from ${apiName(sf)} — the 3D->2D cover may be blank`);
+          }, () => { st.outCoverVia = 'drawImage'; });
+        } else if (got) st.outCoverVia = 'readback';
+        else {
+          st.outCoverVia = 'drawImage';
+          warnOnce('outcover', `could not read the flat frame back from ${apiName(sf)} — the 3D->2D cover may be blank`);
+          if (sf) sf.flush();
+          c.getContext('2d').drawImage(cv, 0, 0, st.R.eyeW, st.R.eyeH, 0, 0, c.width, c.height);
+        }
+      }
+      else if (pre) {
+        let got = false;
+        try { got = sf ? sf.readFrame(st, c) : false; } catch (e) { got = false; }
+        if (got && typeof got.then === 'function') ready = got.then((ok) => { if (!ok) warnOnce('incover', `could not read the mono frame back from ${apiName(sf)} — the 2D->3D cover may be blank`); });
+        else { if (sf) sf.flush(); c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height); } // no read-back (no COPY_SRC, HDR): the drawing task's drawImage
+      }
+      else { if (sf) sf.flush(); c.getContext('2d').drawImage(cv, 0, 0, c.width, c.height); } // the mono frame drawn in this same task
+      if (T.coverImg !== false) {
+        // An <img>, not a <canvas> (panel run 2026-09-27): a canvas congruent with the tile is woven with
+        // it (weave dumps showed the mono cover as the SBS input = David's 'big double image' at go-live).
+        // An <img> stays plain 2D over the tile. T.coverImg = false restores the canvas cover.
+        const img = document.createElement('img');
+        img.setAttribute('data-dxr-auto3d-cover', ''); img.alt = '';
+        // 'sync' keeps cc from checker-imaging it: a large image is otherwise skipped on its first
+        // raster, and the box paints only its background for a frame (the page-colour flash at 3D->2D).
+        if (eyeOnly) img.decoding = 'sync';
+        if (ready) ready = ready.then(() => { img.src = c.toDataURL('image/png'); });
+        else img.src = c.toDataURL('image/png');
+        img.style.cssText = c.style.cssText; img.style.objectFit = 'fill';
+        if (pre) return { el: img, fixed, ready: (ready || Promise.resolve()).then(() => (typeof img.decode === 'function' ? img.decode() : null)).then(() => true, () => true) };
+        if (!eyeOnly) insertCover(cv, img); // the out-cover is inserted by its caller, once decoded
+        st.cover = ready ? { el: img, fixed, out: !!eyeOnly, ready } : { el: img, fixed, out: !!eyeOnly };
+        return;
+      }
+      if (pre) return { el: c, fixed, ready: (ready || Promise.resolve()).then(() => true) };
+      insertCover(cv, c);
       st.cover = { el: c, fixed };
-    } catch (e) { st.cover = null; }
+    } catch (e) { if (pre) return null; st.cover = null; }
+  }
+  function insertCover(cv, el) {
+    if (cv.parentNode) cv.parentNode.insertBefore(el, cv.nextSibling);
+    else (document.body || document.documentElement).appendChild(el);
   }
   function tickCover(st, t) {
     const cv = st.cover;
-    if (!cv) return;
-    if (t - st.layerAt >= cfg.holdMs && st.stats.stereo > 0) {
-      dropCover(st); // a hard cut, never a fade
-      info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${cfg.holdMs} ms)`);
+    if (!cv) {
+      // Dropped at coverMaxMs with no stereo frame: the depth fades in from the first one instead.
+      if (st.coverForced && st.stats.stereo > (st.stereo0 || 0)) { st.coverForced = false; if (st.rampK < 1 && !st.ramp) startRamp(st, 1); }
+      return;
+    }
+    if (!cv.out && st.layerAt > 0 && t - st.layerAt >= T.holdMs && st.stats.stereo > 0) {
+      dropCover(st); // a hard cut, never a fade: the picture under it is flat (rampK 0) and fades in from here
+      st.coverDropAt = t; // the frame-rate guard's warm-up counts from here
+      info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms)`);
+      if (st.rampK < 1) startRamp(st, 1);
+      return;
+    }
+    if (!cv.out && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt >= T.coverMaxMs) {
+      // R6: a display is there (displayOk) but nobody is tracked, so no stereo frame ever comes and the
+      // cover would stay up forever. Drop it anyway: with no views the pair under it is flat (both eyes
+      // on the page camera), i.e. the mono picture, and the chip shows amber. rampK stays 0 until the
+      // first stereo frame (above), so depth never pops in un-faded.
+      dropCover(st);
+      st.coverDropAt = t;
+      st.coverForced = true;
+      info(`cover released at its ${T.coverMaxMs} ms maximum with no 2-view frame yet (nobody tracked?): flat until the eyes arrive`);
       return;
     }
     if (cv.fixed) {
@@ -521,118 +1279,143 @@
   }
   function dropCover(st) { if (st.cover) { st.cover.el.remove(); st.cover = null; } }
 
-  // ------------------------------------------------------------ HUD + hotkeys
-  let hudEl = null, hudUntil = 0;
+  // ------------------------------------------------------------ status, notify, ctl
   // A canvas the adapter can see but will not convert for a structural reason (post-effects,
-  // several cameras, WebGPU) — shown on the HUD so a tester knows why the page is flat.
+  // several cameras, WebGPU) — the reason a tester (HUD) or the host (report) gets for a flat page.
   const flatNote = () => {
     for (const w of tracked) { const st = w.deref(); if (st && st.flatReason) return st; }
     return null;
   };
-  function hud(flash) {
-    if (flash) hudUntil = now() + 2500;
+  const liftedNote = () => {
+    for (const w of tracked) { const st = w.deref(); if (st && st.lifted) return st; }
+    return null;
+  };
+  // One status for the chip, the dev HUD and the host. Report statuses:
+  //   'live' | 'converting' | 'standdown' | 'optout' | 'guard' | 'offer' | 'off' | 'flat' | 'idle'
+  function statusOf() {
     const st = owner;
-    const busy = st && (st.active || st.pending || st.armed);
-    const flat = !busy && !foreign && cfg.enabled ? flatNote() : null;
-    if (!cfg.hud || !(busy || flat || now() < hudUntil)) { if (hudEl) { hudEl.remove(); hudEl = null; } return; }
-    if (!document.body) return;
-    if (!hudEl) {
-      hudEl = document.createElement('div');
-      hudEl.setAttribute('data-dxr-auto3d-hud', '');
-      Object.assign(hudEl.style, {
-        position: 'fixed', left: '8px', bottom: '8px', zIndex: '2147483647', font: '12px/1.4 monospace', color: '#fff',
-        background: 'rgba(0,0,0,.72)', padding: '4px 8px', borderRadius: '4px', pointerEvents: 'none', whiteSpace: 'pre',
-      });
-      document.body.appendChild(hudEl);
-    }
-    let text;
-    if (!cfg.enabled) text = 'DXR auto-3D: OFF for this site  (Ctrl+Alt+3)';
-    else if (st && st.active) {
-      const s = st.stats;
-      text = `DXR auto-3D ● depth ${cfg.depth.toFixed(2)} · conv ${(st.conv.d * cfg.convScale).toPrecision(3)} · 3D ${s.stereo} · flat ${s.flat} · replay ${s.replays}` +
-        (st.haveViews ? '' : ' · waiting for eyes');
-    } else if (busy) text = 'DXR auto-3D: converting…';
-    else if (foreign) text = `DXR auto-3D: standing down (${foreign})`;
-    else if (flat) text = `DXR auto-3D: 2D (${flat.engine}) — ${flat.flatReason}`;
-    else text = `DXR auto-3D: ON — no ${engines.join(' / ') || '3D'} scene converted yet`;
-    hudEl.textContent = text;
+    if (foreign) return { status: 'standdown', reason: foreign };
+    if (S.optedOut()) return { status: 'optout' };
+    if (guard.tripped) return { status: 'guard', reason: guard.tripped };
+    if (guard.retrying) return { status: 'converting', engine: (st || lastTarget || {}).engine, reason: guard.retrying };
+    if (st && st.active && st.nd) return { status: 'flat', engine: st.engine, reason: 'no-display' };
+    // Live but no stereo frame drawn yet (nobody tracked): not 3D to anyone, so 'converting'. The chip
+    // still shows (amber) once the cover is down: `waiting`.
+    if (st && st.active && st.stats.stereo <= (st.stereo0 || 0)) return { status: 'converting', engine: st.engine, waiting: true };
+    if (st && st.active) return { status: 'live', engine: st.engine };
+    if (st && (st.pending || st.armed)) return { status: 'converting', engine: st.engine };
+    // A canvas Convert to 3D took, and nothing else to convert or offer: a stand-down for that canvas.
+    if (!st && !candidate) { const lf = liftedNote(); if (lf) return { status: 'standdown', engine: lf.engine, reason: 'lifted' }; }
+    if (!on()) return { status: site.decision === 'offer' && once === null ? 'offer' : 'off' };
+    if (!st && lastTarget && lastTarget.noDisplay) return { status: 'flat', engine: lastTarget.engine, reason: 'no-display' };
+    const flat = flatNote();
+    if (flat) return { status: 'flat', engine: flat.engine, reason: flat.flatReason };
+    return { status: 'idle' };
   }
-  window.addEventListener('keydown', (e) => {
-    if (!(e.ctrlKey && e.altKey) || e.shiftKey || e.metaKey) return;
-    let hit = true;
-    switch (e.code) {
-      case 'Digit3':
-        cfg.enabled = !cfg.enabled;
-        info('auto-3D', cfg.enabled ? 'ON' : 'OFF', 'for', location.origin);
-        if (!cfg.enabled && owner) stand(owner, 'turned off for this site');
-        if (cfg.enabled) for (const w of tracked) { const st = w.deref(); if (st) { st.nextTry = 0; st.tries = 0; } }
-        break;
-      case 'Equal': cfg.depth = clamp(cfg.depth * 1.25, 0.02, 1); break;
-      case 'Minus': cfg.depth = clamp(cfg.depth / 1.25, 0.02, 1); break;
-      case 'Digit0': cfg.convScale = clamp(cfg.convScale * 1.15, 0.05, 20); break;
-      case 'Digit9': cfg.convScale = clamp(cfg.convScale / 1.15, 0.05, 20); break;
-      case 'Digit8': cfg.depth = DEFAULTS.depth; cfg.convScale = DEFAULTS.convScale; break;
-      case 'KeyD': cfg.hud = !cfg.hud; break;
-      default: hit = false;
+  function status() {
+    const s = statusOf(), t = lastTarget || candidate;
+    return {
+      state: s.status, reason: s.reason || null, waiting: !!s.waiting, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
+      rig: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
+      convScale: site.convScale, convSource: owner && owner.active ? convSource(owner) : null,
+      convText: owner && owner.active ? convText(owner) : null, convergence: owner && owner.active ? owner.conv.d * site.convScale : null, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews), tracking: !!(owner && owner.eyesOn),
+      // For the chip (read-only facts; it never touches the state): the site switch, the cover over
+      // the target (in- or out-cover) and when the layer came up (it keys its live moment off
+      // layerAt + holdMs, risk R6: the cover may stay up with nobody seated), the depth fade.
+      enabled: on(), cover: t && t.cover ? t.cover.el : null, coverUp: !!(t && t.cover && !t.cover.out),
+      layerAt: t && t.layer ? t.layerAt : 0, holdMs: T.holdMs, ramping: !!(owner && owner.ramp), retrying: !!guard.retrying,
+    };
+  }
+  let lastReport = '';
+  const listeners = [];
+  let chip = null, dev = null; // created below, before any adapter can call notify()
+  function notify() {
+    const s = statusOf();
+    const key = `${s.status}|${s.engine || ''}|${s.reason || ''}`;
+    if (key !== lastReport) {
+      lastReport = key;
+      try { cap.report(s.waiting ? { status: s.status, engine: s.engine } : s); } catch (e) { warnOnce('report', 'could not report the status', e); }
     }
-    if (hit) { e.preventDefault(); e.stopImmediatePropagation(); saveCfg(); hud(true); }
-  }, true);
+    if (chip) chip.update(status());
+    if (dev) dev.hud();
+    for (const cb of listeners.slice()) { try { cb(); } catch (e) { warnOnce('onchange', 'a status listener threw', e); } }
+  }
+  const remember = (opts) => !(opts && opts.remember === false);
+  // The controller the chip and the dev hotkeys share. Every call notifies; remember: false saves nothing.
+  const ctl = Object.freeze({
+    status,
+    setEnabled(v, opts) { setEnabled(v, opts); },
+    setRig(m, opts) {
+      site.rig = m === 'display' ? 'display' : 'camera';
+      info(`${site.rig} rig for`, location.origin);
+      if (remember(opts)) save({ rig: site.rig });
+      notify();
+    },
+    // The ACTIVE rig's depth (joint ipd + parallax on both rigs).
+    setDepth(v, opts) {
+      setDepth(+v);
+      if (remember(opts)) save({ depths: { ...site.depths } });
+      notify();
+    },
+    // Convergence: +1 farther (x 1.15), -1 nearer, 0 back to automatic (scale 1).
+    nudgeFocus(dir, opts) {
+      site.convScale = dir > 0 ? clamp(site.convScale * 1.15, CONV_SCALE_MIN, CONV_SCALE_MAX) : dir < 0 ? clamp(site.convScale / 1.15, CONV_SCALE_MIN, CONV_SCALE_MAX) : 1;
+      if (remember(opts)) save({ convScale: site.convScale });
+      notify();
+    },
+    // The active rig's default depth and the automatic convergence.
+    reset(opts) {
+      setDepth(DEFAULT_DEPTH[rigMode()]);
+      site.convScale = 1;
+      if (remember(opts)) save({ depths: { ...site.depths }, convScale: site.convScale });
+      notify();
+    },
+    onChange(cb) { listeners.push(cb); return () => { const i = listeners.indexOf(cb); if (i >= 0) listeners.splice(i, 1); }; },
+  });
+
+  // Standing down for the rest of the document (the page owns XR, opted out, the guard blocked): the
+  // sentinel's detection traps and polls have nothing left to find.
+  let retired = false;
+  function standDownForGood() {
+    if (retired) return;
+    retired = true;
+    try { S.disarm(); } catch (e) { /* ignore */ }
+  }
+
+  // Product behaviour, not a dev feature (risk R8): leaving the page releases the session at once.
   window.addEventListener('pagehide', () => { if (owner) stand(owner, 'pagehide'); });
 
-  // ------------------------------------------------------------ diagnostics
+  // ------------------------------------------------------------ the parts
   const meta = {}; // per-engine facts adapters publish (three.js revision, PlayCanvas detection path, …)
-  window.__dxrAuto3D = {
-    version: VERSION,
-    get cfg() { return cfg; },
-    set(k, v) { cfg[k] = v; saveCfg(); hud(true); },
-    state() {
-      const renderers = [];
-      for (const w of tracked) {
-        const st = w.deref();
-        if (!st) continue;
-        const rect = st.canvas.getBoundingClientRect();
-        const d = st.ad.describe(st);
-        renderers.push({
-          engine: st.engine,
-          canvas: desc(st.canvas),
-          css: [Math.round(rect.width), Math.round(rect.height)],
-          page: d.page,
-          real: [realW(st.canvas), realH(st.canvas)],
-          eye: st.R ? [st.R.eyeW, st.R.eyeH] : null,
-          active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews,
-          convergence: st.conv.d, rig: st.active ? { ...st.rig } : null,
-          why: st.lastWhy, flatReason: st.flatReason, stats: { ...st.stats },
-          ...(d.extra || {}),
-        });
-      }
-      return { version: VERSION, engines: engines.slice(), ...meta, enabled: cfg.enabled, foreign, rigSupported: HAS_RIG, renderers };
-    },
-    // What the live layer's display API answers (diagnostics only).
-    async probe() {
-      const L = owner && owner.layer;
-      if (!L) return { layer: false };
-      const ask = async (name) => {
-        if (typeof L[name] !== 'function') return 'absent';
-        try { return await Promise.race([L[name](), new Promise((r) => setTimeout(() => r('timeout 2s'), 2000))]); }
-        catch (e) { return 'rejected: ' + (e && (e.name + ' ' + e.message)); }
-      };
-      return { layer: true, displayInfo: await ask('getDisplayInfo'), renderingModes: await ask('getRenderingModes') };
-    },
-  };
-
   const core = {
-    VERSION, TAG, DEFAULTS, HAS_RIG,
-    get cfg() { return cfg; },
+    VERSION, TAG, HAS_RIG, DEFAULT_DEPTH, DEPTH_MIN, DEPTH_MAX, CONV_SCALE_MIN, CONV_SCALE_MAX, T, site, cfg,
+    intrinsics: S.intrinsics,
     get owner() { return owner; },
     get foreign() { return foreign; },
-    meta,
+    get retired() { return retired; }, // stood down for good: the adapters' detection entry points are no-ops
+    get lastTarget() { return lastTarget; },
+    on, meta, tracked, engines,
     registerEngine(name) { if (!engines.includes(name)) engines.push(name); },
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
-    newState, considerActivation, canvasPlacement, cssEffect, flip, stand, yieldTo, hud,
+    newState, noteFlat, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
     realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
-    buildRig, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
-    makeCover, dropCover,
+    buildRig, pivotOffset, eyePose, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
+    makeCover, dropCover, takeOutCover, surfaces, surfaceOf, readGlEye: surfaces.readGlEye,
+    rigMode, depthOf, convSource, convText, rampK, flatNote, statusOf, setEnabled,
   };
-  Object.defineProperty(window, KEY, { value: Object.freeze(core), configurable: false, enumerable: false, writable: false });
-  info(`core armed (v${VERSION})`, cfg.enabled ? '' : '(OFF for this site)');
-})();
+  const guard = dxrGuard(core);
+  chip = dxrChip(ctl, S);
+  core.chip = chip; // dev.js: __dxrAuto3D.chip()
+  dev = cfg.dev ? dxrDev(core, ctl) : null;
+  const en = cfg.engines || {};
+  const three = en.three === false ? null : dxrThree(core);
+  const playcanvas = en.playcanvas === false ? null : dxrPlayCanvas(core);
+  const babylon = en.babylon === false ? null : dxrBabylon(core);
+
+  // The page may have asked for inline-3D / WebXR before the core was loaded.
+  S.onForeign(yieldTo);
+  if (S.foreign()) yieldTo(S.foreign());
+  info(`core armed (v${VERSION})`, on() ? '' : '(OFF for this site)');
+  notify();
+  return { ctl, three, playcanvas, babylon };
+}

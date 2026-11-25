@@ -1,0 +1,72 @@
+<!doctype html>
+<!-- TEST PAGE (chip) — three-corner-ui.html (same stage, same ?ui= / ?startMs= parameters) plus a
+     page <dialog>: window.__openDialog() shows it modal (its backdrop covers the canvas, so the chip
+     must hide) and window.__closeDialog() closes it. A page-wide ::backdrop rule (risk R9) must not
+     dim the page behind the chip, which is in the top layer too. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three dialog (test)</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#20242c;color:#dde;font:14px/1.4 system-ui,sans-serif}
+header{height:44px;padding:8px 40px;box-sizing:border-box}
+main{display:flex;gap:16px;padding:0 40px}
+.stage{position:relative;width:800px;height:450px;flex:none}
+.stage canvas{display:block}
+.stage > :last-child{outline:0}
+.stage canvas + *{margin:0}
+aside{flex:1}
+aside p:last-child{color:#9ab}
+.ui{position:fixed;display:flex;gap:4px;padding:6px;background:#445;border-radius:4px;z-index:5}
+.ui button{width:28px;height:24px}
+::backdrop{background:rgba(0,0,0,.45)}
+dialog{width:300px;height:120px}
+</style>
+<script type="importmap">{ "imports": { "three": "/deps/three/three.module.js" } }</script>
+</head><body>
+<header>dialog test page</header>
+<dialog id="d"><p>A page modal.</p></dialog>
+<main><div class="stage" id="stage"></div><aside><p>side text</p><p>last paragraph</p></aside></main>
+<script type="module">
+import * as THREE from 'three';
+const q = new URLSearchParams(location.search);
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(800, 450);
+stage.appendChild(renderer.domElement);
+// Page UI, fixed, over the requested corners of the canvas (80 x 40 boxes, 4 px from each edge).
+const corners = q.get('ui') === 'all' ? ['tr', 'br', 'tl', 'bl'] : q.get('ui') ? q.get('ui').split(',') : [];
+const r = renderer.domElement.getBoundingClientRect();
+for (const c of corners) {
+  const d = document.createElement('div');
+  d.className = 'ui ' + c;
+  d.innerHTML = '<button>a</button><button>b</button>';
+  Object.assign(d.style, { width: '80px', height: '40px', boxSizing: 'border-box',
+    left: (c[1] === 'r' ? r.right - 84 : r.left + 4) + 'px', top: (c[0] === 't' ? r.top + 4 : r.bottom - 44) + 'px' });
+  document.body.appendChild(d);
+}
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a3040);
+const camera = new THREE.PerspectiveCamera(40, 800 / 450, 0.1, 100);
+camera.position.set(0, 1, 8);
+camera.lookAt(0, 1, 0);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444466, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 2);
+sun.position.set(3, 6, 4);
+scene.add(sun);
+const mk = (geo, color, x, y, z) => { const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.4 })); m.position.set(x, y, z); scene.add(m); return m; };
+mk(new THREE.TorusKnotGeometry(0.55, 0.18, 96, 12), 0xff7a2f, 0, 1, 0);
+const box = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+mk(box, 0x2fb4ff, 1.8, 1, 0); mk(box, 0x2fb4ff, -1.8, 1, 0);
+const render = () => renderer.render(scene, camera);
+window.__render = render;
+const dlg = document.getElementById('d');
+window.__openDialog = () => dlg.showModal();
+window.__closeDialog = () => dlg.close();
+let n = 0;
+function frame() {
+  if (n >= 60) { window.__frozen = true; return; }
+  requestAnimationFrame(frame);
+  n++; render();
+}
+setTimeout(() => requestAnimationFrame(frame), +q.get('startMs') || 0);
+</script>
+</body></html>

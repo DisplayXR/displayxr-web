@@ -162,7 +162,8 @@ test('scene: mono (short view list) and missing-pose frames never count as stere
     env.runFrame(1);
   });
   assert.equal(await peek(h.firstWoven), 'pending');
-  assert.deepEqual(h.stats(), { frames: 2, monoFrames: 2 });
+  const st = h.stats();
+  assert.deepEqual({ frames: st.frames, monoFrames: st.monoFrames }, { frames: 2, monoFrames: 2 });
   env.runFrame(2);
   assert.equal((await peek(h.firstWoven)).woven, true);
   wall.close();
@@ -198,6 +199,28 @@ test('image: pending until the source has loaded and been painted side-by-side',
   assert.equal(await peek(h.firstWoven), 'pending', 'an empty SBS buffer is nothing to reveal');
   env.images[0].onload();
   await flush();
+  env.runFrame(2);
+  assert.equal((await peek(h.firstWoven)).woven, true);
+  wall.close();
+});
+
+test('image: an EMPTY canvas source (0x0, nothing drawn yet) is not a stereo frame — a camera view before its first frame', async () => {
+  // The self view registers its tile with an SBS buffer it fills from the camera. A track that
+  // never delivers a frame left that buffer empty, and firstWoven still settled woven: the call
+  // then reported "self woven" over a black tile (chat, NP02J, 2026-11-04).
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const buffer = { width: 0, height: 0 };
+  const h = wall.addImage(makeCanvas(), buffer, { firstWovenHoldMs: 0 });
+  await flush();
+  for (let i = 0; i < 5; i++) {
+    clock += 500;
+    env.runFrame(2);
+  }
+  assert.equal(await peek(h.firstWoven), 'pending', 'no frame painted: nothing to call woven');
+  buffer.width = 640; // the first camera frame lands in the buffer
+  buffer.height = 240;
   env.runFrame(2);
   assert.equal((await peek(h.firstWoven)).woven, true);
   wall.close();
@@ -304,4 +327,270 @@ test('no inline-3D session: createInline3D says unsupported and there is nothing
   const wall = await createInline3D();
   assert.equal(wall.supported, false);
   assert.equal(typeof wall.addScene, 'undefined', 'the fallback path has no windows, so no signal');
+});
+
+// ── handle.rewoven(): firstWoven again, counted from the call (fullscreen / a layout resize) ──
+
+test('rewoven: before the first join it IS firstWoven', async () => {
+  clock = 0;
+  installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {});
+  assert.equal(h.rewoven(), h.firstWoven);
+  wall.close();
+});
+
+test('rewoven: after the join, a stereo frame AND the hold, measured from the call', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {});
+  env.runFrame(2);
+  clock = 1200;
+  env.runFrame(2);
+  assert.equal((await peek(h.firstWoven)).woven, true);
+
+  clock = 5000;
+  const p = h.rewoven();
+  assert.equal(await peek(p), 'pending');
+  clock = 5000 + 1199;
+  env.runFrame(2);
+  assert.equal(await peek(p), 'pending', 'the hold restarts at the call, not at the first join');
+  clock = 5000 + 1200;
+  env.runFrame(2);
+  assert.deepEqual({ ...(await peek(p)) }, { woven: true, confirmed: false, reason: 'hold-elapsed', ms: 1200 });
+  wall.close();
+});
+
+test('rewoven: the hold needs a stereo frame after the call — mono frames do not count', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {}, { firstWovenHoldMs: 0 });
+  env.runFrame(2);
+  assert.equal((await peek(h.firstWoven)).woven, true);
+  const p = h.rewoven();
+  await quiet(() => env.runFrame(1));
+  assert.equal(await peek(p), 'pending');
+  env.runFrame(2);
+  assert.equal((await peek(p)).woven, true);
+  wall.close();
+});
+
+test('rewoven: a second call while pending returns the same promise, restarted', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {}, { firstWovenHoldMs: 100 });
+  env.runFrame(2);
+  clock = 100;
+  env.runFrame(2);
+  const p = h.rewoven();
+  clock = 150;
+  assert.equal(h.rewoven(), p);
+  clock = 200;
+  env.runFrame(2);
+  assert.equal(await peek(p), 'pending', 'restarted at 150: 50 ms is short of the hold');
+  clock = 250;
+  env.runFrame(2);
+  assert.deepEqual({ ...(await peek(p)) }, { woven: true, confirmed: false, reason: 'hold-elapsed', ms: 150 });
+  wall.close();
+});
+
+test('rewoven: a real box change while pending restarts the hold', async () => {
+  clock = 0;
+  const env = installEnv();
+  let roCb = null;
+  globalThis.ResizeObserver = class {
+    constructor(cb) {
+      roCb = cb;
+    }
+    observe() {}
+    disconnect() {}
+  };
+  try {
+    const wall = await newWall();
+    const canvas = makeCanvas(400, 200);
+    const h = wall.addImage(canvas, 'sbs.png', { firstWovenHoldMs: 100 });
+    env.images[0].onload();
+    await flush();
+    env.runFrame(2);
+    clock = 100;
+    env.runFrame(2);
+    assert.equal((await peek(h.firstWoven)).woven, true);
+    assert.ok(roCb, 'a live SDK-owned buffer is size-watched');
+
+    const p = h.rewoven();
+    clock = 150;
+    canvas.clientWidth = 800; // fullscreen: the box actually moved
+    canvas.clientHeight = 400;
+    roCb();
+    clock = 210;
+    env.runFrame(2);
+    assert.equal(await peek(p), 'pending', 'restarted at the box change (150), not the call (100)');
+    clock = 250;
+    env.runFrame(2);
+    assert.equal((await peek(p)).woven, true);
+    wall.close();
+  } finally {
+    globalThis.ResizeObserver = undefined;
+  }
+});
+
+test('rewoven: an addScene canvas (no ResizeObserver) restarts on a resize, seen per frame', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const canvas = makeCanvas(400, 200);
+  const h = wall.addScene(canvas, () => {}, { firstWovenHoldMs: 100 });
+  env.runFrame(2);
+  clock = 100;
+  env.runFrame(2);
+  assert.equal((await peek(h.firstWoven)).woven, true);
+  const p = h.rewoven();
+  clock = 150;
+  canvas.clientWidth = 800;
+  canvas.clientHeight = 400;
+  env.runFrame(2); // the frame sees the new box: restart at 150
+  clock = 240;
+  env.runFrame(2);
+  assert.equal(await peek(p), 'pending', 'restarted at 150, not settled at 200');
+  clock = 250;
+  env.runFrame(2);
+  assert.equal((await peek(p)).reason, 'hold-elapsed');
+  wall.close();
+});
+
+test('rewoven: a devicePixelRatio-only change restarts the hold', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(400, 200), () => {}, { firstWovenHoldMs: 100 });
+  env.runFrame(2);
+  clock = 100;
+  env.runFrame(2);
+  const p = h.rewoven();
+  clock = 150;
+  globalThis.window.devicePixelRatio = 2; // a zoom / a move to another monitor: same CSS box
+  env.runFrame(2);
+  clock = 240;
+  env.runFrame(2);
+  assert.equal(await peek(p), 'pending');
+  clock = 250;
+  env.runFrame(2);
+  assert.equal((await peek(p)).woven, true);
+  wall.close();
+});
+
+test('rewoven: a ResizeObserver fire with an unchanged box does not restart the hold', async () => {
+  clock = 0;
+  const env = installEnv();
+  let roCb = null;
+  globalThis.ResizeObserver = class {
+    constructor(cb) {
+      roCb = cb;
+    }
+    observe() {}
+    disconnect() {}
+  };
+  try {
+    const wall = await newWall();
+    const canvas = makeCanvas(400, 200);
+    const h = wall.addImage(canvas, 'sbs.png', { firstWovenHoldMs: 100 });
+    env.images[0].onload();
+    await flush();
+    env.runFrame(2);
+    clock = 100;
+    env.runFrame(2);
+    assert.equal((await peek(h.firstWoven)).woven, true);
+    const p = h.rewoven();
+    clock = 150;
+    roCb(); // fired, but nothing moved
+    clock = 200;
+    env.runFrame(2);
+    assert.equal((await peek(p)).reason, 'hold-elapsed', 'held from the call (100), not the fire (150)');
+    wall.close();
+  } finally {
+    globalThis.ResizeObserver = undefined;
+  }
+});
+
+test("rewoven: a box that never stops changing settles 'hold-capped' four holds after the call", async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const canvas = makeCanvas(400, 200);
+  const h = wall.addScene(canvas, () => {}, { firstWovenHoldMs: 100 });
+  env.runFrame(2);
+  clock = 100;
+  env.runFrame(2);
+  const p = h.rewoven(); // called at 100
+  for (let t = 110; t < 500; t += 10) {
+    clock = t;
+    canvas.clientWidth += 1; // an endless width transition
+    env.runFrame(2);
+  }
+  assert.equal(await peek(p), 'pending');
+  clock = 500;
+  canvas.clientWidth += 1;
+  env.runFrame(2);
+  assert.deepEqual({ ...(await peek(p)) }, { woven: true, confirmed: false, reason: 'hold-capped', ms: 400 });
+  wall.close();
+});
+
+test('rewoven: released woven:false when the window goes away, and after a no-weave result', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {}, { firstWovenHoldMs: 0 });
+  env.runFrame(2);
+  assert.equal((await peek(h.firstWoven)).woven, true);
+  const p = h.rewoven();
+  h.remove();
+  assert.equal((await peek(p)).reason, 'removed');
+  assert.equal((await peek(h.rewoven())).reason, 'removed', 'a window that will not weave answers at once');
+  wall.close();
+});
+
+// web#278: the frame clock rides the same deliveries. Here it is only the wiring (interval on the
+// frame timestamp, callback time on performance.now(), session frameRate passed through);
+// test/frame-clock.test.mjs pins the clock itself.
+test('scene: stats() reports the frame clock — a steady 33.4 ms with an idle callback is paced', async () => {
+  clock = 0;
+  const env = installEnv();
+  const wall = await newWall();
+  const h = wall.addScene(makeCanvas(), () => {
+    clock += 5; // the callback "takes" 5 ms
+  });
+  const empty = h.stats();
+  assert.equal(empty.frameIntervalMs, null);
+  assert.equal(empty.paced, null);
+  for (let i = 0; i < 40; i++) {
+    env.runFrame(2);
+    clock = (i + 1) * 33.4;
+  }
+  const s = h.stats();
+  assert.equal(s.frames, 40);
+  assert.equal(s.frameClockSamples, 39);
+  assert.equal(s.frameIntervalMs.p50, 33.4);
+  assert.equal(s.cbMs.p50, 5);
+  assert.equal(s.displayHz, null, 'the session reports no frameRate: unknown, not guessed');
+  assert.equal(s.paced, true);
+  wall.session.frameRate = 60;
+  assert.equal(h.stats().displayHz, 60);
+  assert.equal(h.stats().displayHzSource, 'session');
+  assert.equal(h.stats().paced, true, '33.4 ms is two 60 Hz periods');
+  wall.close();
+});
+
+test('stats(): image windows carry no clock', async () => {
+  clock = 0;
+  installEnv();
+  const wall = await newWall();
+  const h = wall.addImage(makeCanvas(), 'x.jpg');
+  const s = h.stats();
+  assert.equal(s.frames, 0);
+  assert.equal(s.frameIntervalMs, null);
+  assert.equal(s.paced, null);
+  wall.close();
 });

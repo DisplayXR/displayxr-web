@@ -20,11 +20,13 @@
 
 import * as THREE from 'three';
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
-import { EyeCamera, EdgeFeather, cameraRigFromCamera } from './inline3d-three.js';
+import { EyeCamera, EdgeFeather, cameraRigFromCamera, DepthCursor, raycastHitTest, displayRig } from './inline3d-three.js';
+import { resolveCursorOption } from './inline3d-cursor-depth.js';
 import { SceneViewer, boundsFromPositions } from './inline3d-viewer.js';
 import { readSogCamera } from './inline3d-sog.js';
-import { resolveRevealOption, effectsNotOnSpark, validateEffectCall } from './inline3d-splat-effects.js';
+import { resolveRevealOption, effectsNotOnSpark } from './inline3d-splat-effects.js';
 import { applySplatPerf, splatPerfMeshOptions } from './inline3d-splat-perf.js';
+import { addSplatDeferred } from './inline3d-splat-deferred.js';
 import {
   toArray3,
   canvasNdc,
@@ -36,8 +38,11 @@ import {
   isStreamedUrl,
   STREAMED_NEEDS_PLAYCANVAS,
   resolveControls,
-  normalizeCameraPose,
   declareViewRig,
+  guardedAttach,
+  attachComfortDepth,
+  resolveDepthOption,
+  framedSubjectBounds,
 } from './inline3d-splat-shared.js';
 import {
   resolveRig,
@@ -161,6 +166,12 @@ function sniffFileType(bytes) {
  * good enough for a clean, isolated capture, weaker on a scene with a background wall.
  */
 export function addSplat(wall, canvas, src, opts = {}) {
+  // A second call on a canvas still registered on this wall warns once, then proceeds as before
+  // (see guardedAttach).
+  return guardedAttach(wall, canvas, 'addSplat', opts, (o) => addSplatUnguarded(wall, canvas, src, o));
+}
+
+function addSplatUnguarded(wall, canvas, src, opts = {}) {
   if (opts.captureFit !== undefined && !CAPTURE_FITS.includes(opts.captureFit)) {
     throw new Error(
       `@displayxr/inline3d/splat: captureFit "${opts.captureFit}" — expected ` +
@@ -170,6 +181,8 @@ export function addSplat(wall, canvas, src, opts = {}) {
   // WHO OWNS THE CAMERA. Validated here, synchronously, for both engines (an unknown `controls`
   // or a comfortDepth out of range is a page bug true of every call).
   const { page: pageControls } = resolveControls(opts);
+  // Opt-in comfort depth, both engines: a bad value is a page bug, thrown at the call.
+  const depthOption = resolveDepthOption(opts.depth);
   // WHICH ENGINE. Unset (or 'spark') is everything below, untouched. 'playcanvas' goes to
   // ./inline3d-splat-playcanvas.js, imported DYNAMICALLY so a page that never asks for it never
   // resolves `playcanvas` — see addSplatDeferred.
@@ -245,7 +258,15 @@ export function addSplat(wall, canvas, src, opts = {}) {
     idleSpin,
     renderScale,
     feather,
+    logTag: '[inline3d/splat]',
+    viewerEase: opts.viewerEase,
+    // Opt-in; undefined = the viewer's own default (a transparent clear).
+    clearColor: opts.clearColor,
   }).useEyeCamera(EyeCamera, EdgeFeather);
+  // A gaussian-splat raycast is ~8 ms a ray on Spark: one ray a frame, cycling the footprint.
+  // (engine:'playcanvas' hit-tests with the engine's depth picker instead, which is far cheaper.)
+  const cursorOpts = resolveCursorOption(opts.cursor, '@displayxr/inline3d/splat');
+  if (cursorOpts) viewer.useDepthCursor(DepthCursor, (content) => raycastHitTest(THREE, [content]), { ...cursorOpts, raysPerFrame: 1 });
 
   // Spark renders through the ordinary three.js pipeline, so splats and meshes co-exist and
   // sort against each other — which is what lets a product page mix a captured hero with a
@@ -342,6 +363,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
     remove() {
       unbindFocusInput?.();
       viewer.onFocusChange = null;
+      depth.dispose();
       handle?.remove();
       viewer.dispose();
       out.mesh?.dispose?.();
@@ -385,6 +407,9 @@ export function addSplat(wall, canvas, src, opts = {}) {
     setLayerRig() {
       throw new Error("@displayxr/inline3d/splat: setLayerRig() is implemented on the PlayCanvas backend only (addSplat(…, { engine:'playcanvas' })).");
     },
+    setLayerRigOptions() {
+      throw new Error("@displayxr/inline3d/splat: setLayerRigOptions() is implemented on the PlayCanvas backend only (addSplat(…, { engine:'playcanvas' })).");
+    },
     /** Not on this backend: per-eye SBS materials are a PlayCanvas-backend feature. */
     makeSbsMaterial() {
       throw new Error("@displayxr/inline3d/splat: makeSbsMaterial() is implemented on the PlayCanvas backend only (addSplat(…, { engine:'playcanvas' })).");
@@ -396,6 +421,20 @@ export function addSplat(wall, canvas, src, opts = {}) {
           "(addSplat(…, { engine:'playcanvas' })).",
       );
     },
+    /** Not on this backend: the depth envelope is a PlayCanvas-backend feature. */
+    setDepthEnvelope() {
+      throw new Error(
+        "@displayxr/inline3d/splat: setDepthEnvelope() is implemented on the PlayCanvas backend only " +
+          "(addSplat(…, { engine:'playcanvas' })).",
+      );
+    },
+    /** Not on this backend: live stereo strength is a PlayCanvas-backend feature. */
+    setStereo() {
+      throw new Error(
+        "@displayxr/inline3d/splat: setStereo() is implemented on the PlayCanvas backend only " +
+          "(addSplat(…, { engine:'playcanvas' })).",
+      );
+    },
     /** Not on this backend (splat effects are PlayCanvas-only in this version). */
     playEffect() {
       throw effectsNotOnSpark('playEffect()');
@@ -403,11 +442,22 @@ export function addSplat(wall, canvas, src, opts = {}) {
     setEffect() {
       throw effectsNotOnSpark('setEffect()');
     },
+    warmEffect() {
+      throw effectsNotOnSpark('warmEffect()');
+    },
+    /** PlayCanvas-backend feature (its renderer links synchronously); nothing to warm here. */
+    warmEntity: () => Promise.resolve(0),
+    /** PlayCanvas-backend feature: three.js content is the page's to dispose (docs/content-lifecycle-rules.md). */
+    releaseEntity: () => ({ programs: 0, container: null }),
     stopEffect() {
       throw effectsNotOnSpark('stopEffect()');
     },
     effects: () => [],
   };
+  // The per-eye buffer scale in force (the request times the device-limit clamp,
+  // ./inline3d-buffer-limit.js) and the request as given. Accessors, so they stay live.
+  Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
+  Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
 
   // `src` may be a URL or the bytes themselves.
   //
@@ -456,14 +506,37 @@ export function addSplat(wall, canvas, src, opts = {}) {
       // The layer can go away for good (the session ends, the constructor refuses): take the
       // canvas flat rather than leave its last side-by-side frame on the page (web#28).
       onLayerLost: viewer.onLayerLost,
+      bufferClamped: true, // this viewer clamps its own buffer; the core must never touch its context
       ...(observe ? { observe } : {}),
       ...(firstWovenHoldMs !== undefined ? { firstWovenHoldMs } : {}),
+      // The SDK covers this canvas across a move/resize (core rectCover): on by default here, the
+      // preview tier; 'off' for a page that runs its own cover.
+      rectCover: opts.rectCover === undefined ? 'auto' : opts.rectCover,
+      // The entry's double-attach claim (guardedAttach): lets THIS registration through.
+      _dxrClaim: opts._dxrClaim,
     });
   } else {
     viewer.startMono();
   }
   // The core handle's `firstWoven`, forwarded; a page with no session is told so at once.
   out.firstWoven = handle ? handle.firstWoven : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 }));
+
+  // `depth: 'auto'` (opt-in, display rig only): Spark has no setStereo, so the comfort factor is
+  // the display rig's whole ipdFactor / parallaxFactor, declared explicitly when it moves off 1
+  // (and back to the plain rig — the shorthand's exact equivalent — if it returns to 1).
+  // Without the option: inert, `depthFactor` 1, the shorthand stays the only declaration.
+  const depth = attachComfortDepth(out, {
+    option: depthOption,
+    canvas,
+    getTile: () => handle,
+    getBounds: () => (out.frame && out.rig?.type === 'display' ? framedSubjectBounds(viewer) : null),
+    getVH: () => virtualDisplayHeight,
+    apply: (k) => {
+      out.viewRig = displayRig({ virtualDisplayHeight, ipdFactor: k, parallaxFactor: k, out: out.viewRig || {} });
+      declareViewRig(handle, out.viewRig);
+    },
+    tag: '[inline3d/splat]',
+  });
 
 
   // ── focus: declaring it, and the two gestures that change it ──────────────────────────
@@ -621,6 +694,7 @@ export function addSplat(wall, canvas, src, opts = {}) {
       out.frame = bounds;
 
       if (resolved.type === 'camera') {
+        depth.ignore('a camera rig (this asset carries a capture camera)');
         // A turntable on a photograph is nonsense, so the default spin stops here — but only the
         // DEFAULT: a page that asked for one still gets it.
         if (!('idleSpin' in opts)) viewer.idleSpin = 0;
@@ -633,8 +707,10 @@ export function addSplat(wall, canvas, src, opts = {}) {
         });
         pushViewRig(true);
       } else {
-        if (bounds) viewer.fitTo(bounds.center, bounds.extent);
-        else {
+        if (bounds) {
+          viewer.fitTo(bounds.center, bounds.extent);
+          depth.refresh();
+        } else {
           // Unframed means drawn at raw MODEL scale, which for a typical capture is several
           // times the tile. Say so: silence here is what made the same condition read as a fit
           // bug.
@@ -669,145 +745,6 @@ export function addSplat(wall, canvas, src, opts = {}) {
   return out;
 }
 
-/**
- * The `engine: 'playcanvas'` handle, returned SYNCHRONOUSLY like the Spark one.
- *
- * The adapter module is loaded on demand, so for a moment the handle exists before its
- * implementation does. Rather than make every caller await something new, the handle starts as
- * stubs that QUEUE: `exclude()` (which a product page calls on the very next line), `setPose`,
- * `setFocus`, `remove` — and the adapter replays the queue into the real implementation, on the
- * SAME object, the moment it arrives. `ready` resolves to this object, as it does on Spark.
- * Fields (`viewer`, `mesh`, `rig`, …) are null until then; `viewer` in particular appears one
- * module-load later than on Spark.
- */
-/** setRig's type/options shape, checked at the call before the adapter has loaded (it re-checks all of it). */
-function validateSetRigArgs(type, o) {
-  if (!['display', 'camera', 'auto'].includes(type)) {
-    throw new Error(`@displayxr/inline3d/splat: setRig("${type}") — expected 'display', 'camera' or 'auto'.`);
-  }
-  if (o !== undefined && (o === null || typeof o !== 'object')) {
-    throw new TypeError('@displayxr/inline3d/splat: setRig options must be an object.');
-  }
-}
-
-function addSplatDeferred(wall, canvas, src, opts) {
-  const pending = [];
-  const queue = (name) => (...args) => {
-    pending.push([name, args]);
-    return name === 'setFocus' ? out : undefined;
-  };
-  const page = opts.controls === 'page';
-  const pageOnly = (name) => () => {
-    throw new Error(
-      `@displayxr/inline3d/splat: ${name}() is not available with controls:'page' — the page owns the ` +
-        'camera. Drive it with handle.setCameraPose(matrixWorld, { verticalFovDeg, near, far }).',
-    );
-  };
-  // Before the adapter lands, a page calling setCameraPose every frame keeps ONE pending pose
-  // (validated now, so a bad call throws at its own line): last call wins, as it will after.
-  let pendingPose = null;
-  const out = {
-    backend: 'playcanvas',
-    engine: null,
-    viewer: null,
-    mesh: null,
-    frame: null,
-    camera: null,
-    rig: null,
-    perf: null,
-    setPose: page ? pageOnly('setPose') : queue('setPose'),
-    resetPose: page ? pageOnly('resetPose') : queue('resetPose'),
-    setCameraPose(matrixWorld, o) {
-      if (!page) {
-        throw new Error(
-          "@displayxr/inline3d/splat: setCameraPose() needs addSplat(…, { controls:'page' }) — " +
-            'with the default controls the SDK owns the camera (use setPose).',
-        );
-      }
-      const pose = normalizeCameraPose(matrixWorld, o);
-      if (pendingPose) pendingPose[1] = [pose.matrixWorld, pose];
-      else pending.push((pendingPose = ['setCameraPose', [pose.matrixWorld, pose]]));
-      return out;
-    },
-    getCameraPose: () =>
-      pendingPose
-        ? {
-            matrixWorld: Float32Array.from(pendingPose[1][1].matrixWorld),
-            verticalFovDeg: pendingPose[1][1].verticalFovDeg,
-            near: pendingPose[1][1].near,
-            far: pendingPose[1][1].far,
-            convergence: pendingPose[1][1].convergence,
-          }
-        : null,
-    setFocus: queue('setFocus'),
-    // A swap requested before the first asset has landed runs once it has (the adapter's own
-    // setSource replaces this stub on the same object by then).
-    setSource: (...args) => out.ready.then(() => out.setSource(...args)),
-    prepareSource: (...args) => out.ready.then(() => out.prepareSource(...args)),
-    // A rig switch before the first asset has landed: validated now (controls:'page' and a bad
-    // type throw at the call's own line), applied once it has.
-    setRig: page
-      ? pageOnly('setRig')
-      : (type, o) => {
-          validateSetRigArgs(type, o);
-          return out.ready.then(() => out.setRig(type, o));
-        },
-    // A video before the first asset has landed: controls:'page' throws at the call's own line,
-    // the rest is validated by the adapter's setVideo, which runs once the asset is on screen.
-    setVideo: page ? pageOnly('setVideo') : (src, o) => out.ready.then(() => out.setVideo(src, o)),
-    // Effects before the adapter has loaded: validated NOW (a bad call throws at its own line),
-    // then run once the first asset is on screen.
-    playEffect: (name, o) => {
-      validateEffectCall(name, o, 'play');
-      return out.ready.then(() => out.playEffect(name, o));
-    },
-    setEffect: (name, params) => {
-      validateEffectCall(name, params, 'set');
-      pending.push(['setEffect', [name, params]]);
-      return out;
-    },
-    stopEffect: queue('stopEffect'),
-    // A layer-rig request before the adapter has loaded: queued, replayed in order once it has
-    // (it needs no asset, only the engine's layers — which the adapter resolves lazily).
-    setLayerRig: (...args) => {
-      pending.push(['setLayerRig', args]);
-      return out;
-    },
-    layerRigState: () => ({ display: [], disabled: false, rounded: false, gain: null }),
-    makeSbsMaterial: () => {
-      throw new Error('@displayxr/inline3d/splat: makeSbsMaterial() needs the engine — call it after `await handle.ready`.');
-    },
-    effects: () => [],
-    getFocus: () => null,
-    // A plain data slot the adapter reads at call time, so a callback assigned on the very next
-    // line after addSplat — before the module has loaded — is the one that fires.
-    onFocusChange: null,
-    pick: () => null,
-    // Splat accounting (resident / budget / first frame); null until the adapter has loaded.
-    stats: () => null,
-    remove: queue('remove'),
-    exclude: queue('exclude'),
-    unexclude: queue('unexclude'),
-  };
-  // `firstWoven` exists from the first line, like every other field a page reads right away; the
-  // adapter settles it with the core handle's own once the module has loaded.
-  out.firstWoven = new Promise((resolve) => {
-    out._resolveFirstWoven = resolve;
-  });
-  // The ONE owner of `ready`: the adapter returns its load promise and never touches this field.
-  out.ready = import('./inline3d-splat-playcanvas.js')
-    .then((m) => m.attachPlayCanvasSplat(out, wall, canvas, src, opts, pending))
-    .catch((err) => {
-      // The adapter warns about its own load failures; this is for the module not arriving.
-      if (!out.viewer) console.warn('[inline3d/splat] engine:playcanvas failed to start', err);
-      if (out._resolveFirstWoven) {
-        out._resolveFirstWoven(Object.freeze({ woven: false, confirmed: false, reason: 'layer-failed', ms: 0 }));
-        delete out._resolveFirstWoven;
-      }
-      throw err;
-    });
-  return out;
-}
 
 /**
  * Percentile bounds from the loaded splats — the fallback when no sidecar was supplied.

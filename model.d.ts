@@ -1,8 +1,10 @@
 // Type definitions for @displayxr/inline3d/model (and ./model/three).
 // EXPERIMENTAL — not covered by the 1.x semver promise. See docs/sdk-stability.md.
 
+import type { CursorOptions } from './cursor-depth.js';
 import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
-import type { FirstWovenResult } from './index.js';
+import type { HandControlOptions, HandControls } from './hands.js';
+import type { FirstWovenResult, RectCoverOption, ViewerEaseOption } from './index.js';
 import type { PlayCanvasSplatViewer, SplatCameraPose, SplatFrameInfo } from './splat.js';
 
 export interface ModelOptions {
@@ -19,24 +21,96 @@ export interface ModelOptions {
   engine?: 'playcanvas' | 'three';
   /** Metres of world the tile's height spans (default 0.24). */
   virtualDisplayHeight?: number;
-  /** Precomputed subject bounds. Rarely needed for a mesh — its bounds are exact. */
+  /**
+   * Precomputed subject bounds: overrides `framing` entirely. `center` is the pivot and goes on the
+   * glass unless you also give `screenPlaneZ`. Copy `handle.frame` from one load to pin a framing.
+   */
   frame?: SubjectBounds;
+  /**
+   * How the model is framed when `frame` is not given (both engines). Default `'robust'`: the
+   * surface is sampled at load (uniform by triangle area, bind / rest pose), the screen plane goes
+   * at its 75th-percentile depth toward the viewer (about 25% of the surface in front of the
+   * glass, the runtime's own auto-convergence target), the model turns about the surface's median
+   * (x, z; y is the box centre), and the fit uses the per-axis 1st–99th percentile extent, never
+   * tighter than the full box at 90% of the tile — so a thin tail or antenna moves neither size nor
+   * depth. `'box'`: the axis-aligned bounding box, centre on the glass, as before robust framing became the default. Falls back to
+   * the box (one console line) when the triangles cannot be read. Anything else throws at the call.
+   */
+  framing?: 'robust' | 'box';
   /** Degrees/second of turntable once idle (default 8). */
   idleSpin?: number;
   orbit?: boolean;
+  /**
+   * Tracked-hand controls (`@displayxr/inline3d/hands`): one pinch dragged turns the model, two
+   * pinches spread / dragged / twisted zoom / turn / roll it (either engine). Needs the
+   * DisplayXR Browser 1.8.0+ with a hand provider; inert elsewhere, and pointer / wheel keep
+   * working alongside. `true` or the controller options; exposed as `handle.hands`. Default off.
+   */
+  hands?: boolean | HandControlOptions;
   fit?: 'contain' | 'height' | 'cover' | 'none';
   /** Fraction of the tile the subject may occupy (default 0.8) — width AND height. */
   margin?: number;
   /** Backstop on total depth, in display heights (default 4.0). Rarely binds. */
   depthLimit?: number;
   /**
+   * OPT-IN eye clear: `[r, g, b, a]` in 0..1 (alpha defaults to 1) or a CSS colour string (`#hex`,
+   * `rgb()`/`rgba()`, `transparent`, or any colour the browser parses). Unset: the transparent
+   * clear, exactly as before. An OPAQUE clear is recommended: where the weave reads an alpha-0
+   * pixel it can show stale or black pixels (web#198). Make the page colour behind the canvas
+   * match, so the 2D fallback and any feathered edge look the same. Unreadable → one warning,
+   * the default clear stays.
+   */
+  clearColor?: [number, number, number] | [number, number, number, number] | string;
+  /**
+   * OPT-IN comfort depth (display rig only). `'auto'` (the Shibata zone of comfort) or
+   * `{ zone: 'shibata' | 'percival' | <diopters> }`. The SDK measures the framed subject's depth
+   * (tile heights in front of / behind the glass), the canvas's physical height
+   * (`displayMetrics()`) and the display's NOMINAL viewer distance (`getDisplayInfo()`, 0.6 m when
+   * it reports none — never the live head distance), and multiplies the display rig's `ipdFactor`
+   * and `parallaxFactor` (together) by `comfortDepthFactor()` of those, on top of
+   * `setStereo`'s values. It ONLY EVER LOWERS DEPTH (the factor is ≤ 1), because the same depth in
+   * tile heights carries more vergence load on a small or close device (a tablet at 0.4 m) than on
+   * a laptop at 0.6 m: where the subject already fits, nothing changes.
+   *
+   * Measured when the subject is first framed, when the canvas resizes and when the display
+   * reports a change — NOT on zoom or orbit (those are framing choices the developer owns; the box
+   * is the framed one at zoom 1), and not per frame. Read the factor in force from `depthFactor`.
+   * Ignored, with one console warning, on a camera rig or under `controls: 'page'`. Anything else
+   * throws at the call. Unset: nothing is measured or declared — the tile is exactly as before.
+   */
+  depth?: 'auto' | { zone?: 'shibata' | 'percival' | number };
+  /**
    * Fit the horizontal against the box's DIAGONAL (width and depth) rather than width alone,
    * so a long subject still fits once the turntable turns it (default true).
    */
   fitSweep?: boolean;
-  /** Per-eye buffer scale; 0.5–0.7 is usually free (default 1). */
+  /**
+   * Per-eye buffer scale; 0.5–0.7 is usually free (default 1). Clamped to the device's GL limits: the whole store (2 × eye wide in 3D) is kept within
+   * min(MAX_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE, MAX_VIEWPORT_DIMS), both axes shrunk by one factor,
+   * with a one-time console warning. The handle's `renderScale` reports the value in force.
+   */
   renderScale?: number;
   feather?: number;
+  /**
+   * The tracking ease (default on): when a viewer is acquired or lost and the views jump (the
+   * runtime's nominal viewer <-> the tracked eyes) the eye cameras glide from where they were
+   * drawn to the new views instead of snapping in one frame. Unset: the session's
+   * `createInline3D({ viewerEase })`, else on. `false` restores the snap.
+   */
+  viewerEase?: ViewerEaseOption;
+  /**
+   * `'depth'`: a cursor that is never drawn on the glass behind content that pops out (ADR-046 +
+   * Amendment 2, the same policy as native `XR_DXR_cursor_depth`). While the subject under the
+   * pointer's footprint comes OUT of the screen, the classic arrow (the OS cursor's size, tip on
+   * the hotspot) is drawn the margin (0.015 eye baselines, ~1 mm) in front of it and the CSS cursor
+   * is hidden; over anything on or behind the glass nothing is drawn and the CSS cursor is the
+   * cursor, untouched. Never behind the glass. OPT-IN: without it nothing
+   * is loaded or run. PlayCanvas: hit-tested with the engine's depth picker (meshes and splats,
+   * one low-res pass every other frame while the pointer is over the tile). three: a raycast
+   * against the subject. Pass an object to tune it: `{ margin, anchor, height, pointerScope, soften, shape, shapeFor }`
+   * (any object also means depth).
+   */
+  cursor?: 'depth' | CursorOptions;
   /**
    * How the mesh is lit.
    *
@@ -115,6 +189,13 @@ export interface ModelOptions {
   farClip?: number;
   /** PlayCanvas only: the drag's tilt cap in degrees (default 15, tilt-and-relax). */
   orbitMaxDeg?: number;
+  /**
+   * PlayCanvas only: how a drag turns the model. `'turntable'` (the default for addModel, as on the
+   * three path): cumulative, a full drag across the tile is a half turn, and it stays where you
+   * leave it. `'tilt'` (addSplat's mapping for photo splats): capped at ±`orbitMaxDeg` from the
+   * press and relaxing back to rest on release.
+   */
+  orbitStyle?: 'turntable' | 'tilt';
   /** PlayCanvas only: the orbit's easing time constants, seconds. */
   orbitEase?: { drag?: number; rest?: number };
   /** PlayCanvas only: zoom bounds + relax (wheel, pinch, setPose) — see the splat option. */
@@ -134,6 +215,13 @@ export interface ModelOptions {
   observe?: Element;
   /** Forwarded to the core window: see `TileOptions.firstWovenHoldMs`. */
   firstWovenHoldMs?: number;
+  /**
+   * The SDK's cover across a move or resize of this canvas (see `TileOptions.rectCover`).
+   * **Default `'auto'` here** (the core default is `'off'`): a solid cover showing the last frame,
+   * raised when the canvas's size, dpr or page position changes and cut when `rewoven()` settles.
+   * Pass `'off'` if the page runs its own cover.
+   */
+  rectCover?: RectCoverOption;
 }
 
 /** What {@link addModel} returns — the same shape as addSplat's handle. */
@@ -146,6 +234,8 @@ export interface ModelHandle {
    * returns (1.11 returned it synchronously; `@displayxr/inline3d/model/three` still does).
    */
   readonly viewer: SceneViewer | PlayCanvasSplatViewer | null;
+  /** The hand controls, when the `hands` option asked for them (`stop()`, `state.gate`, `controller`). */
+  readonly hands?: HandControls;
   /**
    * The loaded glTF root — a three `Object3D`, or on PlayCanvas the render `pc.Entity`
    * (`instantiateRenderEntity()`). Null until `ready` resolves.
@@ -159,11 +249,40 @@ export interface ModelHandle {
    * under it), `camera` the eye camera. Null on three and until the engine has booted.
    */
   readonly engine: { readonly app: unknown; readonly root: unknown; readonly camera: unknown } | null;
-  /** Bounds used for framing; null until `ready` resolves. */
+  /**
+   * The frame used; null until `ready` resolves. Robust framing: `center` (pivot), `extent` (fit),
+   * `screenPlaneZ`, `depthRange` and the original `box`. `framing: 'box'`: `center` and `extent`.
+   */
   frame: SubjectBounds | null;
   /** Resolves once the model has loaded and been framed; rejects if the load failed. */
   readonly ready: Promise<ModelHandle>;
 
+  /**
+   * Live stereo strength — a depth slider, mirroring `SplatHandle.setStereo`. On the display rig
+   * (the default) the values are RELATIVE: 1 = what the display shows by construction, below 1 a
+   * comfort dial, 0 flat (above 1 exaggerates; sent as given, with a one-time warning). A key given
+   * replaces, a key set to `null` returns to 1, `setStereo(null)` clears both. `ipdScale` /
+   * `parallaxScale` are accepted too (a model's own values are 1, so they agree). Sticky; applied
+   * from the next frame with no cut (pose and framing stay). Re-declares the display rig
+   * explicitly (`handle.viewRig`); nothing is declared before the first call. Under
+   * `controls: 'page'` (PlayCanvas) the page's camera rig takes them, ABSOLUTE.
+   */
+  setStereo(opts: { ipdFactor?: number | null; parallaxFactor?: number | null; ipdScale?: number | null; parallaxScale?: number | null } | null): ModelHandle;
+  /** The rig's stereo in force (read back; `setStereo` writes it). Null until the backend has loaded. */
+  readonly rig: {
+    readonly type: 'display' | 'camera';
+    readonly ipdFactor: number;
+    readonly parallaxFactor: number;
+    readonly stereoDefault: { readonly ipdFactor: number; readonly parallaxFactor: number };
+  } | null;
+  /**
+   * The `depth` option's comfort factor in force, in (0, 1]: what the display rig's ipdFactor and
+   * parallaxFactor are multiplied by (under `setStereo`'s values). 1 without the option, before
+   * the first measurement, and on a rig it does not apply to.
+   */
+  readonly depthFactor: number;
+  /** The view-rig descriptor last declared by `setStereo` (or `controls: 'page'`), if any. */
+  readonly viewRig?: object;
   /** Throws on `controls: 'page'`. */
   setPose(pose?: OrbitPose): void;
   /** Throws on `controls: 'page'`. */
@@ -176,8 +295,33 @@ export interface ModelHandle {
   /** The last pose the page set (a copy), or null. */
   getCameraPose(): SplatCameraPose | null;
 
+  /** The per-eye buffer scale in force: the `renderScale` option times the device-limit clamp. */
+  readonly renderScale: number;
+  /** The `renderScale` option as given. */
+  readonly renderScaleRequested: number;
+
   remove(): void;
   exclude(el: Element): void;
+  /**
+   * PlayCanvas only (resolves 0 on three). Compile the lit programs `entity` (default: the model)
+   * will draw with, in idle time, through the renderer's own shader lookup, and finish their links
+   * off the frame (KHR_parallel_shader_compile), so its first draw does not freeze. Warm while it
+   * is hidden, in the lighting it will be shown in. Resolves the number of programs warmed.
+   * docs/playcanvas-adapter.md §warmEntity.
+   */
+  warmEntity(entity?: unknown, opts?: { timeoutMs?: number }): Promise<number>;
+  /**
+   * `engine: 'playcanvas'` only (a no-op returning `{ programs: 0, container: null }` on three).
+   * Destroy `entity` — content you added under `handle.engine.root` — and release what it held on
+   * the GPU: the shader programs its materials linked (PlayCanvas never frees a program by itself:
+   * its ProgramLibrary caches every variant for the device's life, and `Material.destroy()` does
+   * not destroy them), and, with `asset`, the glTF container it was instantiated from (unloaded
+   * and taken out of the registry unless something else in the tile still draws from it). A
+   * program another material still uses is kept. Call it for whatever a content swap replaces.
+   * Returns the number of programs destroyed and what happened to the container.
+   * docs/content-lifecycle-rules.md.
+   */
+  releaseEntity(entity: unknown, opts?: { asset?: unknown }): { programs: number; container: 'unloaded' | 'in-use' | null };
   unexclude(el: Element): void;
   /**
    * The core window's `TileHandle.firstWoven`: when it is safe to reveal the canvas. Resolves

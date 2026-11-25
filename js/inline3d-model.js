@@ -38,12 +38,42 @@
 // your own origin (`/draco/`, `/basis/`) and `opts.decoderPath` moves that. See
 // docs/authoring-inline-3d.md#compressed-gltf.
 
+import { guardedAttach, attachModelStereo, attachComfortDepth, resolveDepthOption, framedSubjectBounds } from './inline3d-splat-shared.js';
 import * as THREE from 'three';
-import { EyeCamera, EdgeFeather } from './inline3d-three.js';
+import { EyeCamera, EdgeFeather, DepthCursor, raycastHitTest, displayRig } from './inline3d-three.js';
+import { resolveCursorOption } from './inline3d-cursor-depth.js';
+import { CURSOR_MODEL_RAYS_PER_FRAME } from './inline3d-cursor-perf.js';
 import { SceneViewer } from './inline3d-viewer.js';
+import { robustFrame, meshesOfThreeObject, resolveFraming, fitOptionsOf } from './inline3d-model-frame.js';
 // Procedural — built in memory, no asset to serve. Imported eagerly rather than lazily because it
 // is the default lighting path, so deferring it would only add a frame of unlit content.
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/**
+ * `cursor: 'depth'`'s hit test over the model: three's plain raycast at once, then the
+ * BVH-accelerated one (./inline3d-cursor-bvh.js, with its vendored three-mesh-bvh slice) as soon as
+ * that module arrives. Called on opt-in ONLY — the one place the module is imported, dynamically,
+ * so a page without the cursor never downloads it (ADR-046 §0). If it cannot load, the plain
+ * raycast simply stays.
+ */
+function cursorHitTest(content) {
+  const plain = raycastHitTest(THREE, [content]);
+  let fast = null;
+  let failed = false;
+  import('./inline3d-cursor-bvh.js').then(
+    (m) => {
+      fast = m.bvhHitTest(THREE, [content]);
+    },
+    (err) => {
+      failed = true;
+      console.warn('[inline3d/model] cursor: depth: the BVH pick could not load; using the plain raycast.', err);
+    },
+  );
+  const hitTest = (origin, direction) => (fast ? fast(origin, direction) : plain(origin, direction));
+  /** Diagnostics (`cursor: { debug }`): which pick is answering. */
+  hitTest.info = () => (fast ? fast.info() : { mode: failed ? 'plain (bvh failed to load)' : 'plain (bvh loading)' });
+  return hitTest;
+}
 
 /** Cached across calls so a grid of models resolves the loader module once. */
 let _GLTFLoader = null;
@@ -344,6 +374,12 @@ function kindFromMessage(msg) {
  *          `setPose`, `resetPose`, `frame`, and `ready`.
  */
 export function addModel(wall, canvas, src, opts = {}) {
+  // A second call on a canvas still registered on this wall warns once, then proceeds as before
+  // (see guardedAttach).
+  return guardedAttach(wall, canvas, 'addModel', opts, (o) => addModelUnguarded(wall, canvas, src, o));
+}
+
+function addModelUnguarded(wall, canvas, src, opts = {}) {
   const {
     virtualDisplayHeight = 0.24,
     frame = null,
@@ -366,8 +402,11 @@ export function addModel(wall, canvas, src, opts = {}) {
     firstWovenHoldMs,
   } = opts;
 
+  const framing = resolveFraming(opts.framing);
   const paths = normalizeDecoderPath(decoderPath);
   const injected = { draco: injectedDraco, ktx2: injectedKtx2, meshopt: injectedMeshopt };
+  // Opt-in comfort depth; a bad value throws here, at the call.
+  const depthOption = resolveDepthOption(opts.depth, '@displayxr/inline3d/model');
 
   const viewer = new SceneViewer(THREE, canvas, {
     virtualDisplayHeight,
@@ -379,7 +418,15 @@ export function addModel(wall, canvas, src, opts = {}) {
     idleSpin,
     renderScale,
     feather,
+    logTag: '[inline3d/model]',
+    viewerEase: opts.viewerEase,
+    // Opt-in; undefined = the viewer's own default (a transparent clear).
+    clearColor: opts.clearColor,
   }).useEyeCamera(EyeCamera, EdgeFeather);
+  const cursorOpts = resolveCursorOption(opts.cursor, '@displayxr/inline3d/model');
+  // Amortised pick (a few rays a frame): the sprite follows the newest pointer position every
+  // frame and the pick only refreshes its depth, so a heavy mesh never stretches the frame.
+  if (cursorOpts) viewer.useDepthCursor(DepthCursor, cursorHitTest, { raysPerFrame: CURSOR_MODEL_RAYS_PER_FRAME, ...cursorOpts });
 
   if (envMap) viewer.scene.environment = envMap;
   else if (environment === 'room') addRoomEnvironment(viewer);
@@ -395,6 +442,7 @@ export function addModel(wall, canvas, src, opts = {}) {
     setPose: (p) => viewer.setPose(p),
     resetPose: () => viewer.resetPose(),
     remove() {
+      depth.dispose();
       handle?.remove();
       viewer.dispose();
       if (out.model) disposeTree(out.model);
@@ -403,6 +451,25 @@ export function addModel(wall, canvas, src, opts = {}) {
     exclude: (el) => handle?.exclude(el),
     unexclude: (el) => handle?.unexclude(el),
   };
+
+  // The per-eye buffer scale in force (the request times the device-limit clamp,
+  // ./inline3d-buffer-limit.js) and the request as given. Accessors, so they stay live.
+  Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
+  Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
+
+  // handle.setStereo / handle.rig (a depth slider; nothing is declared until it is called).
+  const stereo = attachModelStereo(out, { getTile: () => handle, vH: virtualDisplayHeight, makeDisplayRig: displayRig });
+  // `depth: 'auto'` (opt-in): the comfort factor under setStereo's, on the same display rig.
+  // Without it, inert: `depthFactor` reads 1 and nothing is measured or declared.
+  const depth = attachComfortDepth(out, {
+    option: depthOption,
+    canvas,
+    getTile: () => handle,
+    getBounds: () => (out.frame ? framedSubjectBounds(viewer) : null),
+    getVH: () => virtualDisplayHeight,
+    apply: (k) => stereo.setBase(k),
+    tag: '[inline3d/model]',
+  });
 
   // Window first, content when it lands — same reasoning as ./splat: a grid should not appear
   // one tile at a time in download order.
@@ -413,8 +480,14 @@ export function addModel(wall, canvas, src, opts = {}) {
       // The layer can go away for good (the session ends, the constructor refuses): take the
       // canvas flat rather than leave its last side-by-side frame on the page (web#28).
       onLayerLost: viewer.onLayerLost,
+      bufferClamped: true, // this viewer clamps its own buffer; the core must never touch its context
       ...(observe ? { observe } : {}),
       ...(firstWovenHoldMs !== undefined ? { firstWovenHoldMs } : {}),
+      // The SDK covers this canvas across a move/resize (core rectCover): on by default here, the
+      // preview tier; 'off' for a page that runs its own cover.
+      rectCover: opts.rectCover === undefined ? 'auto' : opts.rectCover,
+      // The entry's double-attach claim (guardedAttach): lets THIS registration through.
+      _dxrClaim: opts._dxrClaim,
     });
   } else {
     viewer.startMono();
@@ -470,12 +543,16 @@ export function addModel(wall, canvas, src, opts = {}) {
     out.model = gltf.scene;
     viewer.content.add(gltf.scene);
 
-    // Meshes have exact bounds, so unlike a splat there is nothing to be robust ABOUT: no
-    // percentile trim, no flood-fill, no sidecar needed. Box3 is the whole story.
-    const bounds = frame || boundsOf(gltf.scene);
+    // Meshes have exact bounds, but exact is not the same as representative: one thin tail or
+    // antenna moves the box's centre and size (web#327). `frame` overrides everything; else the
+    // robust frame (the default, ./inline3d-model-frame.js) or the box (framing:'box').
+    const bounds = frame || frameOf(gltf.scene, { framing, margin });
     if (bounds) {
       out.frame = bounds;
-      viewer.fitTo(bounds.center, bounds.extent);
+      const fo = fitOptionsOf(bounds);
+      if (fo) viewer.fitTo(bounds.center, bounds.extent, fo);
+      else viewer.fitTo(bounds.center, bounds.extent);
+      depth.refresh();
     }
     return out;
   })().catch((err) => {
@@ -484,6 +561,16 @@ export function addModel(wall, canvas, src, opts = {}) {
   });
 
   return out;
+}
+
+/** addModel's frame on three: robust by default, the box for framing:'box' or no readable mesh. */
+function frameOf(object3d, { framing = 'robust', margin = 0.8 } = {}) {
+  const box = boundsOf(object3d);
+  if (!box || framing === 'box') return box;
+  const meshes = meshesOfThreeObject(THREE, object3d);
+  const f = meshes ? robustFrame(meshes, box, { margin }) : null;
+  if (!f) console.info("[inline3d/model] framing:'robust' fell back to the bounding box (no readable triangles).");
+  return f || box;
 }
 
 /** Exact model-space bounds of an object tree. */

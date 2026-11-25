@@ -1,0 +1,50 @@
+<!doctype html>
+<!-- TEST PAGE — a three.js page that opts out of auto-3D:
+       <meta name="DisplayXR-Auto3D" content=" OFF ">   (name and content: case-insensitive, trimmed)
+     ?late=boot   the meta is NOT in the document at load; the page's module inserts it after three.js
+                  is imported (the core is loaded by then) and before the renderer draws: the core's
+                  considerActivation must refuse.
+     ?late=<ms>   inserted <ms> after the page's first frame, while converted: the core's every-30-
+                  session-frames check must turn 3D off.
+     Continuous render loop (never frozen), a lookAt target at 8 units. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>meta off (test)</title>
+<meta name="DisplayXR-Auto3D" content=" OFF ">
+<script>if (new URLSearchParams(location.search).has('late')) document.currentScript.previousElementSibling.remove();</script>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block}</style>
+<script type="importmap">{ "imports": { "three": "/deps/three/three.module.js" } }</script>
+</head><body>
+<script type="module">
+import * as THREE from 'three';
+const late = new URLSearchParams(location.search).get('late');
+const insertMeta = () => {
+  const m = document.createElement('meta');
+  m.name = 'displayxr-auto3d'; m.content = 'off';
+  document.head.appendChild(m);
+  window.__metaAt = performance.now();
+};
+if (late === 'boot') insertMeta();
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a3040);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, 1, 8);
+camera.lookAt(0, 1, 0);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444466, 1.5));
+const knot = new THREE.Mesh(new THREE.TorusKnotGeometry(0.55, 0.18, 96, 12), new THREE.MeshStandardMaterial({ color: 0xff7a2f }));
+knot.position.set(0, 1, 0);
+scene.add(knot);
+let n = 0;
+function frame() {
+  requestAnimationFrame(frame);
+  n++;
+  if (n === 1 && late && late !== 'boot') setTimeout(insertMeta, +late);
+  knot.rotation.y = n * 0.02;
+  renderer.render(scene, camera);
+  window.__pageFrames = n;
+}
+requestAnimationFrame(frame);
+</script>
+</body></html>

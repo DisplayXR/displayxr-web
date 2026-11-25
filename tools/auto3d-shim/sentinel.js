@@ -1,0 +1,567 @@
+// DisplayXR auto-3D — the sentinel. PROTOTYPE, not a product.
+//
+// `function dxrSentinel(cfg, cap)`: the only part evaluated in every frame at document start
+// (dist/auto3d-sentinel.js). The host calls it with the frozen per-frame `cfg` and the capability
+// object `cap` (see core.js's header); neither is ever put on `window`. It is small on purpose:
+// on a page with no engine it is all that ever runs, and the core (cap.loadCore()) is never parsed.
+//
+// What it owns:
+//   - the DisplayXR check (inert anywhere else) and the double-injection marker: a value-only
+//     `window[Symbol.for('dxr.auto3d')] = true`; the first injector wins (a dev extension and the
+//     product injector in one browser);
+//   - `S.intrinsics`: browser built-ins snapshotted before any page script can patch them (risk
+//     R4 — the core and the chip load late);
+//   - the `navigator.xr.requestSession` wrapper (risk R3): a page that asks for inline-3d /
+//     immersive-* itself owns XR, and the core must hear of it even when the request comes first;
+//   - engine DETECTION, and loading the core LAZILY, at most once, only when an engine is found:
+//       three.js    the `__THREE_DEVTOOLS__` EventTarget (three r105+ announces its revision and
+//                   every renderer / scene to it). The core loads synchronously inside the
+//                   listener for the first 'register' / 'observe' event, and that event and every
+//                   later one are forwarded to the core's three.js adapter.
+//       PlayCanvas  the AppBase constructor's `AppBase._applications[canvas.id] = this`: a canvas
+//                   `id` read arms a one-shot setter for exactly that key on Object.prototype for
+//                   the rest of the task (removed at the next microtask checkpoint); the engine's
+//                   assignment lands on it and hands over the app. The `id` read is watched with a
+//                   PER-INSTANCE accessor on the canvas (never on Element.prototype: a prototype
+//                   accessor slows every element's id read, risk R2), armed (a) on every <canvas>
+//                   in the DOM at readystatechange → 'interactive' — before deferred / module
+//                   scripts run, and `new Application(canvas)` reads the id BEFORE it creates the
+//                   context (risk R1) — (b) on every <canvas> ADDED to the document, parser- or
+//                   script-inserted, through one MutationObserver (childList + subtree on the
+//                   document) from document start until an app is found / the traps come off / the
+//                   first mutation after load + 10 s (it disconnects itself: no timer), and (c) on
+//                   a canvas's first webgl / webgl2 / experimental-webgl / webgpu getContext(). On
+//                   WebGPU the context ALWAYS exists before the id read (createGraphicsDevice →
+//                   initWebGpu → getContext('webgpu'), then `new AppBase(canvas)`), so (c) alone
+//                   finds a WebGPU app, script-created canvas or not. The first WebGL context also
+//                   starts the
+//                   globals search: `window.pc.app`, `pc.AppBase.getApplication()`, `window.app`,
+//                   in the next microtask, at DOMContentLoaded / load, then every 500 ms, 40 times
+//                   (once per document). There is NO `window.pc` accessor ('pc' in window stays
+//                   false). A WebGPU context starts only the timer-free part of that search (the
+//                   microtask, DOMContentLoaded / load looks) and owns no sweep timer: its trap expires
+//                   lazily (§3.3), so a WebGPU page with no engine gets no sentinel timer. A canvas
+//                   trap is removed once an app is found, on a '2d' context, or 10 s after load. The
+//                   core loads only when an app is actually found.
+//       Babylon.js  the ThinEngine constructor's `this._gl = canvas.getContext('webgl2', …)` (WebGPUEngine:
+//                   `this._context = canvas.getContext('webgpu')` in initAsync): a getContext that LOOKS LIKE
+//                   Babylon's arms a one-shot setter for `_gl` (`_context`) on Object.prototype for the rest of
+//                   that task (removed at the next microtask checkpoint: two engines made in one task are both
+//                   seen). Looks like Babylon's: WebGL, the context attributes are the engine's own options
+//                   object, to which AbstractEngine's constructor has added `lockstepMaxSteps` and `timeStep`
+//                   (7.x - 9.x); WebGPU, the call comes from WebGPUEngine's `_initializeContextAndSwapChain`
+//                   (the stack, read only on a webgpu getContext; the method name survives minification). Any
+//                   other getContext arms nothing, so on a page without Babylon `'_gl' in anyObject` /
+//                   `'_context' in anyObject` never changes (David, review of #252). The
+//                   engine's assignment lands on it, the setter re-creates the property as an ordinary own
+//                   property and, when its receiver is a Babylon engine (runRenderLoop, scenes, …), hands
+//                   it over: no global needed (ESM bundles), the core loads INSIDE the constructor, before
+//                   the page has a scene. A UMD page (the CDN build) is also found through the globals
+//                   search below (`BABYLON.EngineStore.Instances`). Not seen: an engine built on a WebGL
+//                   context the page created itself in an EARLIER task (`new Engine(gl)`), with no global.
+//     Not seen (PlayCanvas): a canvas created by script with no global AND handed to
+//     `new Application()` in the SAME task that inserted it (or before inserting it) — the
+//     observer's callback is a microtask, so the id is read before the trap exists, and before the
+//     context does. The sentinel says so, once, in the console. A canvas inserted in one task and
+//     used in a later one (the launcher pattern: create, insert, await config / scripts, then
+//     `new Application`) is armed by the observer and found.
+//   - once a canvas goes live (any engine), the core calls S.settle(canvas): the PlayCanvas search
+//     (poll, id traps, observer) stops, unless a DIFFERENT canvas has a WebGL context, and restarts if
+//     one gets one later. S.disarm() (the core standing down for good) takes everything off for good.
+//   - the page's opt-out, `<meta name="displayxr-auto3d" content="off">` (S.optedOut()): checked on
+//     the first WebGL context and again when an engine is found; opted out = the core is never
+//     loaded, the traps come off, one { status: 'optout' } report, one console line. Once the core
+//     is loaded it asks S.optedOut() itself (before activating, and every 30 session frames).
+//   - a USER block (cfg.decision === 'block', outside dev): detect-only. The core is NEVER loaded;
+//     once an engine is detected the sentinel reports { status: 'off', engine } once (so the
+//     browser can offer a re-enable) and takes its traps off. The requestSession wrapper stays
+//     installed under block: it costs nothing and keeps the stand-down correct should the site be
+//     enabled later in this document's life (a dev toggle). In dev the core still loads under
+//     block (on detection): the HUD and Ctrl+Alt+3 need it.
+//   - a page that owns XR (foreign) before any engine is found, outside dev: nothing to convert, so
+//     the traps come off and the core is never loaded (the dev build still loads it, for the HUD).
+//
+// PAGE-VISIBLE surface (everything a page script could observe), with no engine on the page:
+//   1. `window.__THREE_DEVTOOLS__` — a configurable, non-enumerable accessor holding an EventTarget
+//      (only when cfg.engines.three !== false);
+//   2. `HTMLCanvasElement.prototype.getContext` — replaced by a wrapper (the only prototype change;
+//      only when cfg.engines.playcanvas or cfg.engines.babylon is not false);
+//   3. `navigator.xr.requestSession` — replaced by a wrapper (own property of the XRSystem);
+//   4. an own, non-enumerable `id` accessor on armed <canvas> elements (none on a page without
+//      canvases), plus, for the rest of a task in which an armed canvas's id was read, a one-shot
+//      non-enumerable setter for that key on Object.prototype; and, for the rest of a task in which a
+//      Babylon engine created its WebGL (WebGPU) context, a one-shot non-enumerable `_gl` (`_context`)
+//      setter on Object.prototype (only when cfg.engines.babylon !== false; never on a page without Babylon);
+//   and the value-only symbol marker above. No timer, no listener beyond one 'readystatechange' and
+//   the one MutationObserver on the document (not page-visible), no other window key, no prototype
+//   descriptor anywhere else.
+function dxrSentinel(cfg, cap) {
+  const TAG = '[dxr-auto3d]';
+  const MARK = Symbol.for('dxr.auto3d');
+  if (window[MARK]) return; // another injector armed this document first
+  if (typeof window.XRDisplayLayer !== 'function' || !navigator.xr) return; // not the DisplayXR Browser: inert
+  try { Object.defineProperty(window, MARK, { value: true }); } catch (e) { return; }
+
+  // Built-ins the sentinel itself calls after page scripts ran (R4): captured now, called through
+  // the captured Reflect.apply (never `.call`, which a page can patch).
+  const apply = Reflect.apply;
+  const defProp = Object.defineProperty;
+  const qsa = Document.prototype.querySelectorAll;
+  const byTag = Document.prototype.getElementsByTagName;
+  const getAttr = Element.prototype.getAttribute;
+  const micro = queueMicrotask;
+  const sTimeout = setTimeout, cTimeout = clearTimeout;
+  const MO = typeof MutationObserver === 'function' ? MutationObserver : null;
+  const perfNow = performance.now.bind(performance);
+  const hasOwn = Object.prototype.hasOwnProperty;
+  const Err = Error;
+  const info = (...a) => console.info(TAG, ...a);
+
+  // ------------------------------------------------------------ intrinsics (R4)
+  const gopd = (o, k) => { const d = Object.getOwnPropertyDescriptor(o, k); return d ? Object.freeze(d) : null; };
+  const intrinsics = Object.freeze({
+    attachShadow: Element.prototype.attachShadow,
+    showPopover: HTMLElement.prototype.showPopover || null,
+    elementsFromPoint: Document.prototype.elementsFromPoint,
+    canvasWidth: gopd(HTMLCanvasElement.prototype, 'width'),
+    canvasHeight: gopd(HTMLCanvasElement.prototype, 'height'),
+    elementId: gopd(Element.prototype, 'id'),
+    // The core's converted-canvas marker (data-dxr-auto3d) and its Convert-to-3D check (core.js).
+    attr: Object.freeze({ set: Element.prototype.setAttribute, remove: Element.prototype.removeAttribute, has: Element.prototype.hasAttribute }),
+  });
+
+  // ------------------------------------------------------------ navigator.xr: yield to the page (R3)
+  // Our own requests go straight to the captured original (S.xrRequest), so the wrapper only ever
+  // sees the page's (or the immersive shim's, which reaches the real XRSystem through this object).
+  let foreign = null;
+  const foreignCbs = [];
+  const xrObj = navigator.xr;
+  const xrReqOrig = xrObj.requestSession;
+  const xrRequest = (mode, init) => apply(xrReqOrig, xrObj, [mode, init]);
+  try {
+    xrObj.requestSession = function (mode, init) {
+      if (mode === 'inline-3d' || mode === 'immersive-vr' || mode === 'immersive-ar') {
+        const reason = `the page requested '${mode}'`;
+        if (!foreign) { foreign = reason; onForeignEarly(); }
+        for (const cb of foreignCbs.slice()) { try { cb(reason); } catch (e) { /* the core logs its own */ } }
+      }
+      return apply(xrReqOrig, xrObj, [mode, init]);
+    };
+  } catch (e) { console.warn(TAG, 'could not watch navigator.xr.requestSession — SDK pages may conflict', e); }
+
+  // ------------------------------------------------------------ state
+  const en = cfg.engines || {};
+  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false;
+  const blocked = cfg.decision === 'block' && !cfg.dev;
+  let core = null;     // what dxrCore returned, once loaded
+  let done = false;    // detection finished without a core (opted out / blocked and reported / foreign / load failed)
+
+  // ------------------------------------------------------------ the page's opt-out
+  let opted = false;
+  function optedOut() {
+    if (opted) return true;
+    let list = null;
+    try { list = apply(qsa, document, ['meta[name="displayxr-auto3d" i]']); } catch (e) { return false; }
+    for (let i = 0; i < list.length; i++) {
+      const c = apply(getAttr, list[i], ['content']);
+      if (typeof c === 'string' && c.trim().toLowerCase() === 'off') {
+        opted = true; // sticky for the document
+        disarm();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // ------------------------------------------------------------ reports the sentinel makes itself
+  const reported = new Set();
+  const reportOnce = (r) => {
+    if (reported.has(r.status)) return;
+    reported.add(r.status);
+    try { cap.report(r); } catch (e) { /* ignore */ }
+  };
+  const reportOff = (engine) => reportOnce({ status: 'off', engine });
+
+  // Every detection signal goes through here. engine = null for a bare WebGL context (only the
+  // opt-out is checked); a name when an engine is found (the core loads, unless blocked). Returns
+  // the core, or null.
+  function signal(engine) {
+    if (core) return core;
+    if (done) return null;
+    if (optedOut()) {
+      done = true;
+      info('this page opted out (<meta name="displayxr-auto3d" content="off">): staying 2D');
+      reportOnce({ status: 'optout' });
+      return null;
+    }
+    if (!engine) return null;
+    if (blocked) { done = true; disarm(); reportOff(engine); return null; }
+    let make = null;
+    try { make = cap.loadCore(); } catch (e) { console.warn(TAG, 'the core could not be loaded', e); }
+    if (typeof make !== 'function') { done = true; disarm(); return null; }
+    core = make(cfg, cap, S);
+    return core;
+  }
+  // A page that owns XR before any engine was found: outside dev there is nothing left to detect.
+  function onForeignEarly() {
+    if (core || done || cfg.dev) return;
+    done = true;
+    disarm();
+  }
+
+  // ------------------------------------------------------------ three.js: __THREE_DEVTOOLS__
+  let devtools = null;
+  if (en.three !== false) {
+    const onObserve = (e) => { const c = signal('three.js'); if (c && c.three) c.three.observe(e); };
+    const onRegister = (e) => { const c = signal('three.js'); if (c && c.three) c.three.register(e); };
+    const hooked = new WeakSet();
+    const attachHook = (t) => {
+      if (!t || typeof t.addEventListener !== 'function' || hooked.has(t)) return;
+      hooked.add(t);
+      t.addEventListener('observe', onObserve);
+      t.addEventListener('register', onRegister);
+    };
+    devtools = window.__THREE_DEVTOOLS__ || new EventTarget();
+    attachHook(devtools);
+    try {
+      // An accessor, so the real three.js devtools extension can still install its own object and
+      // we keep listening on whatever is there.
+      defProp(window, '__THREE_DEVTOOLS__', {
+        configurable: true, enumerable: false,
+        get: () => devtools,
+        set: (v) => { devtools = v; attachHook(v); },
+      });
+    } catch (e) { window.__THREE_DEVTOOLS__ = devtools; }
+  }
+
+  // ------------------------------------------------------------ PlayCanvas
+  const isApp = (a) =>
+    !!a && typeof a === 'object' && typeof a.on === 'function' && typeof a.fire === 'function' && !!a.systems &&
+    ((typeof a.tick === 'function' && 'graphicsDevice' in a) ||
+      // In the constructor (the canvas-id trap) of an older AppBase (2.17.2) neither exists yet: tick
+      // and graphicsDevice are set by init(). Newer engines declare both as class fields.
+      (typeof a.init === 'function' && typeof a.start === 'function'));
+  const nsOf = (pc) => (pc && typeof pc === 'object' && (pc.AppBase || pc.Application) ? pc : null);
+  let pcFound = false;
+  let retired = false;  // S.disarm(): nothing is armed again in this document
+  function foundPC(app, how, ns) {
+    if (pcFound || retired) return; // after S.disarm() nothing is found (a late 'load' look, a trap mid-flight)
+    pcFound = true;
+    disarmCanvases(); // the id traps have done their job
+    stopPoll();
+    unobserve();
+    let g = null;
+    try { g = window.pc; } catch (e) { /* ignore */ }
+    const c = signal('PlayCanvas');
+    if (c && c.playcanvas) c.playcanvas.consider(app, how, ns || nsOf(g));
+  }
+
+  // The per-instance canvas id traps (R1, R2).
+  const ID = intrinsics.elementId;
+  const armed = new Map(); // canvas -> the time its trap expires (Infinity until the page's load)
+  let loaded = document.readyState === 'complete';
+  let sweepT = 0;
+  const keyTraps = new Set();
+  function removeKeyTrap(key) {
+    if (!keyTraps.has(key)) return;
+    keyTraps.delete(key);
+    try { delete Object.prototype[key]; } catch (e) { /* ignore */ }
+  }
+  function trapKey(key) {
+    if (typeof key !== 'string' || keyTraps.has(key) || key === '__proto__' || key in Object.prototype) return;
+    keyTraps.add(key);
+    try {
+      defProp(Object.prototype, key, {
+        configurable: true, enumerable: false,
+        get() { return undefined; },
+        set(v) {
+          removeKeyTrap(key);
+          defProp(this, key, { value: v, writable: true, enumerable: true, configurable: true });
+          if (isApp(v)) foundPC(v, 'AppBase constructor (canvas-id trap)');
+        },
+      });
+    } catch (e) { keyTraps.delete(key); return; }
+    micro(() => removeKeyTrap(key));
+  }
+  function arm(c) {
+    if (done || pcFound || retired || armed.has(c) || !ID || !ID.get || !ID.set) return;
+    try {
+      defProp(c, 'id', {
+        configurable: true, enumerable: false,
+        get() {
+          const v = apply(ID.get, this, []);
+          if (!done && !pcFound) { if (expired(this)) unarm(this); else trapKey(v); }
+          return v;
+        },
+        set(v) { apply(ID.set, this, [v]); },
+      });
+    } catch (e) { return; }
+    armed.set(c, loaded ? perfNow() + 10000 : Infinity);
+    scheduleSweep();
+  }
+  function unarm(c) {
+    if (!armed.delete(c)) return;
+    try { delete c.id; } catch (e) { /* ignore */ }
+  }
+  // Past its deadline a trap is taken off lazily (its own id read, the next mutation, the next
+  // getContext) unless the page has a WebGL context: only then may the sweep own a timer. A page
+  // that adds a plain canvas after load (google.com) and never asks for WebGL gets no timer (§3.3).
+  function expired(c) { const t = armed.get(c); return t !== undefined && t <= perfNow(); }
+  function sweepLazy() { if (!armed.size) return; const n = perfNow(); for (const [c, t] of [...armed]) if (t <= n) unarm(c); }
+  function disarmCanvases() {
+    for (const c of [...armed.keys()]) unarm(c);
+    if (sweepT) { cTimeout(sweepT); sweepT = 0; }
+  }
+  function scheduleSweep() {
+    if (sweepT || !loaded || !armed.size || !glCanvas) return; // no WebGL yet: lazy expiry only (above)
+    let t = Infinity;
+    for (const v of armed.values()) t = Math.min(t, v);
+    sweepT = sTimeout(sweep, Math.max(0, t - perfNow()));
+  }
+  function sweep() {
+    sweepT = 0;
+    const n = perfNow();
+    for (const [c, t] of [...armed]) if (t <= n) unarm(c);
+    scheduleSweep();
+  }
+
+  // The globals search, started by the first WebGL context (once per document). A WebGPU context
+  // starts only its timer-free looks (timed = false: the microtask, DOMContentLoaded, load).
+  let polling = false, looking = false, polls = 0, pollT = 0, glCanvas = null;
+  function lookGlobals() {
+    if (done || retired) return;
+    if (wantBJS) lookBabylon();
+    if (pcFound || !wantPC) return;
+    let pc = null;
+    try { pc = window.pc; } catch (e) { /* ignore */ }
+    if (pc && typeof pc === 'object') {
+      const ns = nsOf(pc);
+      try { if (isApp(pc.app)) { foundPC(pc.app, 'window.pc.app', ns); return; } } catch (e) { /* ignore */ }
+      try { const a = pc.AppBase && pc.AppBase.getApplication && pc.AppBase.getApplication(); if (isApp(a)) { foundPC(a, 'pc.AppBase.getApplication()', ns); return; } } catch (e) { /* ignore */ }
+    }
+    try { if (isApp(window.app)) foundPC(window.app, 'window.app', nsOf(pc)); } catch (e) { /* ignore */ }
+  }
+  function startPoll(timed) {
+    if (polling || retired) return;
+    if (!looking) {
+      looking = true;
+      micro(lookGlobals);
+      document.addEventListener('DOMContentLoaded', lookGlobals, { once: true });
+      window.addEventListener('load', lookGlobals, { once: true });
+    }
+    if (timed === false) return;
+    polling = true; polls = 0;
+    pollT = sTimeout(poll, 500);
+  }
+  function poll() {
+    pollT = 0;
+    if (done || pcFound || bjsFound || retired) return;
+    lookGlobals();
+    if (done || pcFound || bjsFound) return;
+    if (++polls < 40) { pollT = sTimeout(poll, 500); return; }
+    if (core) return; // three.js (or another path) loaded the core: this canvas is accounted for
+    // Nothing found, and nothing left that could find it: say why, once.
+    let tag = null;
+    try { tag = glCanvas ? apply(getAttr, glCanvas, ['data-engine']) : null; } catch (e) { tag = null; }
+    info(`a WebGL canvas (${descCanvas(glCanvas)}${tag ? `, data-engine="${tag}"` : ''}) but no supported engine found — left 2D.`,
+      'A three.js page announces itself (r105+); a PlayCanvas app is found through window.pc / window.app, or through its',
+      'canvas id when the <canvas> is in the HTML before deferred / module scripts run; a Babylon.js engine through its',
+      'constructor (in the task that created its context) or BABYLON.EngineStore. A canvas created by script with no',
+      'global is not visible (an engine-side announce hook would fix it).');
+  }
+  function stopPoll() { if (pollT) { cTimeout(pollT); pollT = 0; } }
+
+  // The parse-time observer (R1 (b) above). Cheap on purpose: the callback never walks the mutation
+  // records (2,000 parser-inserted nodes cost ~0.5 ms to visit from JS); it reads ONE live
+  // `document.getElementsByTagName('canvas')` collection, which the engine keeps cached, and arms any
+  // canvas it has not seen yet. No timer: past its deadline (load + 10 s) the next mutation
+  // disconnects it.
+  let mo = null, canvasList = null;
+  const moSeen = new WeakSet(); // arm each canvas at most once from here (a '2d' canvas stays unarmed)
+  function onMutations() {
+    if (done || pcFound || retired || (loaded && perfNow() > moDeadline)) { unobserve(); sweepLazy(); return; }
+    sweepLazy();
+    const l = canvasList;
+    for (let i = 0; i < l.length; i++) { const c = l[i]; if (!moSeen.has(c)) { moSeen.add(c); arm(c); } }
+  }
+  let moDeadline = Infinity;
+  function observe() {
+    if (mo || !MO || done || pcFound || retired) return;
+    try { canvasList = apply(byTag, document, ['canvas']); mo = new MO(onMutations); mo.observe(document, { childList: true, subtree: true }); } catch (e) { mo = null; }
+  }
+  function unobserve() { if (mo) { try { mo.disconnect(); } catch (e) { /* ignore */ } mo = null; canvasList = null; } }
+
+  // A canvas went live (S.settle): the PlayCanvas search has found what this document converts,
+  // unless another canvas has a WebGL context (an app we have not found may still be there).
+  let settledOn = null;
+  function settle(canvas) {
+    settledOn = canvas;
+    for (const c of glCanvases) if (c !== canvas) return;
+    disarmCanvases(); stopPoll(); unobserve();
+    polling = false; looking = false; // a WebGL context on another canvas later starts the search again
+  }
+  const glCanvases = [];
+  const descCanvas = (c) => {
+    if (!c) return 'canvas';
+    let id = '';
+    try { id = ID && ID.get ? apply(ID.get, c, []) : ''; } catch (e) { /* ignore */ }
+    return 'canvas' + (id ? '#' + id : '');
+  };
+
+  const disarm = () => {
+    retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k); for (const k of [...bjsKeys]) removeBjsKey(k);
+    document.removeEventListener('DOMContentLoaded', lookGlobals);
+    window.removeEventListener('load', lookGlobals);
+  };
+
+  // ------------------------------------------------------------ Babylon.js
+  const isBjsEngine = (e) =>
+    !!e && typeof e === 'object' && typeof e.runRenderLoop === 'function' && Array.isArray(e.scenes) &&
+    typeof e.getRenderWidth === 'function' && !!e.onNewSceneAddedObservable;
+  const bjsSeen = new WeakSet();
+  let bjsFound = false;
+  function foundBabylon(engine, how, ns, canvas) {
+    if (retired || bjsSeen.has(engine)) return;
+    bjsSeen.add(engine);
+    bjsFound = true;
+    if (canvas) settle(canvas); // this canvas is accounted for: the PlayCanvas search stops unless another has a context
+    else stopPoll();
+    let B = ns;
+    if (!B) { try { B = window.BABYLON; } catch (e) { B = null; } }
+    const c = signal('Babylon.js');
+    if (c && c.babylon) c.babylon.consider(engine, how, B && typeof B === 'object' && B.Engine ? B : null);
+  }
+  // The constructor trap: a one-shot `_gl` (WebGL) / `_context` (WebGPU) setter on Object.prototype for
+  // the rest of the task that created the context. Any other object assigning that key meanwhile gets
+  // an ordinary own property, as it would have without us.
+  // Is this getContext Babylon's? WebGL: the attributes are the engine's own options object (AbstractEngine
+  // has added lockstepMaxSteps and timeStep to it before ThinEngine asks for the context). WebGPU: called
+  // from WebGPUEngine._initializeContextAndSwapChain (the only signal before it assigns _context). A stack
+  // is taken only on a webgpu getContext, which Babylon makes once per engine and most pages once per
+  // canvas. It is not cached per canvas, since a page may make a new engine on the same canvas.
+  // A page's small Error.stackTraceLimit (0 turns stacks off) would hide that frame and leave the page 2D:
+  // the limit is raised for this one Error (the call sits 4 frames down) and put back as the page had it
+  // (v0.7.2). A limit the page made read-only is left alone.
+  const STACK_FRAMES = 16;
+  function bjsLikely(kind, attrs) {
+    if (kind === 1) {
+      try { return !!attrs && typeof attrs === 'object' && apply(hasOwn, attrs, ['lockstepMaxSteps']) && apply(hasOwn, attrs, ['timeStep']); } catch (e) { return false; }
+    }
+    let s = '', had = false, lim, raised = false;
+    try {
+      had = apply(hasOwn, Err, ['stackTraceLimit']); lim = Err.stackTraceLimit;
+      if (!(lim >= STACK_FRAMES)) { Err.stackTraceLimit = STACK_FRAMES; raised = Err.stackTraceLimit === STACK_FRAMES; }
+    } catch (e) { /* read-only: the page's limit */ }
+    try { s = String(new Err().stack || ''); } catch (e) { s = ''; }
+    if (raised) { try { if (had) Err.stackTraceLimit = lim; else delete Err.stackTraceLimit; } catch (e) { /* ignore */ } }
+    return s.indexOf('_initializeContextAndSwapChain') >= 0;
+  }
+  const bjsKeys = new Set();
+  function removeBjsKey(key) {
+    if (!bjsKeys.delete(key)) return;
+    try { delete Object.prototype[key]; } catch (e) { /* ignore */ }
+  }
+  function trapBjs(kind, canvas) {
+    const key = kind === 2 ? '_context' : '_gl';
+    if (bjsKeys.has(key) || key in Object.prototype) return;
+    bjsKeys.add(key);
+    try {
+      defProp(Object.prototype, key, {
+        configurable: true, enumerable: false,
+        get() { return undefined; },
+        set(v) {
+          try { defProp(this, key, { value: v, writable: true, enumerable: true, configurable: true }); } catch (e) { return; }
+          if (!isBjsEngine(this)) return;
+          try { foundBabylon(this, kind === 2 ? 'WebGPUEngine (_context trap)' : 'Engine constructor (_gl trap)', null, canvas); } catch (e) { /* never break the page's engine */ }
+        },
+      });
+    } catch (e) { bjsKeys.delete(key); return; }
+    micro(() => removeBjsKey(key));
+  }
+  // UMD pages (the CDN build): every engine the page has made, from the globals search.
+  function lookBabylon() {
+    let B = null;
+    try { B = window.BABYLON; } catch (e) { return; }
+    if (!B || typeof B !== 'object') return;
+    let list = null;
+    try { list = (B.EngineStore && B.EngineStore.Instances) || (B.Engine && B.Engine.Instances) || null; } catch (e) { list = null; }
+    if (!list || typeof list.length !== 'number') return;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      if (!isBjsEngine(e) || bjsSeen.has(e)) continue;
+      let cv = null;
+      try { cv = typeof e.getRenderingCanvas === 'function' ? e.getRenderingCanvas() : null; } catch (x) { cv = null; }
+      foundBabylon(e, 'BABYLON.EngineStore.Instances', B, cv);
+    }
+  }
+
+  if (wantPC || wantBJS) {
+    const GC = HTMLCanvasElement.prototype.getContext;
+    const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
+    const seenGL = new WeakSet();
+    const onContext = (c, type, attrs) => {
+      if (done) return;
+      const kind = WEBGL[type];
+      if (kind && wantBJS && !retired && bjsLikely(kind, attrs)) trapBjs(kind, c); // first: a Babylon engine assigns the context right after this call
+      if (pcFound) return;
+      sweepLazy();
+      if (type === '2d') { unarm(c); return; }
+      if (!kind || seenGL.has(c)) return;
+      seenGL.add(c);
+      if (kind === 1 && !glCanvas) glCanvas = c;
+      if (c !== settledOn) glCanvases.push(c);
+      signal(null); // the first engine / graphics-context signal: the page's opt-out
+      if (done) return;
+      if (wantPC) arm(c);
+      if (kind === 2) { startPoll(false); return; } // WebGPU: the traps find the app / engine; no timer (above)
+      scheduleSweep(); // the first WebGL context: traps armed before it (no timer until now) expire on time
+      startPoll();
+    };
+    try {
+      HTMLCanvasElement.prototype.getContext = function getContext(type) {
+        const ctx = apply(GC, this, arguments);
+        try { onContext(this, type, arguments[1]); } catch (e) { /* never break the page's getContext */ }
+        return ctx;
+      };
+    } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps / Babylon.js engines may not be found', e); }
+  }
+
+  if (wantPC) {
+    // Every <canvas> already in the DOM, before deferred / module scripts run (R1).
+    const armDom = () => {
+      if (done || pcFound) return;
+      if (optedOut()) return; // the report comes with the first WebGL / engine signal
+      const list = apply(byTag, document, ['canvas']);
+      for (let i = 0; i < list.length; i++) arm(list[i]);
+    };
+    const onReady = () => {
+      const s = document.readyState;
+      if (s === 'loading') return;
+      if (!loaded && s === 'complete') {
+        loaded = true;
+        const t = perfNow() + 10000;
+        moDeadline = t;
+        for (const c of armed.keys()) armed.set(c, t);
+        scheduleSweep();
+      }
+      if (!armedDom) { armedDom = true; armDom(); }
+      if (loaded) document.removeEventListener('readystatechange', onReady);
+    };
+    let armedDom = false;
+    if (loaded) moDeadline = perfNow() + 10000; // injected into an already-loaded document
+    observe();
+    if (document.readyState === 'loading') document.addEventListener('readystatechange', onReady);
+    else onReady();
+  }
+
+  const S = Object.freeze({
+    get devtools() { return devtools; }, // the __THREE_DEVTOOLS__ EventTarget the sentinel listens on
+    intrinsics,
+    xrRequest,
+    foreign: () => foreign,       // why the page owns XR in this document, or null
+    onForeign(cb) { foreignCbs.push(cb); },
+    optedOut,                     // <meta name="displayxr-auto3d" content="off"> (sticky once seen)
+    disarm,                       // take every trap off, for good (the core: standing down for this document)
+    settle,                       // a canvas went live: stop the PlayCanvas search unless another canvas has WebGL
+  });
+}

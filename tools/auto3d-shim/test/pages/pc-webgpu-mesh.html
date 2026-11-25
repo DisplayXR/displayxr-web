@@ -1,0 +1,107 @@
+<!doctype html>
+<!-- TEST PAGE — an ordinary PlayCanvas (2.x, ESM, NO globals) page on a WebGPU device: the engine
+     examples' recipe, `await createGraphicsDevice(canvas, { deviceTypes: ['webgpu'] })`, then
+     `new AppBase(canvas)` + `app.init(AppOptions)`. The same scene as pc-mesh.html (a turntable of
+     primitives symmetric about (0, 1, 0), the camera 8 units in front of it: expected convergence 8),
+     render-on-demand after 60 frames. It knows nothing about DisplayXR: the adapter finds the app
+     through the AppBase constructor's canvas-id read, which on WebGPU always comes AFTER the
+     getContext('webgpu') the sentinel arms the canvas on.
+       ?dyn=1   the canvas is created by script and inserted into the document only AFTER the app
+                exists: no DOM / observer arming is possible, only the getContext('webgpu') one.
+       ?near=1  the camera's near plane is 0.2 and a magenta box sits 0.3 in front of it (1.5 × near):
+                visible in both eyes only when the eye projection is converted to WebGPU's clip z 0..1
+                (in GL clip z it is at -0.33, clipped). window.__nearBox = true.
+       ?live=1  never freezes (keeps drawing every frame).
+     Test hooks (not globals the sentinel looks at): window.__grabFrame() draws one frame and reads the
+     canvas back IN its drawing task (after the engine's submit): a WebGPU canvas reads back empty
+     once presented, so the harness cannot read it between frames as it does a WebGL page with
+     preserveDrawingBuffer. window.__deviceType: what createGraphicsDevice gave. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>PlayCanvas meshes on WebGPU (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block;width:100%;height:100%}</style>
+<script type="importmap">{ "imports": { "playcanvas": "/deps/playcanvas/playcanvas.mjs" } }</script>
+</head><body>
+<script type="module">
+import * as pc from 'playcanvas';
+const q = new URLSearchParams(location.search);
+const dyn = q.has('dyn'), near = q.has('near'), live = q.has('live');
+let canvas;
+if (dyn) { canvas = document.createElement('canvas'); canvas.id = 'application-canvas'; }
+else { canvas = document.createElement('canvas'); canvas.id = 'application-canvas'; document.body.appendChild(canvas); }
+const device = await pc.createGraphicsDevice(canvas, { deviceTypes: ['webgpu'], antialias: false });
+window.__deviceType = device.deviceType;
+const opts = new pc.AppOptions();
+opts.graphicsDevice = device;
+opts.componentSystems = [pc.RenderComponentSystem, pc.CameraComponentSystem, pc.LightComponentSystem];
+opts.resourceHandlers = [pc.TextureHandler, pc.ContainerHandler];
+const app = new pc.AppBase(canvas);
+app.init(opts);
+if (dyn) document.body.appendChild(canvas);
+app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(pc.RESOLUTION_AUTO);
+addEventListener('resize', () => app.resizeCanvas());
+window.__expectedConvergence = 8;
+
+const camera = new pc.Entity('camera');
+camera.addComponent('camera', { clearColor: new pc.Color(0.16, 0.19, 0.25), fov: 40, nearClip: near ? 0.2 : 0.1, farClip: 100 });
+camera.setPosition(0, 1, 8);
+camera.lookAt(0, 1, 0);
+app.root.addChild(camera);
+window.__camWorld = () => Array.from(camera.getWorldTransform().data);
+const light = new pc.Entity('sun');
+light.addComponent('light', { type: 'directional', intensity: 1.5 });
+light.setEulerAngles(45, 30, 0);
+app.root.addChild(light);
+app.scene.ambientLight = new pc.Color(0.35, 0.35, 0.4);
+
+const mat = (r, g, b) => { const m = new pc.StandardMaterial(); m.diffuse = new pc.Color(r, g, b); m.update(); return m; };
+const floor = new pc.Entity('floor');
+floor.addComponent('render', { type: 'plane', material: mat(0.33, 0.38, 0.44) });
+floor.setLocalScale(40, 1, 40);
+app.root.addChild(floor);
+const group = new pc.Entity('turntable');
+group.setPosition(0, 1, 0);
+app.root.addChild(group);
+const prim = (type, m, x, y, z, s) => {
+  const e = new pc.Entity(type);
+  e.addComponent('render', { type, material: m });
+  e.setLocalPosition(x, y, z); e.setLocalScale(s, s, s);
+  group.addChild(e); return e;
+};
+prim('torus', mat(1, 0.48, 0.18), 0, 0, 0, 1.1);
+prim('box', mat(0.18, 0.7, 1), 1.8, 0, 0, 0.6); prim('box', mat(0.18, 0.7, 1), -1.8, 0, 0, 0.6);
+prim('sphere', mat(0.62, 1, 0.29), 0, 0, 1.8, 0.7); prim('sphere', mat(0.62, 1, 0.29), 0, 0, -1.8, 0.7);
+if (near) {
+  // A small unlit magenta box 0.3 in front of the camera (its front face at 0.28 > near 0.2), a
+  // little below the axis so it does not hide the turntable's centre. A child of the camera.
+  const m = new pc.StandardMaterial(); m.diffuse = new pc.Color(0, 0, 0); m.emissive = new pc.Color(1, 0, 1); m.useLighting = false; m.update();
+  const b = new pc.Entity('near-box');
+  b.addComponent('render', { type: 'box', material: m });
+  b.setLocalPosition(0, -0.03, -0.3); b.setLocalScale(0.04, 0.04, 0.04);
+  camera.addChild(b);
+  window.__nearBox = true;
+}
+
+// One frame drawn now, read back in its own task (see the header).
+const CW = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width');
+const CH = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height');
+window.__grabFrame = () => new Promise((res) => {
+  app.once('postrender', () => {
+    app.graphicsDevice.submit();
+    const w = CW.get.call(canvas), h = CH.get.call(canvas);
+    const c2 = document.createElement('canvas'); c2.width = w; c2.height = h;
+    const g = c2.getContext('2d', { willReadFrequently: true }); g.drawImage(canvas, 0, 0);
+    const d = g.getImageData(0, 0, w, h).data;
+    let s = ''; for (let i = 0; i < d.length; i += 32768) s += String.fromCharCode.apply(null, d.subarray(i, i + 32768));
+    res({ w, h, b64: btoa(s), png: c2.toDataURL('image/png') });
+  });
+  app.renderNextFrame = true;
+});
+
+let n = 0;
+app.on('update', () => {
+  if (!live && n >= 60) { app.autoRender = false; window.__frozen = true; return; } // render-on-demand from here
+  n++; group.setLocalEulerAngles(0, n * 3, 0); window.__pageFrames = n;
+});
+app.start();
+</script>
+</body></html>

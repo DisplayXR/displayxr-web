@@ -69,7 +69,9 @@ re-renders over, and change what is **in** it:
 - **Splats on the PlayCanvas backend:** `handle.setSource(src, { fadeMs, resetPose })`.
 
 Calling `add*()` again on the same canvas is not a content swap. It closes the window's layer and
-builds a new one.
+builds a new one (a fresh identity gap), and on `./splat` / `./model` it puts a second renderer on
+the context. Since 1.38 the SDK warns about it, once per canvas, while the first registration is
+live (not `remove()`d), then proceeds as before. To re-register on purpose, `remove()` first.
 
 ### 3. Prefer one persistent canvas for the whole app
 
@@ -108,25 +110,34 @@ canvas: the poster, or an opaque block of the page background.
 - **Released on `handle.firstWoven`, not on first paint, and not on your own timer.**
 
 ```js
-const handle = wall.addScene(canvas, onFrame);        // or addImage / addVideo / addSplat / addModel
+const handle = wall.addScene(canvas, onFrame);        // or addImage / addVideo / addSplat / addModel / addPlayer
 await Promise.all([contentReady, handle.firstWoven]); // your load + the SDK's woven signal
 poster.remove();                                       // cut, never fade
 ```
+
+**Video and players too.** A `<video>`'s `loadeddata` / `canplay`, a player's `'ready'`, and the
+first decoded frame all fire *before* the join: they mean "there is a stereo frame to paint", which
+is where the hold starts, not where it ends. `addPlayer` returns `firstWoven` like every other
+handle (it is the woven `addVideo` window's own); release the cover on it.
 
 `handle.firstWoven` resolves **once and never rejects** with `{ woven, confirmed, reason, ms }`:
 
 | result | meaning | what to do |
 |---|---|---|
-| `woven: true`, `reason: 'hold-elapsed'` | the window has drawn a real stereo frame on a layer that has existed for `firstWovenHoldMs` (default **1200**, the browser's measured worst case) | drop the cover |
+| `woven: true`, `reason: 'woven'`, `confirmed: true` | the browser reported the layer woven (`XRDisplayLayer.wovenState`), after a real stereo frame | drop the cover |
+| `woven: true`, `reason: 'hold-elapsed'` | a browser without that report: the window has drawn a real stereo frame on a layer that has existed for `firstWovenHoldMs` (default **1200**, the browser's measured worst case) | drop the cover |
+| `woven: false`, `confirmed: true`, `reason` a withheld token (or `'pending'`) | the browser kept reporting the layer withheld for the whole safety cap (four holds, at least 4.8 s). The canvas is not taken flat, and the layer can still join | drop the cover and **keep drawing both eyes**, then read the token in §3: it names the page fix. Do not switch to a flat full-width picture: the browser is still weaving the canvas and would give each eye a different half of it |
 | `woven: false`, `reason: 'layer-failed'` / `'session-ended'` / `'removed'` | this window will not weave. An image or video canvas has already been painted flat, and a scene's `onLayerLost` has already run | drop the cover onto the 2D fallback |
 | `woven: false`, `reason: 'unsupported'` (`addSplat` / `addModel` only) | no inline-3D session: the viewer is on its mono path | same |
 
-**`confirmed` is `false` today, always.** No shipping browser reports the join (§1), so
-`firstWoven` is the documented worst case, measured by the SDK so that each page does not measure
-it separately. When a browser can report the join, `firstWoven` settles on the report
-(`confirmed: true`, no hold) and **the page does not change**. That is the reason to code
-against it now rather than keep a local `setTimeout`. The browser ask is in
-[`proposals/layer-joined-signal.md`](proposals/layer-joined-signal.md).
+**`confirmed` says which of the two you got.** A DisplayXR Browser build with the join report
+(`XRDisplayLayer.wovenState`, Windows, behind a flag; detected with `'wovenState' in
+XRDisplayLayer.prototype`) settles `firstWoven` on the report: `confirmed: true`, no hold. On
+every other browser `firstWoven` is the documented worst case, measured by the SDK so that each
+page does not measure it separately (`confirmed: false`). **The page code is the same on both**,
+which is the reason to code against it rather than keep a local `setTimeout`. To see the report
+yourself, read `handle.wovenState` (`'pending'`, `'woven'`, `'withheld'`, or `null` where absent)
+and `handle.withheldReason`. Background: [`proposals/layer-joined-signal.md`](proposals/layer-joined-signal.md).
 
 What counts as a "real stereo frame": for a scene, an `onFrame` that received two or more views
 and did not throw. A frame with a short view list is the load fallback, and a frame that threw
@@ -153,7 +164,16 @@ one region are **refused as ambiguous**, and neither is drawn from. Cut between 
 two pictures, blend them **inside one canvas**
 ([motion, §3 Crossfade](authoring-motion-and-effects.md#crossfade)).
 
-Many woven canvases in one frame (a gallery wall) are fine. Each one joins by its own identity.
+Many woven canvases in one frame (a gallery wall) are fine. Each one joins by its own identity,
+**as long as no two of them overlap.**
+
+**Never leave two woven canvases overlapping.** This is the static case of the crossfade: a splat
+canvas laid over a full-page scene canvas, both live. The Android DisplayXR Browser logs
+`[DisplayXR] inline-3D OVERLAPPING tiles …` and an `inline-3D recovery draw`; on a
+tablet the top canvas head-tracked but showed no stereo, and adding a second splat crashed the tab.
+The same page looked fine on a Windows panel, so a desktop check does not clear it. Hide the canvas
+underneath with `display: none` while the other one shows, and restore it when that one goes, so
+only one woven tile covers any point of the screen.
 
 ### 7. No CSS effects on a woven canvas or on any of its ancestors
 
@@ -183,6 +203,133 @@ with a warning rather than destroy the tile. Hide an overlay with `display: none
 `opacity: 0`. The declaration costs nothing on a draw-order browser, so one page works on both
 generations.
 
+### 9. Nothing with a background sits above the woven canvas; black goes under it
+
+This is about elements that cover the tile **by accident**, not chrome you put there on purpose.
+On a draw-order browser a sticky header, a buy card or a caption plate over part of a tile is
+fine, opaque or translucent: it occludes that part of the tile as 2D, exactly as it would occlude
+a picture (rule 8). What is wrong is a section, wrapper or later sibling with an opaque background
+painted over the **whole** canvas: it hides the tile while its content keeps running (for a video:
+sound, no picture). To put black around a
+tile, give it to an element **behind** the canvas. A cover you mean to hide the tile with (rule 5,
+rule 11) is the one deliberate exception, and it comes off on a signal.
+
+### 10. `backdrop-filter` over the weave: only on DisplayXR Browser 0.1.16+, never over a whole tile
+
+Rule 7 covers the canvas and its ancestors, and is unchanged. This one covers the **siblings on
+top of it**: a control bar, a caption, a badge, a menu. `backdrop-filter` is defined as a function
+of what is behind the element, and behind it is the interlaced weave. On browsers before
+DisplayXR Browser 0.1.16 the blur reads the interlaced pixels and smears them, and the 3D image is
+disturbed across the element's **whole box**, not only where it is opaque (seen on the panel, 24
+September). From 0.1.16 the compositor draws the tile **mono inside each frost rect**
+(displayxr-browser#120), so frosted chrome over a tile looks right: the frosted region is flat,
+the rest of the tile stays 3D. [`samples/composition`](../samples/composition/) (its sticky
+header) is the validated case.
+
+- Frost a **partial** region only (a bar, a pill). Never frost a whole tile while it is visible:
+  the whole tile goes mono under it.
+- If the page must also run on older browsers, use a plain translucent tint
+  (`background: rgba(0, 0, 0, 0.55)`) there. The SDK's own chrome (player, call) keeps its
+  near-solid tint so one build works on every generation.
+
+### 11. Treat a resize as a fresh-canvas moment
+
+Resizing a woven canvas's rect re-registers it with the compositor, and the new rect can go
+through the same **0.4–1.2 s** identity gap as a new canvas (§1): until the join lands, the
+screen may show the page's own raster, which is the squeezed side-by-side pair (the panel A/B
+below did not see one, so treat the cover as insurance, not a certainty). Entering or leaving
+fullscreen, a responsive reflow that changes the tile's size, and a layout that swaps a small
+tile for a large one all do this. Cover the canvas across the change exactly as in rule 5 (on
+top, hard cut), and release on **`handle.rewoven()`**:
+
+```js
+cover.hidden = false;                 // before the rect changes
+await el.requestFullscreen();
+await handle.rewoven();               // a stereo frame on the moved rect, plus the hold
+cover.hidden = true;                  // cut, never fade
+```
+
+`rewoven()` is `firstWoven` measured from the call, with the same result shape. A change of the
+canvas's CSS size, devicePixelRatio or page position while it is pending restarts the hold
+(checked every frame, for every window kind), so a resize or a move that settles over several
+frames is covered until the last one. Position is measured in page coordinates, so scrolling the
+document is not a move (since 1.38; before, a move without a resize was not detected at all). So
+that a size that never stops animating cannot hold the cover up for good, it settles anyway
+(`reason: 'hold-capped'`) four holds after the call. Before the first join it is `firstWoven`
+itself. The SDK's player (`addPlayer`) does this for its own fullscreen button with
+`fullscreenCover: true`.
+
+**The SDK covers rect changes for you on `./splat` and `./model`** (1.38, `rectCover: 'auto'` by
+default there). After the first join, a move or resize of the canvas raises a cover over it on
+the frame the change is seen: a solid color with the last frame's left eye, cover-fit. The color is
+the page's opaque background behind the canvas (black where that is not one opaque color) unless the
+page names one, so a cover that shows for a frame reads as the page's own 2D. Since 1.52
+the cover is **live**: while it is up, it redraws the left eye of each new frame once the page has
+redrawn for the new box, so a window drag shows the content moving in 2D rather than one frozen
+frame for the whole drag (`rectCover: { live: false }` keeps the still). The cover
+comes down when `rewoven()` settles. Where the browser reports `wovenState` (DisplayXR Browser on
+Windows), the cover follows the report instead: it goes up only if the tile actually leaves the weave
+after the change, and comes down on the first `woven` read, so a drag the browser keeps weaving shows
+no cover at all (measured below). Pass `rectCover: 'off'` if the page runs its own cover. On
+core windows (`addScene` / `addImage` / `addVideo`) the same primitive is opt-in: pass
+`rectCover: 'auto'` (or `{ color, snapshot }`), or keep your own cover and release it on
+`handle.rewoven()`. A move is seen at the next session frame, so a move your page makes after that
+frame's callback can show for one frame. Move the canvas from an event handler or before the frame,
+not from a later animation callback.
+
+**Measured on the Leia panel (26 September, browser test build with patch 0195, blind A/B, one
+observer):** entering and leaving the player's fullscreen showed **no** raw side-by-side pair,
+with or without the cover. Without it, leaving fullscreen showed the picture at once and then a
+flash of the **whole browser viewport** about a second later. With it, the picture was hidden for
+~1.2 s and the flash was still there. The flash is browser-side and wider than any tile, so no
+page cover can hide it. That is why the player's cover is opt-in. Keep the rule for a page whose
+resize does show the pair.
+
+**Measured on a DS1 (4K, 300 %), browser 1.10.3, 18 November:** through every step of a hand
+corner-drag of the Shop demo, the browser reported the tile `woven`, and the cover (raised on each
+change, as before the report path) was woven with it. Each eye got half of the cover's 2D left eye,
+stretched twice as wide, over its black fill, until the drag stopped (browser-pvt#364). With the
+cover hidden, the drag stayed 3D apart from an occasional dropped frame, which is the browser's
+(browser-pvt#351). A cover of your own over a tile that is still woven is woven the same way.
+
+A scroll is not a resize. The canvas keeps its size and its identity, and nothing needs covering.
+
+#### Resize checklist (November 2026)
+
+From a study of two production pages on the 8K panel: one that blinked black on every resize step
+(cover off, canvas moved a frame late) and one that went flat for the whole drag (cover on, a still
+frame restarted at every step). The rules below are what keeps a resize as short and as clean as the
+page can make it. On that panel's browser, nothing a page did kept the tile **3D** during a
+continuous window drag: every step re-joined the rect, and the gap is the browser's (§4). What a page
+controls is whether that gap shows black, a stale frame, or live 2D. (Browser 1.10.3 on Windows keeps
+the tile woven through a corner drag; see the measurement above.)
+
+1. **Let the SDK size the buffer, or size it inside `onResize`.** For an `addScene` canvas, resize
+   the backing store in the `onResize(box)` callback and draw a frame in that same callback (it runs
+   inside the ResizeObserver, before paint). Never from a `window` `resize` listener plus a later
+   `requestAnimationFrame`: that leaves one frame where the buffer is the new size and cleared.
+2. **Write `canvas.width` / `height` only when the value changes**, and redraw the last good frame
+   immediately when it does. Setting it, even to the same value, clears the buffer, and a cleared
+   (transparent) woven frame shows a blink of the page behind it. `./viewer`'s `_resize` is the reference.
+3. **Move the canvas's CSS box in the event handler that decides the move**, not in a later animation
+   callback. A box moved a frame late is woven one frame at the old rect, every step of a drag.
+4. **Draw an opaque frame** whenever nothing under the canvas has to show through: a cleared,
+   transparent frame shows the page behind the tile (flat) for that frame, which reads as a blink.
+   If the page needs a transparent clear (2D layers under the canvas), rule 2 matters twice as much.
+5. **Cap the buffer:** devicePixelRatio at most 2 for the side-by-side store (`./viewer` caps it), and
+   respect the eye clamp. A 300 % desktop asks for a ~7680 px-wide buffer on an 8K panel; the browser
+   may clamp it, and a clamped side-by-side store splits its eyes off-centre.
+6. **Use a cover, and prefer the SDK's** (`rectCover: 'auto'`, live since 1.52). Without one, every
+   step of a drag shows the gap; with a still cover, the whole drag is one frozen frame. The live
+   cover is 2D for the drag plus about one hold after it, and 3D comes back when `rewoven()` settles.
+   Where the browser reports `wovenState`, the SDK's cover goes up only while the tile is out of the
+   weave. Running your own cover: raise it before the change, release it on `handle.rewoven()`, and
+   keep its picture updated if the change can last longer than a second. On a browser that reports
+   `handle.wovenState`, keep it down while that reads `'woven'`: a cover over a woven tile is woven.
+7. **Don't fight the cap.** A box that never stops changing settles anyway after four holds
+   (`hold-capped`), and the cover comes down for at least a frame. That is deliberate: an endless CSS
+   transition must not hide a tile for good.
+
 ### Two rules that keep a joined canvas joined
 
 - **Redraw every frame.** A canvas that is not redrawn can drop out of the frame the compositor
@@ -191,7 +338,20 @@ generations.
   last frame). A scene must draw in every `onFrame`, and on a frame it cannot draw it must
   **replay the last good one** rather than skip ([validate before you
   clear](authoring-inline-3d.md#3-live-scene-threejs--webgl--addscenecanvas-onframe-opts)).
-  `./viewer`, `./splat` and `./model` already do this.
+  `./viewer`, `./splat` and `./model` already do this, and since 1.38 they also draw on the frames
+  before the first good one: the mono camera into both halves, the subject if it is loaded, or a
+  cleared frame if it is not. The only undrawn frames left are the ones before the engine has
+  created its context. The SDK cannot enforce this for an `addScene` window your page draws: draw
+  something on every `onFrame`, even with no content yet. When you keep the last good frame,
+  copy the viewport's and view's fields **by name**: `XRViewport` and `XRView` fields are
+  prototype getters, so `Object.assign` and spread copy nothing and the replay draws into a 0×0
+  viewport, which weaves black ([details](authoring-inline-3d.md#3-live-scene-threejs--webgl--addscenecanvas-onframe-opts)).
+  - **Transparent pixels show the page behind the tile.** The browser pre-blends the page under
+    both eyes at zero disparity before weaving, so a transparent woven frame shows the page,
+    flat, at half horizontal resolution. (A black box reported as "transparent weaves black",
+    browser-pvt #255, turned out to be the page's own 2D cover; the issue is closed.) A frame
+    with nothing drawn yet shows that backdrop, so cover a new tile until its content is in
+    (rule 5).
 - **Large scene canvases: consider `preserveDrawingBuffer: true`.** On older DisplayXR Browser
   builds, the weave's zero-copy read of a full-window WebGL canvas can race the page's next
   write, and the frame is dropped. Keep the SBS buffer no wider than the panel, and try
@@ -245,3 +405,77 @@ for exactly that reason). It cannot check the join. On a DisplayXR display:
 - **Reporting the join.** Only the browser knows when a canvas has been joined. Until it reports
   that, `handle.firstWoven` is a timer with a stable contract. The request, and the shape it
   asks for, is [`proposals/layer-joined-signal.md`](proposals/layer-joined-signal.md).
+
+## 5. Pitfalls from production (September 2026)
+
+Found on hardware in a production photo app after the rules above were written. Each one looked
+like a runtime or browser bug on the panel and turned out to be the page.
+
+- **`backdrop-filter` on chrome that sits over the weave (superseded for 0.1.16+).** Rule 7 covers
+  effects on the canvas and its ancestors. A frosted bar or button placed *over* a woven tile is a
+  different element; on browsers before DisplayXR Browser 0.1.16 it visibly disturbed the 3D image
+  across that element's whole rect on a lenticular laptop panel, and the fix was a plain
+  translucent tint. Since 0.1.16 the compositor draws the tile mono inside each frost rect
+  (displayxr-browser#120), so partial frosted chrome is fine there (`samples/composition` is the
+  validated case); still never frost a whole visible tile ([rule 10](#10-backdrop-filter-over-the-weave-only-on-displayxr-browser-0116-never-over-a-whole-tile)).
+  Judge it on the panel, not on a 2D monitor.
+- **Nothing opaque above the woven canvas.** Stacking order still applies: an element with an
+  opaque background painted *above* the canvas hides it, and on a draw-order browser that is
+  exactly what you get. The classic case is a full-bleed video plane under a page `<main>` with
+  `background: #000`: the sound plays and the picture is black. Dark or blurred backdrops go
+  *under* the canvas, as their own element.
+- **Don't mount the woven canvas on 2D-only routes.** A route with no 3D content (an upload page, a
+  settings screen) should not host the stage at all. Where the woven canvas has to stay mounted
+  (one session, never remount: rules 1–3), request the 1-view mode for the flat screen instead:
+  `wall.setStereoEnabled(false)`, then `true` again before the next stereo content appears. The
+  1-view mode is real full-resolution 2D, not a flattened weave: the panel's 3D optics switch off,
+  nothing is woven, and DOM text is native-resolution. Confirm with
+  `wall.hardwareDisplayState === '2d'`. The SDK's eased mode switch ramps disparity out before the
+  panel flips and in only after it reports 3D. The mode is display-wide: every woven tile goes flat
+  while it is in force.
+- **A 2D/3D toggle: try the mode switch, then fall back.** Not every browser can forward a mode
+  request yet. The DisplayXR Browser for Android rejects `setStereoEnabled` /
+  `requestRenderingMode` with a `NotSupportedError` while still listing its modes as
+  `isRequestable: true`. You can't detect this in advance:
+  `isRequestable` overstates it, and the Android browser sends a desktop user agent. So call
+  `setStereoEnabled(false)` and, if it rejects with a `NotSupportedError`, flatten the image
+  yourself: ease your rig's `ipdFactor` and `parallaxFactor` to 0 over ~300 ms (the SDK's own
+  ramp length), and back to your values for 3D. Both views become identical and the image reads
+  flat, though the panel's lens stays on, so it is a softer 2D than the real 1-view mode. Keep
+  the button visible either way; only a different rejection (no 1-view mode listed at all) is a
+  reason to hide it.
+  ```js
+  async function setFlat(flat) {
+    try { await wall.setStereoEnabled(!flat); }
+    catch (e) {
+      if (e.name !== 'NotSupportedError') throw e;
+      easeRigFactors(flat ? 0 : 1, 300);   // your rig: ipdFactor / parallaxFactor × k
+    }
+  }
+  ```
+- **Keep the frames after `setSource` resolves free of per-splat CPU work.** A slideshow ran 105
+  `pick()` calls (24 to plan an animation path, 81 for a diagnostic depth grid) right after every
+  swap. On the Windows panel that was a 1.3 s main-thread stall at the end of every transition,
+  which reads on a tracked panel as "head tracking stops": no frames, so the image cannot follow
+  the head. SDK 1.22.0 made pick bursts cheap (a pick index), but the rule stands: defer or spread
+  work after a swap, and gate diagnostics behind a flag. `?dxrdiag=1` names what is on the main
+  thread per transition phase (`picks`, `gl`, `afterSettleTaskMs`, `longFrames`), so check it
+  before blaming the SDK or the browser.
+- **Don't hold or blend rigs yourself around a transition.** Since SDK 1.24.0 each photo in a
+  two-splat transition is drawn through its own camera rig for the whole transition, including the
+  frame or two before the runtime delivers views for a newly declared rig. Declare each photo's rig
+  (or let the SOG camera block do it) and let `setSource` handle the swap: holding the old rig or
+  easing between the two moves one of the photos.
+- **Don't assume `canvas.width` is the buffer.** A WebGL canvas larger than the device's limit is
+  clamped by the browser with no error: `canvas.width` keeps the value you set while
+  `gl.drawingBufferWidth` is smaller. An Android 3D tablet (Adreno 740) reports `MAX_TEXTURE_SIZE`
+  4096 where desktops report 16384 (the Chromium driver workaround tracked in browser-pvt#187), so a
+  full-screen SBS canvas at 5120 wide came out 4096 wide. `XRDisplayLayer.getViewport()` splits
+  `canvas.width`, so the eye boundary landed at 62.5% of the buffer while the weave split it at 50%:
+  a large double image. `./viewer`, `./splat`, `./model` and `addImage` / `addVideo` clamp the store
+  before sizing it (both axes by one factor) and warn once; `handle.renderScale` then reports the
+  scale in force. An `addScene` page sizes its own canvas: keep 2 × eye width and the height within
+  min(`MAX_TEXTURE_SIZE`, `MAX_RENDERBUFFER_SIZE`, `MAX_VIEWPORT_DIMS`), and draw into
+  `gl.drawingBufferWidth/Height` rather than `canvas.width/2`. The SDK warns once if it sees the
+  browser clamp a scene canvas. Test a large tile on Chrome with
+  `--webgl_or_caps_max_texture_size_limit_4096` to reproduce the tablet's limit on a desktop.

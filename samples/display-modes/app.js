@@ -373,6 +373,9 @@ async function toggleStereo() {
   });
 
   try {
+    // The layer answers display reads only once it has delivered a frame: read before that and
+    // getDisplayInfo() is null and getRenderingModes() empty, which reads as "no display".
+    await handle.firstWoven;
     await readDisplayInfo();
     await readModes();
   } catch (e) {

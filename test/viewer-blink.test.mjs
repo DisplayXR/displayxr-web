@@ -38,39 +38,54 @@ function withCapturedWarnings(fn) {
 }
 
 // ── 1. validate before clear ────────────────────────────────────────────────────────────
+//
+// Before any good frame there is nothing to replay. Until 1.38 such a frame drew nothing at all;
+// it now draws the FLAT pair (the mono camera into both halves) so that every session frame
+// presents (woven-canvas-rules, "redraw every frame"). What these pin is the blink rule itself:
+// no clear is ever left without a draw, and the eye path never runs on a frame that failed.
 
-test('an empty view list never clears the canvas', () => {
+/** The flat pair: one clear, the mono camera into the left and right halves, nothing else. */
+function assertFlatPair(log, viewer, canvas) {
+  assert.equal(log.clear, 1, 'one clear, followed by a draw');
+  assert.equal(log.render.length, 2);
+  for (const r of log.render) assert.equal(r.camera, viewer.monoCamera, 'never the eye camera on a failed frame');
+  const half = canvas.width / 2;
+  assert.deepEqual(log.render.map((r) => r.viewport), [
+    { x: 0, y: 0, width: half, height: canvas.height },
+    { x: half, y: 0, width: half, height: canvas.height },
+  ]);
+  assert.equal(log.clearsWithoutDraw, 0);
+}
+
+test('an empty view list before any good frame draws the flat pair, never a bare clear', () => {
   const { log, canvas, viewer } = setup();
   viewer.onFrame([], makeLayer(canvas));
-  assert.equal(log.clear, 0, 'cleared on a frame it could not draw');
-  assert.equal(log.render.length, 0);
+  assertFlatPair(log, viewer, canvas);
 });
 
-test('a one-eye view list never clears the canvas', () => {
+test('a one-eye view list before any good frame draws the flat pair', () => {
   const { log, canvas, viewer } = setup();
   viewer.onFrame(makeViews(1), makeLayer(canvas));
-  assert.equal(log.clear, 0, 'the load-induced mono fallback must not blank the tile');
-  assert.equal(log.render.length, 0);
+  assertFlatPair(log, viewer, canvas);
 });
 
-test('a null viewport never clears the canvas', () => {
+test('a null viewport before any good frame draws the flat pair', () => {
   const { log, canvas, viewer } = setup();
   viewer.onFrame(makeViews(2), makeLayer(canvas, { nullFor: 1 }));
-  assert.equal(log.clear, 0, 'cleared even though the right eye had nowhere to go');
-  assert.equal(log.render.length, 0);
+  assertFlatPair(log, viewer, canvas);
 });
 
-test('a degenerate (zero-width) viewport never clears the canvas', () => {
+test('a degenerate (zero-width) viewport before any good frame draws the flat pair', () => {
   const { log, canvas, viewer } = setup();
   const layer = { getViewport: () => ({ x: 0, y: 0, width: 0, height: 0 }) };
   viewer.onFrame(makeViews(2), layer);
-  assert.equal(log.clear, 0);
+  assertFlatPair(log, viewer, canvas);
 });
 
-test('a missing layer never clears the canvas', () => {
-  const { log, viewer } = setup();
+test('a missing layer before any good frame draws the flat pair', () => {
+  const { log, canvas, viewer } = setup();
   viewer.onFrame(makeViews(2), null);
-  assert.equal(log.clear, 0);
+  assertFlatPair(log, viewer, canvas);
 });
 
 test('without useEyeCamera it warns ONCE and draws the mono camera instead of clearing', () => {
@@ -143,11 +158,12 @@ test('the replay cache COPIES the matrices — an XRView is only valid in its ow
   );
 });
 
-test('a bad frame before any good one does nothing at all', () => {
+test('bad frames before any good one present every frame (flat pair), never an undrawn frame', () => {
   const { log, canvas, viewer } = setup();
   for (let i = 0; i < 3; i++) viewer.onFrame(makeViews(1), makeLayer(canvas));
-  assert.equal(log.clear, 0);
-  assert.equal(log.render.length, 0);
+  assert.equal(log.clear, 3, 'one presented frame per session frame');
+  assert.equal(log.render.length, 6);
+  assert.equal(log.clearsWithoutDraw, 0);
 });
 
 test('a sustained bad run keeps replaying rather than degrading', () => {

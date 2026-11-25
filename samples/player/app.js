@@ -1,0 +1,138 @@
+// player — one media title, two ways: a real stereo pair (default) and its 2D edition
+// (format:'mono'), both driven by the SDK transport. See docs/authoring-inline-3d.md#2b-player.
+
+import { createInline3D } from '@displayxr/inline3d';
+import { addPlayer, PLAYER_ACCENTS } from '@displayxr/inline3d/player';
+
+// The same trailer twice, best first, picked by the player's own codec check (pickSource):
+//   1. H.264 + AAC MP4 WITH SOUND (3.4 MB). The DisplayXR Browser plays it from 1.0.6, which
+//      decodes H.264/AAC through the operating system (browser-pvt#169).
+//   2. The silent VP9 WebM samples/windows/ ships, for browsers without H.264 (DisplayXR Browser
+//      1.0.5 and earlier, stock Chromium builds).
+// Both are 640x360 per eye: a 3D display's render scale throws the rest away after the interlace.
+// Both players start muted (autoplay policy); unmute from the transport.
+// MP4 is first here ONLY because this sample's WebM has no audio track. With two equivalent
+// encodes, list the VP9/AV1 WebM first and the MP4 as the fallback (docs/authoring-inline-3d.md,
+// "Hosting video"): an MP4 fails on older DisplayXR Browsers, stock Chromium builds and machines
+// without hardware H.264 decode.
+const SRC = [
+  { src: '../windows/assets/flymetothemoon_2x1.mp4', type: 'video/mp4; codecs="avc1.640028, mp4a.40.2"' },
+  { src: '../windows/assets/flymetothemoon_sbs.webm', type: 'video/webm; codecs="vp9"' },
+];
+// The flat tile gets a genuinely 2D title: the same trailer's left eye, re-encoded (assets/). A
+// side-by-side file told it is 'mono' is painted whole — both eyes squeezed into one picture.
+const SRC_2D = [
+  { src: './assets/flymetothemoon_2d.mp4', type: 'video/mp4; codecs="avc1.64001E, mp4a.40.2"' },
+  { src: './assets/flymetothemoon_2d.webm', type: 'video/webm; codecs="vp9"' },
+];
+const POSTER = undefined; // no poster asset shipped with this sample; the first frame paints itself.
+
+function setStatus(mode, text) {
+  const el = document.getElementById('status');
+  el.className = 'status ' + mode;
+  el.textContent = text;
+}
+
+const wall = await createInline3D();
+
+const sbsPlayer = addPlayer(wall, document.getElementById('tile-sbs'), SRC, {
+  format: 'sbs',
+  loop: true,
+  title: 'Fly Me to the Moon',
+  skin: new URLSearchParams(location.search).get('skin') || 'dock', // ?skin=classic for the band
+  // Opt-in: creates the mixer that lets setSource() dissolve instead of cut.
+  transition: 'crossfade',
+  durationMs: 700,
+  poster: POSTER,
+});
+
+const monoPlayer = addPlayer(wall, document.getElementById('tile-mono'), SRC_2D, {
+  format: 'mono',
+  loop: true,
+  poster: POSTER,
+});
+
+// Debug hooks, same convention as the other samples' __wall/__splat: lets a devtools console
+// (or an agent driving the page, e.g. via headless CDP) inspect/drive the players directly.
+window.__wall = wall;
+window.player = sbsPlayer;
+window.playerMono = monoPlayer;
+
+setStatus(
+  wall.supported ? 'woven' : 'flat',
+  wall.supported
+    ? 'DisplayXR Browser — left tile woven glasses-free 3D, right tile deliberately flat.'
+    : 'No inline-3D here — both tiles render flat 2D video (open in the DisplayXR Browser for the left tile to weave).'
+);
+
+// Chapters: the one stereo asset this repo ships, entered at three points, so each chip is a real
+// setSource() — and each swap a real crossfade from the outgoing frame. The entry point is a seek
+// once the new source's metadata lands: a `#t=` media fragment is NOT honoured on an in-place
+// swap in Chromium (measured: it plays from 0:00), so it cannot carry the chapter.
+// Labelled by time on purpose: this is one 24 s clip, and invented scene names would promise
+// content it does not have.
+const CHAPTERS = [
+  { label: '0:00', t: 0 },
+  { label: '0:08', t: 8 },
+  { label: '0:16', t: 16 },
+];
+const chipsEl = document.getElementById('chapters');
+for (const [i, ch] of CHAPTERS.entries()) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = ch.label;
+  b.setAttribute('aria-pressed', String(i === 0));
+  b.addEventListener('click', () => {
+    for (const other of chipsEl.children) other.setAttribute('aria-pressed', String(other === b));
+    sbsPlayer.setSource(SRC, { title: `Fly Me to the Moon · from ${ch.label}` });
+    sbsPlayer.video.addEventListener('loadedmetadata', () => sbsPlayer.seek(ch.t), { once: true });
+    sbsPlayer.play().catch(() => {});
+  });
+  chipsEl.append(b);
+}
+
+// Developer customisation, live: accent colour, size S/M/L and skin, through handle.setAppearance().
+// Both players take the same call; the line on the right is exactly what a page would write.
+const appearance = { accent: 'azure', size: 'm', skin: new URLSearchParams(location.search).get('skin') || 'dock' };
+const callEl = document.getElementById('call');
+function applyAppearance(patch) {
+  Object.assign(appearance, patch);
+  sbsPlayer.setAppearance(patch);
+  monoPlayer.setAppearance(patch);
+  callEl.textContent = `setAppearance({ accent: '${appearance.accent}', size: '${appearance.size}', skin: '${appearance.skin}' })`;
+}
+// Named presets as swatches; the colour input beside them takes any CSS colour.
+const swatchesEl = document.getElementById('swatches');
+function markSwatch(name) {
+  for (const b of swatchesEl.children) b.setAttribute('aria-pressed', String(b.dataset.v === name));
+}
+for (const [name, colour] of Object.entries(PLAYER_ACCENTS)) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.dataset.v = name;
+  b.title = name;
+  b.setAttribute('aria-label', `Accent: ${name}`);
+  b.style.setProperty('--c', colour);
+  b.addEventListener('click', () => {
+    markSwatch(name);
+    document.getElementById('accent').value = colour;
+    applyAppearance({ accent: name });
+  });
+  swatchesEl.append(b);
+}
+markSwatch(appearance.accent);
+document.getElementById('accent').addEventListener('input', (e) => {
+  markSwatch(null);
+  applyAppearance({ accent: e.target.value });
+});
+for (const id of ['size', 'skin']) {
+  const seg = document.getElementById(id);
+  for (const b of seg.querySelectorAll('button')) {
+    b.setAttribute('aria-pressed', String(b.dataset.v === appearance[id]));
+    b.addEventListener('click', () => {
+      for (const o of seg.querySelectorAll('button')) o.setAttribute('aria-pressed', String(o === b));
+      applyAppearance({ [id]: b.dataset.v });
+    });
+  }
+}
+applyAppearance({ skin: appearance.skin }); // the mono tile starts on the same skin

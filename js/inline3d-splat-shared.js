@@ -12,6 +12,36 @@
 // apart on how a drag, a wheel notch, an idle turntable or a focus change feels. Pinned by
 // test/splat-playcanvas.test.mjs (values, and a behavioural trace of both viewers side by side).
 
+import { comfortDepthFactor, isComfortZone, DEPTH_DEFAULT_VIEWER_M } from './inline3d-depth-budget.js';
+import { attachHandsOption } from './inline3d-hands.js';
+
+/**
+ * Double-attach detection around a scene subpath's public entry (`addSplat`, `addModel`).
+ *
+ * The check has to run HERE, at the entry, and not only in the core's addScene: the subpaths build
+ * a renderer on the canvas BEFORE the core window exists (asynchronously, once the engine module
+ * has loaded), so a second `addSplat` during the first one's load would never reach the core's
+ * check in time. `wall._attachGuard` (the core manager) warns once per canvas and claims it; the
+ * call then proceeds exactly as before. A wall without it (no session, an older core) attaches as is.
+ */
+export function guardedAttach(wall, canvas, method, opts, attach) {
+  const g = wall && typeof wall._attachGuard === 'function' ? wall._attachGuard(canvas, method, opts) : null;
+  if (!g) return withHands(wall, attach(opts), opts);
+  const out = attach(g.opts);
+  g.own(out);
+  return withHands(wall, out, opts);
+}
+
+/**
+ * The `hands` option (`./inline3d-hands.js`): pinch to orbit, two pinches to zoom. Wired here so
+ * every addModel / addSplat entry, on either engine, gets it from one place, after the core has
+ * claimed the handle (the hands' stop rides the same `remove` accessor).
+ */
+function withHands(wall, out, opts) {
+  if (opts && opts.hands) attachHandsOption(wall, out, opts);
+  return out;
+}
+
 /**
  * Backstop on total subject depth, as a multiple of the display height. Generous on purpose:
  * depth placement is a z decision (see fitTo), not a scale one, so this only catches the
@@ -545,4 +575,319 @@ export function declareViewRig(handle, rig) {
     );
   }
   return false;
+}
+
+/**
+ * The `clearColor` option of SceneViewer / addModel / addSplat, as `[r, g, b, a]` in 0..1 — or
+ * null when absent (the viewer then keeps its transparent clear, exactly as before). Takes
+ * `[r, g, b]` / `[r, g, b, a]` (0..1; alpha defaults to 1) or a CSS colour string: `#rgb`,
+ * `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()` / `rgba()` (comma or space syntax, `/ alpha`),
+ * `transparent`, and — where a DOM is present — any other CSS colour the browser can parse.
+ * Something it cannot read warns once per call (with `tag`) and returns null: the default clear
+ * stays.
+ */
+export function parseClearColor(v, tag = '[inline3d]') {
+  if (v === undefined || v === null) return null;
+  const bad = () => {
+    console.warn(`${tag} clearColor ${JSON.stringify(v)} is not a colour this SDK can read ([r,g,b,a] in 0..1, or a CSS colour); the default (transparent) clear is kept.`);
+    return null;
+  };
+  if (Array.isArray(v) || ArrayBuffer.isView(v)) {
+    if (v.length < 3 || v.length > 4) return bad();
+    const c = [v[0], v[1], v[2], v.length === 4 ? v[3] : 1];
+    if (!c.every((x) => typeof x === 'number' && Number.isFinite(x))) return bad();
+    return c.map((x) => clamp(x, 0, 1));
+  }
+  if (typeof v !== 'string') return bad();
+  const s = v.trim().toLowerCase();
+  if (s === 'transparent') return [0, 0, 0, 0];
+  let m = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(s);
+  if (m) {
+    let h = m[1];
+    if (h.length <= 4) h = [...h].map((ch) => ch + ch).join('');
+    const n = (i) => parseInt(h.slice(i, i + 2), 16) / 255;
+    return [n(0), n(2), n(4), h.length === 8 ? n(6) : 1];
+  }
+  m = /^rgba?\(\s*([^)]*)\)$/.exec(s);
+  if (m) {
+    const parts = m[1].split(/\s*[,/]\s*|\s+/).filter(Boolean);
+    if (parts.length < 3 || parts.length > 4) return bad();
+    const ch = (p) => (p.endsWith('%') ? parseFloat(p) / 100 : parseFloat(p) / 255);
+    const al = (p) => (p.endsWith('%') ? parseFloat(p) / 100 : parseFloat(p));
+    const c = [ch(parts[0]), ch(parts[1]), ch(parts[2]), parts.length === 4 ? al(parts[3]) : 1];
+    if (!c.every(Number.isFinite)) return bad();
+    return c.map((x) => clamp(x, 0, 1));
+  }
+  // Any other CSS colour (a name, hsl(), …): let the browser normalise it, where there is one.
+  // A 2D context's fillStyle reads back as #rrggbb or rgba(…), both handled above.
+  try {
+    const ctx = globalThis.document?.createElement?.('canvas')?.getContext?.('2d');
+    if (ctx) {
+      ctx.fillStyle = '#010203';
+      ctx.fillStyle = v;
+      const out = String(ctx.fillStyle);
+      if (out !== '#010203') return parseClearColor(out, tag);
+    }
+  } catch {
+    /* no DOM */
+  }
+  return bad();
+}
+
+/**
+ * `handle.setStereo`'s argument, validated and merged onto the current override (throws at the
+ * call). Returns the new override, or null when nothing is overridden. Shared by `./splat`
+ * (PlayCanvas) and `./model` (both engines); `tag` names the subpath in the errors.
+ */
+export function validateSetStereo(o, prev, tag = '@displayxr/inline3d/splat') {
+  if (o === null) return null;
+  if (typeof o !== 'object') throw new TypeError(`${tag}: setStereo takes an object or null.`);
+  // Absolute (…Factor) or RELATIVE to the asset's own (…Scale); per scalar, the last one given wins.
+  const pairs = [
+    ['ipdFactor', 'ipdScale'],
+    ['parallaxFactor', 'parallaxScale'],
+  ];
+  const keys = pairs.flat();
+  const unknown = Object.keys(o).filter((k) => !keys.includes(k));
+  if (unknown.length) throw new Error(`${tag}: setStereo — unknown option(s) ${unknown.join(', ')}.`);
+  for (const [a, b] of pairs) {
+    if (o[a] != null && o[b] != null) throw new Error(`${tag}: setStereo — ${a} and ${b} are exclusive.`);
+  }
+  const next = { ...(prev || {}) };
+  for (const [a, b] of pairs) {
+    for (const k of [a, b]) {
+      if (!(k in o) || o[k] === undefined) continue;
+      if (o[k] === null) {
+        delete next[k];
+        continue;
+      }
+      if (typeof o[k] !== 'number' || !Number.isFinite(o[k]) || o[k] < 0) {
+        throw new RangeError(`${tag}: setStereo — ${k} must be a finite number >= 0 (got ${o[k]}).`);
+      }
+      next[k] = o[k];
+      delete next[k === a ? b : a];
+    }
+  }
+  return Object.keys(next).length ? next : null;
+}
+
+/** One scalar under a setStereo override: its absolute value, else `base` × its scale, else `base`. */
+export function stereoScalarOf(o, base, k) {
+  if (o?.[`${k}Factor`] != null) return o[`${k}Factor`];
+  if (o?.[`${k}Scale`] != null) return base * o[`${k}Scale`];
+  return base;
+}
+
+/**
+ * `./model`'s `handle.setStereo` + `handle.rig`, for both engines: `out` the model handle,
+ * `getTile()` the core window handle (null without a session), `vH` the tile's
+ * virtualDisplayHeight, `makeDisplayRig` ./three's displayRig. A model has no stereo of its own,
+ * so the "asset's own" values are 1 and 1 — `ipdScale` and `ipdFactor` agree.
+ *
+ * The rig is the display rig addModel declared with its `virtualDisplayHeight` shorthand; a value
+ * set here re-declares it as an explicit display rig with those factors (RELATIVE: 1 = what the
+ * display shows by construction). `setStereo(null)` declares the plain rig again — the exact
+ * equivalent of the shorthand. Nothing is sent before the first call: a page that never calls it
+ * declares exactly what it did before. Under `controls: 'page'` the camera rig the page drives
+ * takes the values instead, from its next tick.
+ *
+ * `setBase(k)` is the `depth` option's comfort factor: both scalars × k, on top of setStereo's,
+ * declared like a setStereo call (and, like one, nothing until it is called with k ≠ 1).
+ */
+export function attachModelStereo(out, { getTile, vH, makeDisplayRig, page = false, tag = '@displayxr/inline3d/model' }) {
+  let override = null;
+  let declared = false;
+  // The `depth` option's comfort factor (attachComfortDepth), multiplied under setStereo's values;
+  // 1 = nothing to declare on its account.
+  let base = 1;
+  // controls:'page' declares its own camera rig every tick and reads rig.ipdFactor / parallaxFactor
+  // there (ABSOLUTE on a camera rig, as addSplat's); nothing is declared from here.
+  const rig = { type: page ? 'camera' : 'display', ipdFactor: 1, parallaxFactor: 1, stereoDefault: Object.freeze({ ipdFactor: 1, parallaxFactor: 1 }) };
+  out.rig = rig;
+  const declare = () => {
+    const tile = getTile();
+    if (page || !tile || (!override && !declared && base === 1)) return;
+    declared = true;
+    out.viewRig = makeDisplayRig({ virtualDisplayHeight: vH, ipdFactor: rig.ipdFactor, parallaxFactor: rig.parallaxFactor, out: out.viewRig || {} });
+    declareViewRig(tile, out.viewRig);
+  };
+  const factors = () => {
+    rig.ipdFactor = stereoScalarOf(override, 1, 'ipd') * base;
+    rig.parallaxFactor = stereoScalarOf(override, 1, 'parallax') * base;
+  };
+  out.setStereo = (o) => {
+    override = validateSetStereo(o, override, tag);
+    factors();
+    declare();
+    return out;
+  };
+  return {
+    redeclare: declare,
+    get override() {
+      return override;
+    },
+    /** The comfort factor (both scalars move together), × setStereo's; re-declares when it changes. */
+    setBase(k) {
+      if (k === base) return;
+      base = k;
+      factors();
+      declare();
+    },
+  };
+}
+
+// ── the `depth` option: comfort depth (./model, ./splat) ──────────────────────────────────────
+
+/**
+ * addModel / addSplat's `depth` option, validated (throws at the call, like every option check):
+ * null when absent — nothing about the tile changes — else `{ zone }`. `'auto'` is the Shibata
+ * zone; `{ zone }` takes `'shibata'`, `'percival'` or a number of diopters > 0.
+ */
+export function resolveDepthOption(v, tag = '@displayxr/inline3d/splat') {
+  if (v === undefined || v === null) return null;
+  if (v === 'auto') return { zone: 'shibata' };
+  if (typeof v !== 'object' || Array.isArray(v)) {
+    throw new TypeError(`${tag}: depth must be 'auto' or { zone } (got ${JSON.stringify(v)}).`);
+  }
+  const unknown = Object.keys(v).filter((k) => k !== 'zone');
+  if (unknown.length) throw new Error(`${tag}: depth — unknown option(s) ${unknown.join(', ')}.`);
+  const zone = v.zone === undefined ? 'shibata' : v.zone;
+  if (!isComfortZone(zone)) {
+    throw new RangeError(`${tag}: depth.zone must be 'shibata', 'percival' or a number of diopters > 0 (got ${JSON.stringify(v.zone)}).`);
+  }
+  return { zone };
+}
+
+/**
+ * The subject's depth AS FRAMED — getSubjectBounds' `front` / `back` at zoom 1 with no orbit
+ * (the fit scale, the subject's half depth, the page's depthOffset). Zoom and orbit are left out
+ * on purpose: they are framing choices the viewer (or the page) makes live, and the `depth`
+ * option's factor must not breathe with them. Either viewer (SceneViewer, PlayCanvasSplatViewer).
+ */
+export function framedSubjectBounds(viewer) {
+  const s = viewer._fitScale;
+  const hz = viewer._subjectHalf?.[2];
+  if (!(s > 0) || !Number.isFinite(hz)) return null;
+  const off = viewer._depthOffset || 0;
+  // A robust frame (addModel, web#327) hands fitTo the surface's own depth range relative to the
+  // glass: measure THAT, not the fit box, so the comfort factor sees the robust screen plane.
+  const fd = viewer._framedDepth;
+  if (fd) return { front: off + s * fd[1], back: off + s * fd[0] };
+  // The author's slide plus the framing's screen-plane slide (fitTo's screenPlaneZ), at zoom 1.
+  const cz = off + (viewer._screenPlaneShift || 0) * s;
+  return { front: cz + s * hz, back: cz - s * hz };
+}
+
+/**
+ * The `depth` option's live part, shared by every engine: measure the comfort factor
+ * (comfortDepthFactor) from the framed subject, the canvas's physical height and the NOMINAL viewer
+ * distance, and hand it to `apply(k)` — the engine multiplies it into the display rig it declares,
+ * on top of setStereo's values. `out.depthFactor` reads it (1 when the option is off or not in
+ * force).
+ *
+ * Re-measured when the engine calls `refresh()` (after it frames a subject), when the tile first
+ * weaves (its layer can answer getDisplayInfo from then), on a display event and when the canvas
+ * resizes — never per frame, and never on zoom or orbit (the box is framedSubjectBounds'). `apply` runs only when k changes. `ignore(why)` says once that the
+ * option does nothing on this rig (a camera rig, controls:'page') and holds the factor at 1;
+ * `resume()` measures again (a PlayCanvas splat back on a display rig).
+ * Without the option every method is a no-op: no listener, no observer, no async work.
+ *
+ * `getBounds()` → a framedSubjectBounds() box or null (null = nothing to measure now), `getVH()` →
+ * the virtualDisplayHeight that box is in, `getTile()` → the core window handle.
+ */
+export function attachComfortDepth(out, { option, canvas, getTile, getBounds, getVH, apply, tag = '[inline3d]' }) {
+  let factor = 1;
+  Object.defineProperty(out, 'depthFactor', { get: () => factor, enumerable: true, configurable: true });
+  if (!option) return { refresh() {}, ignore() {}, resume() {}, dispose() {}, get factor() { return 1; } };
+  let ignoring = false;
+  let warned = false;
+  let disposed = false;
+  let running = false;
+  let again = false;
+  let bound = null;
+  const unbind = [];
+  const bind = (tile) => {
+    if (bound === tile) return;
+    bound = tile;
+    tile.firstWoven?.then?.(() => refresh(), () => {});
+    for (const type of ['renderingmodechange', 'hardwaredisplaystatechange']) {
+      try {
+        const off = tile.on?.(type, () => refresh());
+        if (typeof off === 'function') unbind.push(off);
+      } catch {
+        /* a core without display events: resize and refresh() still re-measure */
+      }
+    }
+    if (canvas && typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(() => refresh());
+      ro.observe(canvas);
+      unbind.push(() => ro.disconnect());
+    }
+  };
+  async function refresh() {
+    if (disposed || ignoring) return;
+    const tile = getTile();
+    if (!tile || typeof tile.displayMetrics !== 'function') return;
+    bind(tile);
+    // One measurement at a time; a request during one runs once more after it (a resize burst).
+    if (running) {
+      again = true;
+      return;
+    }
+    running = true;
+    try {
+      do {
+        again = false;
+        let m = null;
+        try {
+          m = await tile.displayMetrics(); // never rejects; guarded for an older core
+        } catch {
+          m = null;
+        }
+        if (disposed || ignoring) return;
+        const b = getBounds();
+        const vH = getVH();
+        if (!m || !b || !(vH > 0)) continue;
+        const k = comfortDepthFactor({
+          frontH: Math.max(0, b.front / vH),
+          backH: Math.max(0, -b.back / vH),
+          tileHeightM: m.canvasSizeM?.[1],
+          // The NOMINAL distance (what the display is built for), never the live head: depth that
+          // breathed with the viewer's head would be a second, unasked-for parallax.
+          viewerM: m.source?.viewer === 'display' ? m.nominalViewerM : DEPTH_DEFAULT_VIEWER_M,
+          zone: option.zone,
+        });
+        if (k !== factor) {
+          factor = k;
+          apply(k);
+        }
+      } while (again);
+    } finally {
+      running = false;
+    }
+  }
+  return {
+    refresh,
+    /** This rig takes no comfort factor: say so once, and hold 1 (refresh() idle) until resume(). */
+    ignore(why) {
+      if (!warned) {
+        warned = true;
+        console.warn(`${tag} depth: 'auto' applies to the display rig only; ignored on ${why} (the rig is sent as declared).`);
+      }
+      ignoring = true;
+      factor = 1;
+    },
+    /** A display rig again (PlayCanvas setRig / setSource): measure from here. */
+    resume() {
+      ignoring = false;
+      return refresh();
+    },
+    dispose() {
+      disposed = true;
+      while (unbind.length) unbind.pop()();
+    },
+    get factor() {
+      return factor;
+    },
+  };
 }

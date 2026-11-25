@@ -24,13 +24,13 @@ const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} !~= ${
 // ---- pose readback ---------------------------------------------------------------------------
 
 test('getPose reports the defaults before anything is set', () => {
-  assert.deepEqual(raw().getPose(), { yaw: 0, pitch: 0, zoom: 1, depthOffset: 0 });
+  assert.deepEqual(raw().getPose(), { yaw: 0, pitch: 0, zoom: 1, roll: 0, depthOffset: 0 });
 });
 
 test('setPose snaps, so eased and target agree immediately', () => {
   const v = raw();
   v.setPose({ yaw: 30, pitch: -10, zoom: 2, depthOffset: 0.05 });
-  assert.deepEqual(v.getPose(), { yaw: 30, pitch: -10, zoom: 2, depthOffset: 0.05 });
+  assert.deepEqual(v.getPose(), { yaw: 30, pitch: -10, zoom: 2, roll: 0, depthOffset: 0.05 });
   assert.deepEqual(v.getPose({ target: true }), v.getPose());
 });
 
@@ -70,7 +70,7 @@ test('resetPose clears the depth slide with the rest of the pose', () => {
   const v = raw();
   v.setPose({ yaw: 45, zoom: 3, depthOffset: 0.04 });
   v.resetPose();
-  assert.deepEqual(v.getPose(), { yaw: 0, pitch: 0, zoom: 1, depthOffset: 0 });
+  assert.deepEqual(v.getPose(), { yaw: 0, pitch: 0, zoom: 1, roll: 0, depthOffset: 0 });
 });
 
 test('a non-finite depthOffset is refused, not propagated into the matrix', () => {

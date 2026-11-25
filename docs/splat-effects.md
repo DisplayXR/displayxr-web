@@ -664,6 +664,100 @@ Chromes on the same GPU), so the frame gaps below are pessimistic; compare the a
 - How the empty beat reads to a viewer on the panel, and whether 45 / 10 / 45 is the right split.
 
 
+## Depth envelope
+
+`handle.setDepthEnvelope(opts)` (PlayCanvas backend) enforces one rule in the renderer instead of
+by layout discipline: **content may come out of the glass only well inside the frame.** At each
+spot on the canvas the out-of-glass cap is
+
+```
+cap(x, y) = edgeM + (maxFrontM − edgeM) · smoothstep(0, bandM, distance)
+```
+
+where `distance` is metres on the panel to the nearest `stage` edge or to any `rects` entry (a 2D
+element over the tile, weighted 0..1 so it can fade with the chrome). Behind the glass is never
+limited.
+
+```js
+h.setDepthEnvelope({
+  maxFrontM: 0.02, edgeM: 0.001, bandM: 0.016,   // the defaults
+  stage: { x: 0, y: 0, w: 1, h: 1 },             // canvas fractions, y down; default the canvas
+  rects: [{ x: 0.7, y: 0.04, w: 0.26, h: 0.12, weight: 1 }],   // up to 8 (heaviest kept)
+});
+h.setDepthEnvelope({ rects: [] });   // a key given replaces; the rest is kept
+h.setDepthEnvelope(null);            // off
+```
+
+**How.** A gaussian past the cap slides back **along its own ray** from the declared camera rig
+(centre and scale × λ, like `inflate`): the rig's 2D picture is unchanged, the engine's sort stays
+valid, and both eyes see the same move (the stereo rule above). On a camera rig a point at depth
+`d` has panel disparity `k·e·f_p·(1/D − 1/d)`, with `k = ipdFactor · metersToVirtual` per world
+unit, `f_p = canvas height / (2·tan(vfov/2))` and `D` the convergence. A point `F` metres out
+needs `−e·F/(n − F)`, so the nearest allowed depth is
+
+```
+1/d_env = 1/D + F / (k · f_p · (n − F))
+```
+
+and the viewer's eye separation `e` cancels.
+
+**What it keys on.** The rig as **declared**, never the tracked eyes. It reads the convergence,
+the lens, `ipdFactor` (so `setStereo` is accounted for) and `metersToVirtual` (so
+`controls:'page'` is too). The cap therefore holds still under head motion. It is one tile-scope
+effect: every asset drawn is under it, an incoming one from its first frame and both photos of a
+crossfade, with no per-asset install. It is not listed by `effects()`, and `stopEffect()` leaves
+it on. It is inert on a display rig (a portal, whose depth is the page's own), while a stereo video
+holds the rig, and at `ipdFactor` 0.
+
+**Physical units.** The canvas size comes from the tile's `getDisplayInfo()`: the panel's pixel
+pitch × `devicePixelRatio` × the CSS box, the same as `handle.displayMetrics()`. The viewer
+distance is `nominalViewerPosition.z`. Without display info the defaults are a 15.6" 16:9 panel
+spanned by the viewport and 0.65 m. `canvasSizeM` / `viewerM` override either.
+
+Pinned by `test/depth-envelope.test.mjs`. It transcribes the shader to JS, recomputes each capped
+point's panel depth from the disparity model (independently of the cap formula), and checks that
+it equals the cap at the centre, at the stage edge, under a rect and at half weight, including at
+`ipdFactor` 0.5. The integration tests are in `test/splat-playcanvas.test.mjs`. The generated GLSL
+was compiled with `glslangValidator` (not a CI step).
+
+**Not tested.** It has not been run on a panel. Whether the declared-rig disparity model matches
+what the runtime weaves under a tracked, off-axis viewer is unmeasured, so treat 20 mm as a
+starting point. The rule assumes the browser window sits on the panel at native resolution, which
+is the only place a tile weaves.
+
+## Warming an effect
+
+The first time an effect plays, its program compiles and links on that frame. For a particle
+reveal like `'assemble'` the link takes **250–300 ms on a Windows panel** (ANGLE/D3D11), every cold
+session: a frozen frame exactly when the reveal should start. `warmEffect` moves that work into
+idle time:
+
+```js
+await h.warmEffect('assemble', { durationMs: 1800 });   // compile now, link off the frame
+// … later …
+h.playEffect('assemble', { durationMs: 1800 });          // no link on its first frame
+
+// or with the next asset, after its load and its transition:
+const next = await h.prepareSource(url, { transition: 'crossfade', warmEffects: ['assemble'] });
+```
+
+It builds the exact tile chunk `playEffect(name, opts)` would install, given the tile effects on
+at that moment (the same name replaced in place, as a play does). It asks the engine's program
+library for that variant through a throwaway material with the eye renderer's own description, and
+finishes the link in idle periods with `KHR_parallel_shader_compile`, the same path
+`setSource`'s transition pre-warm uses. **Warm in the state you will play from:** turning a
+persistent effect (grade, clip, the depth envelope) on or off in between changes the program.
+
+It resolves `true` once warm, and `false` when there is nothing it can warm: an entity-scope
+effect (its program is the asset's work-buffer modifier), a custom `fragmentGlsl`, or an engine
+whose internals differ. In those cases the effect compiles on its first frame, as before.
+
+Measured in headless Chrome (ANGLE/Metal, PlayCanvas 2.22.3, the butterfly SOG): with
+`warmEffect` first, `playEffect('assemble')` makes **0** `linkProgram` calls and **0**
+`LINK_STATUS` queries, against 1 link that blocked 526 ms in a cold browser. The warm took 34 ms
+of idle with no frame over 17.6 ms. `test/splat-effects.test.mjs` pins that the warmed chunk is
+byte-for-byte what the play installs. It has not yet been run on a Windows panel.
+
 ## Custom GLSL
 
 ```js

@@ -1,0 +1,164 @@
+#!/usr/bin/env node
+// test/e2e/cursor-depth.e2e.mjs — `cursor: 'depth'` on the REAL viewers, headless:
+//
+//   npm run test:e2e:cursor
+//
+// Runs test/e2e/cursor-depth/ for ./model and ./splat on both engines. Each run hands the real
+// viewer two hand-built off-axis views (what the DisplayXR Browser hands addScene) and a scripted
+// pointer. Pass =
+//   model (a unit cube): over the cube the arrow's disparity (its tip) is the cube front's minus the
+//     margin (0.015 baselines — in front of it, by exactly the ADR-046 Amendment 2 policy), and off
+//     it NOTHING is drawn (the OS cursor is the cursor on the plane);
+//   splat (butterfly.sog; 'three' = the Spark engine): over the subject the arrow is in front of the
+//     glass, off it nothing is drawn;
+//   both: the CSS cursor is hidden while the arrow shows and restored when it is not drawn / on
+//     pointerleave, and the arrow draws with depth test off;
+//   a layer on the display rig (handle.setLayerRig, #185; cursor-depth/layer-rig.html): over the
+//     rounded stage box the arrow is in front of it as the panel shows it, and an app ShaderMaterial
+//     that opts in with CURSOR_DEPTH_PICK_GLSL is hit (shadermat, and the stage box);
+//   softening (ADR-046 Amendment 2 §B.7): the lifted arrow draws with the soft material by default
+//     and the crisp mesh with soften 'off', and no shader fails to compile. (Pixels: see
+//     tools/cursor-soften-capture.)
+// Stock Chrome has no inline 3D: this proves the hit test and the placement, not the weave — that
+// needs a panel (samples/model/?cursor=depth, samples/splat/?cursor=depth).
+//
+// Needs: Chrome (CHROME env, default the macOS app path) with a GPU (ANGLE/Metal on macOS) and
+// puppeteer-core (`npm i --no-save puppeteer-core`, or PUPPETEER_CORE=<dir>). Not part of `npm test`.
+
+import { createServer } from 'node:http';
+import { readFile, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { dirname, resolve, join, extname } from 'node:path';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const CHROME = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const TIMEOUT_MS = +(process.env.E2E_TIMEOUT_MS || 90000);
+const CASES = [
+  { engine: 'playcanvas', kind: 'model' },
+  { engine: 'three', kind: 'model' },
+  { engine: 'playcanvas', kind: 'splat' },
+  { engine: 'three', kind: 'splat' },
+  // Anchor modes on the real viewer: 'screen' must SLIDE with a head move, 'world' must not.
+  { engine: 'playcanvas', kind: 'model', anchor: 'screen' },
+  { engine: 'three', kind: 'model', anchor: 'world' },
+  // An app pc.ShaderMaterial behind the subject: the depth pick pass must not draw it (WebGL
+  // rejects a one-output shader into the picker's two colour targets) — zero GL errors.
+  { engine: 'playcanvas', kind: 'model', backdrop: true },
+  // issue #185: an app pc.ShaderMaterial that opts in with CURSOR_DEPTH_PICK_GLSL is hit.
+  { engine: 'playcanvas', kind: 'model', shadermat: true },
+  // A finger: the browser shows no cursor, so neither does the SDK (both engines, model + splat).
+  { engine: 'playcanvas', kind: 'model', touch: true },
+  { engine: 'three', kind: 'model', touch: true },
+  { engine: 'playcanvas', kind: 'splat', touch: true },
+  // issue #185: a layer moved to the DISPLAY rig (handle.setLayerRig) on a camera-rig splat — the
+  // rounded stage gets its own pick pass; the arrow lifts in front of the box as the panel shows it.
+  { engine: 'playcanvas', kind: 'layerrig', page: 'layer-rig.html' },
+  // Crosstalk softening off: the crisp arrow mesh, exactly as before (ADR-046 Amendment 2 §B.7).
+  { engine: 'playcanvas', kind: 'model', soften: 'off' },
+  { engine: 'three', kind: 'model', soften: 'off' },
+  // Runtime ADR-046 Amendment 4: a fake layer whose browser draws the cursor — no sprite, no CSS
+  // hide; the cube front's RAW disparity handed over in device px, a withdrawal on leave.
+  { engine: 'playcanvas', kind: 'model', runtime: true },
+  { engine: 'three', kind: 'model', runtime: true },
+  { engine: 'playcanvas', kind: 'splat', runtime: true },
+  { engine: 'three', kind: 'splat', runtime: true },
+];
+
+async function loadPuppeteer() {
+  const candidates = [process.env.PUPPETEER_CORE, root, ...(process.env.PUPPETEER_CORE_PATHS || '').split(':')].filter(Boolean);
+  for (const dir of candidates) {
+    try {
+      const req = createRequire(join(dir, 'package.json'));
+      return (await import(pathToFileURL(req.resolve('puppeteer-core')).href)).default;
+    } catch {
+      /* next */
+    }
+  }
+  throw new Error('puppeteer-core not found: `npm i --no-save puppeteer-core`, or PUPPETEER_CORE=<dir containing node_modules/puppeteer-core>');
+}
+
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', '.gltf': 'model/gltf+json' };
+function serve() {
+  const srv = createServer(async (req, res) => {
+    const file = resolve(root, '.' + decodeURIComponent(new URL(req.url, 'http://x').pathname));
+    if (!file.startsWith(root)) return void res.writeHead(403).end();
+    try {
+      let f = file;
+      if ((await stat(f)).isDirectory()) f = join(f, 'index.html');
+      res.writeHead(200, { 'content-type': TYPES[extname(f)] || 'application/octet-stream', 'cache-control': 'no-store' });
+      res.end(await readFile(f));
+    } catch {
+      res.writeHead(404).end();
+    }
+  });
+  return new Promise((r) => srv.listen(0, '127.0.0.1', () => r({ srv, url: `http://127.0.0.1:${srv.address().port}` })));
+}
+
+async function main() {
+  if (!existsSync(CHROME)) throw new Error(`Chrome not found at ${CHROME} (set CHROME)`);
+  const only = process.argv.slice(2);
+  const puppeteer = await loadPuppeteer();
+  const { srv, url } = await serve();
+  const browser = await puppeteer.launch({
+    executablePath: CHROME,
+    headless: true,
+    args: ['--no-first-run', '--enable-gpu', '--ignore-gpu-blocklist', ...(process.platform === 'darwin' ? ['--use-angle=metal'] : [])],
+  });
+  const results = [];
+  try {
+    for (const c of CASES) {
+      const tag = `${c.engine}/${c.kind}${c.anchor ? `/${c.anchor}` : ''}${c.backdrop ? '/backdrop' : ''}${c.shadermat ? '/shadermat' : ''}${c.soften ? `/soften=${c.soften}` : ''}${c.touch ? '/touch' : ''}${c.runtime ? '/runtime' : ''}`;
+      if (only.length && !only.includes(tag)) continue;
+      const page = await browser.newPage();
+      page.on('pageerror', (e) => console.log(`  [pageerror] ${e.message}`));
+      // Any GL error fails the run, and so does a shader that fails to compile (the softened arrow's).
+      let glErrors = 0;
+      const shaderErrors = [];
+      page.on('console', (m) => {
+        const t = m.text();
+        if (/GL_INVALID|WebGL: too many errors/.test(t)) glErrors++;
+        if (/Shader Error|Failed to compile|WebGLProgram/i.test(t)) shaderErrors.push(t.slice(0, 300));
+        if (/inline3d|Uncaught|Shader|WebGL/i.test(t)) console.log(`  [page:${m.type()}] ${t.slice(0, 200)}`);
+      });
+      const t0 = Date.now();
+      await page.goto(`${url}/test/e2e/cursor-depth/${c.page || ''}?engine=${c.engine}&kind=${c.kind}&settle=90${c.anchor ? `&anchor=${c.anchor}` : ''}${c.backdrop ? '&backdrop=1' : ''}${c.shadermat ? '&shadermat=1' : ''}${c.soften ? `&soften=${c.soften}` : ''}${c.touch ? '&touch=1' : ''}${c.runtime ? '&runtime=1' : ''}`, { waitUntil: 'load' });
+      await page.waitForFunction(() => !document.getElementById('out').textContent.startsWith('running'), { timeout: TIMEOUT_MS, polling: 250 });
+      const r = JSON.parse(await page.evaluate(() => document.getElementById('out').textContent));
+      await page.close();
+      if (shaderErrors.length) {
+        r.pass = false;
+        r.error = `shader error: ${shaderErrors[0]}`;
+      }
+      const fmt = (x) => (x === null || x === undefined ? 'null' : x.toFixed(4));
+      if (r.runtime) {
+        const px = r.over?.sent?.[0]?.disparityPx;
+        console.log(`e2e: ${tag} ${r.pass ? 'PASS' : 'FAIL'} in ${Date.now() - t0} ms — sprite never drawn ${r.neverDrawn}, sent ${px === undefined ? 'none' : px.toFixed(2)} px` +
+          `${r.over?.cubeFrontDisparity != null ? ` (raw front ${(r.over.cubeFrontDisparity * r.over.pxPerBaseline).toFixed(2)} px)` : ''}, off ${JSON.stringify(r.off?.sent)}, leave ${JSON.stringify(r.afterLeave?.sent)}` +
+          `, ${r.calls} calls, GL errors ${glErrors}${r.error ? ` — ${r.error}` : ''}`);
+        results.push(!!r.pass && glErrors === 0);
+        continue;
+      }
+      console.log(`e2e: ${tag} ${r.pass ? 'PASS' : 'FAIL'} in ${Date.now() - t0} ms — over: cursor ${fmt(r.over?.cursorDisparity)}` +
+        `${r.over?.cubeFrontDisparity !== null && r.over?.cubeFrontDisparity !== undefined ? ` (front ${fmt(r.over.cubeFrontDisparity)})` : ''}, off: ${fmt(r.off?.cursorDisparity)}` +
+        `, head move ${r.headMove === null || r.headMove === undefined ? 'null' : r.headMove.toFixed(4)} (${r.anchor})` +
+        `, arrow ${r.over?.soft ? 'soft' : 'crisp'} (soften ${r.soften})` +
+        `, GL errors ${glErrors}${r.error ? ` — ${r.error}` : ''}`);
+      results.push(!!r.pass && glErrors === 0);
+    }
+  } finally {
+    await browser.close().catch(() => {});
+    srv.close();
+  }
+  if (!results.length || results.some((p) => !p)) throw new Error('cursor: depth e2e failed');
+  console.log('e2e: PASS');
+}
+
+main().then(
+  () => process.exit(0),
+  (err) => {
+    console.error(`e2e: FAIL — ${err.message}`);
+    process.exit(1);
+  },
+);

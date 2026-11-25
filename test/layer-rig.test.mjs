@@ -17,8 +17,13 @@ import {
   mul4,
   invertRigid,
   validateLayerRig,
+  validateLayerRigOptions,
+  layerRigPlane,
   LayerRigCameras,
   DEFAULT_VIEWER_DISTANCE_M,
+  nominalViewerDistanceFromInfo,
+  resolveViewerDistance,
+  layerRigLine,
 } from '../js/inline3d-splat-layer-rig.js';
 import { snapshotRig, attachPlayCanvasSplat } from '../js/inline3d-splat-playcanvas.js';
 import { installDom, makeCanvas } from './stubs.mjs';
@@ -186,6 +191,42 @@ test('EXACT: photo camera-rig view · M_i draws every point where the display ri
   assert.ok(worst < 1e-9, `max NDC error ${worst}`);
 });
 
+test('EXACT with a plane offset: the plane at D′ lands on the glass — the display rig through the window at D′, factors 1', () => {
+  const aspect = SCREEN.w / SCREEN.h;
+  const fr = cameraRigFrame(PHOTO);
+  for (const opt of [{ planeDistance: 3.3 }, { planeOffset: 0.05 }, { planeOffset: -0.08 }]) {
+    const Dp = layerRigPlane(fr, { viewerDistance: NOM, ...opt });
+    if (opt.planeOffset) near(Dp, 2.4 * (1 + opt.planeOffset / NOM), 1e-12, 'D′ = D(1 + offset/n)');
+    const k = layerRigGain(fr, { viewerDistance: NOM });
+    // oracle: the photo portal family's window at D′ (same vfov), display rig with factors 1
+    const R = roundDisplayRig({ ...PHOTO, convergenceDiopters: 1 / Dp }, SCREEN, NOM);
+    const q = [PHOTO.orientation.x, PHOTO.orientation.y, PHOTO.orientation.z, PHOTO.orientation.w];
+    let worst = 0;
+    for (const eyes of [[[-0.032, 0, NOM], [0.032, 0, NOM]], [[0.05, 0.03, 0.55], [0.114, 0.035, 0.56]]]) {
+      const entries = eyes.map((e) => cameraView(e, NOM, aspect, PHOTO));
+      const round = roundViews(entries, fr, k, [], Dp);
+      eyes.forEach((e, i) => {
+        const ref = displayView(e, SCREEN, R);
+        for (let a = 0; a < 3; a++) near(round[i].eye[a], ref.pose[12 + a], 1e-9, 'virtual eye = the D′ display rig eye');
+        for (let j = 0; j < 10; j++) {
+          const loc = [Math.sin(j * 1.3) * 0.5, Math.cos(j * 2.1) * 0.3, (j % 4) * 0.2 - 0.3];
+          const r = rot(q, loc);
+          const X = [0, 1, 2].map((c) => fr.N0[c] + Dp * fr.fwd[c] + r[c]);
+          const got = ndc(entries[i].proj, round[i].view, X);
+          const want = ndc(ref.proj, invertRigid(ref.pose), X);
+          worst = Math.max(worst, Math.abs(got[0] - want[0]), Math.abs(got[1] - want[1]));
+        }
+      });
+      // a point ON the D′ plane: zero disparity
+      const X0 = [0, 1, 2].map((c) => fr.N0[c] + Dp * fr.fwd[c] + rot(q, [0.2, -0.1, 0])[c]);
+      const pL = ndc(entries[0].proj, round[0].view, X0);
+      const pR = ndc(entries[1].proj, round[1].view, X0);
+      if (eyes[0][1] === 0) near(pL[0], pR[0], 1e-9, 'on the glass: no disparity');
+    }
+    assert.ok(worst < 1e-9, `${JSON.stringify(opt)}: max NDC error ${worst}`);
+  }
+});
+
 test('viewInv and view are inverses, and the view the engine will compose is P⁻¹·M', () => {
   const fr = cameraRigFrame(PHOTO);
   const entries = [[-0.03, 0, 0.6], [0.03, 0, 0.6]].map((e) => cameraView(e, 0.6, 1.5, PHOTO));
@@ -237,14 +278,17 @@ test('a round eye never reaches the window plane (a large gain, leaning in)', ()
   assert.ok(E); // (pose helper sanity)
 });
 
-test('validateLayerRig: names, ids and pc.Layer; bad rigs and options throw at the call', () => {
-  assert.deepEqual(validateLayerRig('Stage', 'display'), { rig: 'display', viewerDistance: null, gain: null });
+test('validateLayerRig / validateLayerRigOptions: names, ids and pc.Layer; options merge, null clears; bad ones throw', () => {
+  assert.deepEqual(validateLayerRig('Stage', 'display'), { rig: 'display', opts: {} });
   assert.equal(validateLayerRig(7, 'camera').rig, 'camera');
-  assert.equal(validateLayerRig({ id: 3 }, 'display', { viewerDistance: 0.7 }).viewerDistance, 0.7);
+  assert.deepEqual(validateLayerRig({ id: 3 }, 'display', { viewerDistance: 0.7, planeOffset: -0.02 }).opts, { viewerDistance: 0.7, planeOffset: -0.02 });
+  assert.deepEqual(validateLayerRigOptions({ gain: null, planeDistance: 3 }), { gain: null, planeDistance: 3 });
   assert.throws(() => validateLayerRig('', 'display'), TypeError);
   assert.throws(() => validateLayerRig('Stage', 'round'), /expected 'display' or 'camera'/);
   assert.throws(() => validateLayerRig('Stage', 'display', { gain: 0 }), /bad gain/);
   assert.throws(() => validateLayerRig('Stage', 'display', { viewerDistance: -1 }), /bad viewerDistance/);
+  assert.throws(() => validateLayerRig('Stage', 'display', { planeOffset: NaN }), /bad planeOffset/);
+  assert.throws(() => validateLayerRigOptions({ stageOffset: 1 }), /unknown option/);
 });
 
 test('snapshotRig copies the frame fields (the SDK rewrites its descriptor in place)', () => {
@@ -284,26 +328,41 @@ test('layerRuns: nothing to split without a display layer the eye draws; interle
 
 // ── the engine glue, on a fake engine ───────────────────────────────────────────────────────
 
-function fakeViewer({ eyeLayers = EYE.slice(), comp = COMP } = {}) {
+function fakeViewer({ eyeLayers = EYE.slice(), comp = COMP, path = 'renderview', names = { Stage: 10, World: 0, UI: 4 }, layerCams = {} } = {}) {
   const made = [];
-  const names = { Stage: 10, World: 0, UI: 4 };
   class RV {
     setView(p, vi, v) { this.proj = p; this.viewInv = Float64Array.from(vi); this.view = v ? Float64Array.from(v) : null; }
     setViewport(...a) { this.vp = a; }
   }
+  const layerObj = (id) => ({ id, cameras: layerCams[id] || [] });
+  const mkCam = (name) => {
+    const cam = {
+      name,
+      enabled: true,
+      camera: { layers: [], camera: { xrViews: null, setXrProperties(p) { this.xr = p; } } },
+      setLocalPosition(...p) { this.pos = p; },
+      setLocalRotation(...q) { this.rot = q; },
+    };
+    return cam;
+  };
   const v = {
-    pc: { RenderView: RV },
+    pc: { RenderView: RV, Vec4: class { constructor(...a) { this.v = a; } } },
+    canvas: { width: 1920, height: 540 },
     _frustumKey: 'k1',
-    app: { scene: { layers: { layerList: comp.map((id) => ({ id })), getLayerByName: (n) => (n in names ? { id: names[n] } : null) } } },
-    eye: { camera: { layers: eyeLayers } },
+    _viewPath: path === 'cameras' ? 'cameras' : 'renderview',
+    app: {
+      scene: {
+        layers: {
+          layerList: comp.map((id) => ({ id })),
+          getLayerByName: (n) => (n in names ? layerObj(names[n]) : null),
+          getLayerById: (id) => (comp.includes(id) ? layerObj(id) : null),
+        },
+      },
+    },
+    eye: path === 'cameras' ? null : { camera: { layers: eyeLayers } },
+    _views: path === 'cameras' ? [0, 1].map((i) => Object.assign(mkCam(`inline3d-eye-${i}`), { camera: { layers: eyeLayers.slice() } })) : [],
     _makeCamera(name) {
-      const cam = {
-        name,
-        enabled: true,
-        camera: { layers: [], camera: { xrViews: null, setXrProperties(p) { this.xr = p; } } },
-        setLocalPosition(...p) { this.pos = p; },
-        setLocalRotation(...q) { this.rot = q; },
-      };
+      const cam = mkCam(name);
       made.push(cam);
       return cam;
     },
@@ -314,12 +373,16 @@ const rect = (e) => [e.x, e.y, e.width, e.height];
 function stereo(rig = PHOTO) {
   return [[-0.032, 0, 0.6], [0.032, 0, 0.6]].map((e, i) => ({ ...cameraView(e, 0.6, 16 / 9, rig), x: i * 960, y: 0, width: 960, height: 540 }));
 }
+const quiet = (t) => t.mock.method(console, 'warn', () => {});
 
-test('LayerRigCameras: the stage layer moves to a display camera (priority 1), UI/Immediate to a post camera (priority 2); rounded views; depth cleared', () => {
+test('LayerRigCameras (renderviews): stage → display camera (priority 1), UI/Immediate → post camera (priority 2); rounded views; engaged', (t) => {
+  const warns = [];
+  t.mock.method(console, 'warn', (m) => warns.push(m));
   const { v, made } = fakeViewer();
   const lr = new LayerRigCameras(v);
   lr.set('Stage', 'display', { viewerDistance: 0.6 });
-  assert.equal(lr.sync(), true);
+  const entries = stereo();
+  lr.frame(entries, rect, { fov: 50 }, PHOTO, { located: true });
   assert.deepEqual(v.eye.camera.layers, [0, 1, 2], 'the eye keeps what draws before the stage');
   const [disp, post] = made;
   assert.equal(disp.camera.priority, 1);
@@ -330,57 +393,126 @@ test('LayerRigCameras: the stage layer moves to a display camera (priority 1), U
     assert.equal(c.camera.clearColorBuffer, false, 'never clears the photo');
     assert.equal(c.camera.frustumCulling, false);
   }
-  const entries = stereo();
-  lr.frame(entries, rect, { fov: 50 }, PHOTO);
   const rvs = disp.camera.camera.xrViews;
-  assert.equal(rvs.length, 2, 'one RenderView per view');
-  assert.deepEqual(rvs[1].vp, [960, 0, 960, 540], 'same viewports as the eye');
+  assert.equal(rvs.length, 2);
+  assert.deepEqual(rvs[1].vp, [960, 0, 960, 540]);
   assert.equal(rvs[0].proj, entries[0].proj, 'the runtime projection, verbatim');
   const want = roundViews(entries, cameraRigFrame(PHOTO), 2.4 / 0.6);
   assert.deepEqual([...rvs[0].viewInv], [...want[0].viewInv]);
-  assert.equal(disp.camera.clearDepthBuffer, true, 'two camera spaces never share a depth test');
-  assert.equal(lr.last.rounded, true);
-  // the post camera: the PHOTO views, unmodified
-  assert.deepEqual([...post.camera.camera.xrViews[0].viewInv], [...entries[0].pose]);
-  assert.equal(post.camera.camera.xr.fov, 50);
+  assert.equal(disp.camera.clearDepthBuffer, true);
+  assert.deepEqual([...post.camera.camera.xrViews[0].viewInv], [...entries[0].pose], 'post: the photo views');
+  const st = lr.state();
+  assert.equal(st.path, 'renderviews');
+  assert.equal(st.engaged, true);
+  assert.equal(st.reason, null);
+  near(st.gain, 4, 1e-12, 'gain');
+  near(st.planeM, 2.4, 1e-12, 'the photo convergence plane lands on the glass');
+  assert.equal(st.located, true);
+  assert.equal(warns.length, 1, 'one WARN on the first 3D frame');
+  assert.match(warns[0], /path=renderviews engaged=true layers=\[Stage\] viewerDistance=0\.60m\(page\) gain=4\.000 planeM=2\.400/);
+  lr.frame(entries, rect, { fov: 50 }, PHOTO, { located: true });
+  assert.equal(warns.length, 1, 'no repeat while nothing changes');
 });
 
-test('LayerRigCameras: mono and a display rig draw the stage through the photo views, depth kept (identical to today)', () => {
+test('LayerRigCameras (ncamera): N display cameras at the views’ rects, the shear in the projection — the same pixels as the RenderView path', (t) => {
+  quiet(t);
+  const { v, made } = fakeViewer({ path: 'cameras' });
+  const lr = new LayerRigCameras(v);
+  lr.set('Stage', 'display', {});
+  const entries = stereo();
+  lr.frame(entries, rect, null, PHOTO, { located: true });
+  for (const e of v._views) assert.deepEqual(e.camera.layers, [0, 1, 2], 'every eye camera drops the stage');
+  const disp = made.filter((c) => c.camera.priority === 1);
+  const post = made.filter((c) => c.camera.priority === 2);
+  assert.equal(disp.length, 2, 'one display camera per view');
+  assert.equal(post.length, 2, 'one post camera per view');
+  assert.deepEqual(disp[1].camera.rect.v, [0.5, 0, 0.5, 1]);
+  const st = lr.state();
+  assert.equal(st.path, 'ncamera');
+  assert.equal(st.engaged, true);
+  // What the engine draws with: proj' · (rig-space node)⁻¹ must equal proj · view_round.
+  const want = roundViews(entries, cameraRigFrame(PHOTO), 4);
+  for (let i = 0; i < 2; i++) {
+    const node = pose(disp[i].pos, [disp[i].rot[0], disp[i].rot[1], disp[i].rot[2], disp[i].rot[3]]);
+    const got = mul4(disp[i]._dxrProj, invertRigid(node));
+    const exp = mul4(entries[i].proj, want[i].view);
+    for (let j = 0; j < 16; j++) near(got[j], exp[j], 1e-9, `view ${i} element ${j}`);
+  }
+  // post cameras: the photo's own projection and pose
+  assert.deepEqual([...post[0]._dxrProj], [...entries[0].proj]);
+});
+
+test('LayerRigCameras: mono and a display rig draw the stage through the photo views, depth kept — and say why', (t) => {
+  quiet(t);
   const { v, made } = fakeViewer();
   const lr = new LayerRigCameras(v);
   lr.set(10, 'display', {});
-  lr.sync();
   const mono = stereo().slice(0, 1);
   lr.frame(mono, rect, { fov: 50 }, PHOTO);
   const disp = made[0];
   assert.deepEqual([...disp.camera.camera.xrViews[0].viewInv], [...mono[0].pose]);
   assert.equal(disp.camera.clearDepthBuffer, false);
-  assert.equal(lr.last.rounded, false);
+  assert.equal(lr.state().path, 'mono');
+  assert.equal(lr.state().engaged, false);
+  assert.match(lr.state().reason, /mono/);
   const e2 = stereo();
   lr.frame(e2, rect, { fov: 50 }, { type: 'display', virtualDisplayHeight: 0.24 });
   assert.deepEqual([...disp.camera.camera.xrViews[1].viewInv], [...e2[1].pose]);
-  assert.equal(lr.last.rounded, false);
+  assert.equal(lr.state().engaged, false);
+  assert.match(lr.state().reason, /display rig/);
 });
 
-test('LayerRigCameras: back to the camera rig (and the kill switch) restores the eye camera exactly', () => {
+test('LayerRigCameras: NEVER silent — a missing layer and a layer another camera draws are named in reason', (t) => {
+  quiet(t);
+  const other = { entity: { name: 'AppStageCamera' } };
+  const { v } = fakeViewer({ names: { Stage: 10, Other: 11 }, comp: [...COMP, 11], layerCams: { 11: [other] } });
+  const lr = new LayerRigCameras(v);
+  lr.set('Nope', 'display', {});
+  lr.set('Other', 'display', {});
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  const st = lr.state();
+  assert.equal(st.engaged, false);
+  assert.match(st.reason, /"Nope" is not in the tile's layer composition/);
+  assert.match(st.reason, /"Other" is drawn by AppStageCamera, not by the tile's eye camera/);
+  lr.set('Stage', 'display', {});
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  assert.equal(lr.state().engaged, true, 'the resolvable layer engages');
+  assert.match(lr.state().reason, /^engaged; .*Nope/, 'the others still reported');
+});
+
+test('LayerRigCameras: a display layer NO camera draws is adopted (in composition order) — the N-camera path has no handle.engine.camera', (t) => {
+  quiet(t);
+  const { v, made } = fakeViewer({ eyeLayers: [0, 1, 2, 3, 4] }); // Stage (10) in the composition, on no camera
+  const lr = new LayerRigCameras(v);
+  lr.set('Stage', 'display', {});
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  assert.equal(lr.state().engaged, true);
+  assert.deepEqual(made[0].camera.layers, [10]);
+  assert.deepEqual(v.eye.camera.layers, [0, 1, 2]);
+});
+
+test('LayerRigCameras: back to the camera rig (and the kill switch) restores the eye camera exactly', (t) => {
+  quiet(t);
   const { v, made } = fakeViewer();
   const lr = new LayerRigCameras(v);
   lr.set('Stage', 'display', {});
-  lr.sync();
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
   lr.set('Stage', 'camera', {});
-  assert.equal(lr.sync(), false);
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
   assert.deepEqual([...v.eye.camera.layers].sort((a, b) => a - b), [...EYE].sort((a, b) => a - b));
   assert.ok(made.every((c) => c.enabled === false), 'run cameras off');
   const k = fakeViewer();
   const lr2 = new LayerRigCameras(k.v);
   lr2.disabled = true;
   lr2.set('Stage', 'display', {});
-  assert.equal(lr2.sync(), false);
+  lr2.frame(stereo(), rect, { fov: 50 }, PHOTO);
   assert.deepEqual(k.v.eye.camera.layers, EYE, 'kill switch: never moved');
   assert.equal(k.made.length, 0, 'no camera made');
+  assert.match(lr2.state().reason, /kill switch/);
 });
 
-test('LayerRigCameras: a layer named before it exists is picked up when the page adds it', () => {
+test('LayerRigCameras: a layer named before it exists is picked up when the page adds it', (t) => {
+  quiet(t);
   const { v } = fakeViewer({ comp: [0, 1, 2, 0, 3, 3, 4], eyeLayers: [0, 1, 2, 3, 4] });
   const lr = new LayerRigCameras(v);
   lr.set('Stage', 'display', {});
@@ -389,6 +521,145 @@ test('LayerRigCameras: a layer named before it exists is picked up when the page
   v.eye.camera.layers = EYE.slice();
   assert.equal(lr.sync(), true);
   assert.deepEqual(v.eye.camera.layers, [0, 1, 2]);
+});
+
+test('options merge across calls; setOptions changes the plane live', (t) => {
+  quiet(t);
+  const { v } = fakeViewer();
+  const lr = new LayerRigCameras(v);
+  lr.set('Stage', 'display', { viewerDistance: 0.5 });
+  lr.setOptions({ planeOffset: 0.03 });
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  near(lr.state().planeM, 2.4 * (1 + 0.03 / 0.5), 1e-12, 'planeM = D(1 + offset/n)');
+  assert.equal(lr.state().viewerDistance, 0.5, 'kept across the second call');
+  lr.setOptions({ planeDistance: 3.1 });
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  assert.equal(lr.state().planeM, 3.1, 'planeDistance wins');
+  lr.setOptions({ planeDistance: null, planeOffset: null });
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  near(lr.state().planeM, 2.4, 1e-12, 'cleared');
+});
+
+// ── n from the browser: XRDisplayInfo.nominalViewerPosition ─────────────────────────────────
+
+const pt = (x, y, z) => ({ x, y, z, w: 1 }); // DOMPointReadOnly's shape
+const infoWith = (p) => ({ displayWidthMeters: 0.34, displayHeightMeters: 0.19, nominalViewerPosition: p });
+/** A fake XRDisplayLayer whose getDisplayInfo resolves `info` (or runs `impl`), counting calls. */
+function fakeLayer(info, impl) {
+  const layer = { calls: 0, getDisplayInfo() { this.calls++; return impl ? impl() : Promise.resolve(info); } };
+  return layer;
+}
+
+test('nominalViewerDistanceFromInfo: the position\'s z (what the camera rig reads), never its length; absent/unusable → null', () => {
+  assert.equal(nominalViewerDistanceFromInfo(infoWith(pt(0, 0, 0.45))), 0.45);
+  assert.equal(nominalViewerDistanceFromInfo(infoWith(pt(0.1, 0.2, 0.5))), 0.5, 'z, not hypot(0.1, 0.2, 0.5)');
+  for (const bad of [null, undefined, {}, infoWith(undefined), infoWith(null), infoWith(pt(0, 0, 0)), infoWith(pt(0, 0, -0.5)), infoWith(pt(0, 0, NaN)), infoWith(pt(0, 0, Infinity)), infoWith({ x: 0, y: 0 })]) {
+    assert.equal(nominalViewerDistanceFromInfo(bad), null, JSON.stringify(bad));
+  }
+});
+
+test('resolveViewerDistance: page option > browser > 0.6 m default, with the source named', () => {
+  assert.deepEqual(resolveViewerDistance(null, null), { value: DEFAULT_VIEWER_DISTANCE_M, source: 'default' });
+  assert.deepEqual(resolveViewerDistance(undefined, 0.45), { value: 0.45, source: 'browser' });
+  assert.deepEqual(resolveViewerDistance(0.7, 0.45), { value: 0.7, source: 'page' });
+  assert.deepEqual(resolveViewerDistance(0.7, null), { value: 0.7, source: 'page' });
+});
+
+test('LayerRigCameras: the browser\'s nominal viewer drives the gain and the plane; a page viewerDistance wins; null falls back to it', async (t) => {
+  quiet(t);
+  const { v } = fakeViewer();
+  const lr = new LayerRigCameras(v);
+  lr.set('Stage', 'display', { planeOffset: 0.03 });
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  assert.equal(lr.state().viewerDistanceSource, 'default', 'before the browser answered');
+  near(lr.state().gain, 2.4 / DEFAULT_VIEWER_DISTANCE_M, 1e-12, 'k = D/0.6');
+
+  const layer = fakeLayer(infoWith(pt(0, 0, 0.45)));
+  await lr.noteLayer(layer);
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  let st = lr.state();
+  assert.equal(st.viewerDistance, 0.45);
+  assert.equal(st.viewerDistanceSource, 'browser');
+  near(st.gain, 2.4 / 0.45, 1e-12, 'k = D/n_browser');
+  near(st.planeM, 2.4 * (1 + 0.03 / 0.45), 1e-12, 'planeM = D(1 + offset/n_browser)');
+  assert.match(layerRigLine(st), /viewerDistance=0\.45m\(browser\)/);
+
+  lr.setOptions({ viewerDistance: 0.7 });
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  st = lr.state();
+  assert.equal(st.viewerDistanceSource, 'page');
+  near(st.gain, 2.4 / 0.7, 1e-12, 'the page pins n');
+
+  lr.setOptions({ viewerDistance: null });
+  lr.frame(stereo(), rect, { fov: 50 }, PHOTO);
+  assert.equal(lr.state().viewerDistanceSource, 'browser', 'clearing the page value goes back to the browser, not 0.6');
+
+  lr.noteLayer(layer);
+  lr.noteLayer(layer);
+  assert.equal(layer.calls, 1, 'asked once per tile');
+});
+
+test('LayerRigCameras.noteLayer: no API, no field, a null info → the 0.6 m default; a rejection is retried a bounded number of times', async (t) => {
+  quiet(t);
+  const mk = () => {
+    const lr = new LayerRigCameras(fakeViewer().v);
+    lr.set('Stage', 'display');
+    return lr;
+  };
+  let lr = mk();
+  lr.noteLayer({}); // an older browser: no getDisplayInfo
+  lr.noteLayer(null);
+  assert.equal(lr.state().viewerDistanceSource, 'default');
+
+  for (const info of [null, { displayWidthMeters: 0.34 }, infoWith(pt(0, 0, 0))]) {
+    lr = mk();
+    const layer = fakeLayer(info);
+    await lr.noteLayer(layer);
+    await lr.noteLayer(layer);
+    assert.equal(layer.calls, 1, 'a resolved answer (even "none") settles it');
+    assert.equal(lr.state().viewerDistanceSource, 'default', JSON.stringify(info));
+    assert.equal(lr.state().viewerDistance, DEFAULT_VIEWER_DISTANCE_M);
+  }
+
+  lr = mk();
+  const rejecting = fakeLayer(null, () => Promise.reject(new Error('no live layer')));
+  for (let i = 0; i < 6; i++) await lr.noteLayer(rejecting);
+  assert.equal(rejecting.calls, 3, 'retried, but not forever');
+  assert.equal(lr.state().viewerDistanceSource, 'default');
+
+  lr = mk();
+  const throwing = fakeLayer(null, () => { throw new Error('sync throw'); });
+  await lr.noteLayer(throwing); // must not throw out of the frame callback
+  assert.equal(lr.state().viewerDistanceSource, 'default');
+
+  lr = mk();
+  let calls = 0;
+  const late = fakeLayer(null, () => (++calls === 1 ? Promise.reject(new Error('not yet')) : Promise.resolve(infoWith(pt(0, 0, 0.5)))));
+  await lr.noteLayer(late);
+  await lr.noteLayer(late);
+  assert.equal(lr.state().viewerDistanceSource, 'browser', 'a later ask can still land');
+  assert.equal(lr.state().viewerDistance, 0.5);
+});
+
+test('handle: onFrame hands the XRDisplayLayer to the layer rig (only once a layer is on the display rig), and layerRigState reports the source', async (t) => {
+  installDom();
+  quiet(t);
+  const pc = { createGraphicsDevice: () => new Promise(() => {}) }; // never boots
+  const out = {};
+  attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'x.sog', { playcanvas: pc }, []);
+  assert.equal(out.layerRigState().viewerDistanceSource, 'default', 'no layer rig yet');
+  const layer = fakeLayer(infoWith(pt(0, 0, 0.42)));
+  out.viewer.onFrame(null, layer);
+  assert.equal(layer.calls, 0, 'nothing on the display rig: nothing asked');
+  out.setLayerRig('Stage', 'display');
+  out.viewer.onFrame(null, layer);
+  assert.equal(layer.calls, 1);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(out.layerRigState().viewerDistance, 0.42);
+  assert.equal(out.layerRigState().viewerDistanceSource, 'browser');
+  out.setLayerRigOptions({ viewerDistance: 0.6 });
+  assert.equal(out.layerRigState().viewerDistanceSource, 'page');
+  out.remove();
 });
 
 // ── makeSbsMaterial ─────────────────────────────────────────────────────────────────────────
@@ -419,16 +690,23 @@ test('makeSbsMaterial: left / right regions, the scene-wide split uniform, mono 
 
 // ── the handle ──────────────────────────────────────────────────────────────────────────────
 
-test('handle: setLayerRig is callable before the engine boots, validates at the call, and chains', (t) => {
+test('handle: setLayerRig / setLayerRigOptions are callable before the engine boots, validate at the call, and chain', () => {
   installDom();
   const pc = { createGraphicsDevice: () => new Promise(() => {}) }; // never boots
   const out = {};
   attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'x.sog', { playcanvas: pc }, []);
   assert.equal(out.setLayerRig('Stage', 'display', { viewerDistance: 0.7 }), out);
-  assert.deepEqual(out.layerRigState(), { display: ['Stage'], disabled: false, rounded: false, gain: null });
+  assert.equal(out.setLayerRigOptions({ planeOffset: 0.02 }), out);
+  const st = out.layerRigState();
+  assert.deepEqual(st.display, ['Stage']);
+  assert.equal(st.engaged, false);
+  assert.equal(st.viewerDistance, 0.7);
+  assert.equal(st.planeOffset, 0.02);
+  assert.equal(st.reason, 'no frame drawn yet');
   out.setLayerRig('Stage', 'camera');
   assert.deepEqual(out.layerRigState().display, []);
   assert.throws(() => out.setLayerRig('Stage', 'round'), /expected 'display' or 'camera'/);
+  assert.throws(() => out.setLayerRigOptions({ bogus: 1 }), /unknown option/);
   assert.throws(() => out.makeSbsMaterial({}), /needs the engine/);
   out.remove();
 });
@@ -438,13 +716,35 @@ test('handle: addSplat displayRigLayers sugar, and the nolayerrig kill switch', 
   t.mock.method(console, 'info', () => {});
   const pc = { createGraphicsDevice: () => new Promise(() => {}) };
   const a = {};
-  attachPlayCanvasSplat(a, null, makeCanvas(320, 180), 'x.sog', { playcanvas: pc, displayRigLayers: { layers: ['Stage', 7], gain: 2 } }, []);
+  attachPlayCanvasSplat(a, null, makeCanvas(320, 180), 'x.sog', { playcanvas: pc, displayRigLayers: { layers: ['Stage', 7], gain: 2, planeOffset: 0.01 } }, []);
   assert.deepEqual(a.layerRigState().display, ['Stage', 7]);
-  assert.deepEqual(a.viewer.layerRigs.opts, { viewerDistance: null, gain: 2 });
+  assert.equal(a.viewer.layerRigs.opts.gain, 2);
+  assert.equal(a.viewer.layerRigs.opts.planeOffset, 0.01);
   a.remove();
   const b = {};
   attachPlayCanvasSplat(b, null, makeCanvas(320, 180), 'x.sog', { playcanvas: pc, displayRigLayers: ['Stage'], diag: 'nolayerrig,nooverlay' }, []);
   assert.equal(b.layerRigState().disabled, true, 'recorded, never applied');
+  assert.match(b.layerRigState().reason, /kill switch/);
   b.remove();
   assert.throws(() => attachPlayCanvasSplat({}, null, makeCanvas(320, 180), 'x.sog', { playcanvas: pc, displayRigLayers: 'Stage' }, []), /displayRigLayers/);
+});
+
+test('handle: setRenderScale changes the buffer scale live, schedules one resize, validates, and chains', () => {
+  installDom();
+  const pc = { createGraphicsDevice: () => new Promise(() => {}) };
+  const out = {};
+  attachPlayCanvasSplat(out, null, makeCanvas(320, 180), 'x.sog', { playcanvas: pc, renderScale: 0.6 }, []);
+  assert.equal(out.renderScale, 0.6);
+  let resizes = 0;
+  const orig = out.viewer._scheduleResize.bind(out.viewer);
+  out.viewer._scheduleResize = () => { resizes++; orig(); };
+  assert.equal(out.setRenderScale(1), out);
+  assert.equal(out.renderScale, 1, 'the accessor is live, not a copy');
+  assert.equal(out.viewer.renderScale, 1);
+  assert.equal(resizes, 1);
+  out.setRenderScale(1);
+  assert.equal(resizes, 1, 'no resize when nothing changed');
+  for (const bad of [0, -1, 5, NaN, '1', null]) assert.throws(() => out.setRenderScale(bad), RangeError);
+  assert.equal(out.renderScale, 1);
+  out.remove();
 });

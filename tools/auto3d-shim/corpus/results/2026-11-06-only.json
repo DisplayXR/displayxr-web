@@ -1,0 +1,737 @@
+{
+  "date": "2026-11-06",
+  "tag": "2026-11-06-only",
+  "verdict": "NO HARM FOUND: 10 PASS, 2 REVIEW, 0 unreachable",
+  "counts": {
+    "PASS": 10,
+    "REVIEW": 2,
+    "FAIL": 0,
+    "ERROR": 0
+  },
+  "bundle": {
+    "version": "0.7.1",
+    "sourceCommit": "fab45618aef7ac6fadb7f190648cc347abdb2358+dirty"
+  },
+  "chrome": "Chrome/157.0.8103.39",
+  "totalSeconds": 278,
+  "secondsPerSite": 23,
+  "estimatedFullRunMinutes": 29,
+  "budget": {
+    "sentinelMs": 0.5,
+    "allowedProto": [
+      "HTMLCanvasElement.getContext (changed)"
+    ],
+    "allowedKeys": [
+      "__THREE_DEVTOOLS__"
+    ],
+    "allowedKeysWebGL": [
+      "__THREE_DEVTOOLS__",
+      "pc"
+    ]
+  },
+  "rows": [
+    {
+      "id": "google-maps",
+      "group": "plain",
+      "url": "https://www.google.com/maps/@37.7749,-122.4194,15z",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 0,
+      "webglContexts": 3,
+      "webgpuContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 61,
+        "injected": 60
+      },
+      "moMs": 2.3,
+      "moCalls": 95,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [],
+      "title": "Google 지도",
+      "finalUrl": "https://www.google.com/maps/@37.7749,-122.4194,15z?entry=ttu&g_ep=EgoyMDI2MTEwMy4wIKXMDSoASAFQAw%3D%3D",
+      "partialLoad": false,
+      "sentinelMsCold": 3.2,
+      "sentinelMsWarm": [
+        0.2,
+        0.3,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "bjsTrapArms": 0,
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__",
+        "closure_lm_628652",
+        "closure_lm_326515",
+        "closure_uid_89515048",
+        "closure_lm_537630"
+      ],
+      "keysNoise": [
+        "closure_lm_628652",
+        "closure_lm_326515",
+        "closure_uid_89515048",
+        "closure_lm_537630"
+      ],
+      "ourTimers": {
+        "created": 19,
+        "pending": 2,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at startPoll (dxr-auto3d-sentinel.js:233:13) < at onContext (dxr-auto3d-sentinel.js:370:7)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at poll (dxr-auto3d-sentinel.js:240:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:26:147)",
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at scheduleSweep (dxr-auto3d-sentinel.js:200:14) < at HTMLDocument.onReady (dxr-auto3d-sentinel.js:396:9)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at poll (dxr-auto3d-sentinel.js:240:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:26:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at poll (dxr-auto3d-sentinel.js:240:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:26:147)"
+        ]
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 20469
+    },
+    {
+      "id": "maplibre",
+      "group": "plain",
+      "url": "https://maplibre.org/maplibre-gl-js/docs/examples/display-a-map/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 0,
+      "webglContexts": 0,
+      "webgpuContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 61,
+        "injected": 61
+      },
+      "moMs": 0.8,
+      "moCalls": 10,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [],
+      "title": "Display a map - MapLibre GL JS",
+      "finalUrl": "https://maplibre.org/maplibre-gl-js/docs/examples/display-a-map/",
+      "partialLoad": false,
+      "sentinelMsCold": 1.8,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "bjsTrapArms": 0,
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 19074
+    },
+    {
+      "id": "cesium",
+      "group": "plain",
+      "url": "https://sandcastle.cesium.com/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 0,
+      "webglContexts": 0,
+      "webgpuContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 60,
+        "injected": 61
+      },
+      "moMs": 0.4,
+      "moCalls": 6,
+      "moMaxMs": 0.2,
+      "warmErrors": [],
+      "reports": [],
+      "title": "Sandcastle | CesiumJS",
+      "finalUrl": "https://sandcastle.cesium.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 2.8,
+      "sentinelMsWarm": [
+        0.1,
+        0.2,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "bjsTrapArms": 0,
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 18977
+    },
+    {
+      "id": "google-earth",
+      "group": "plain",
+      "url": "https://earth.google.com/web/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 1.86,
+      "coreEvalMs": 0,
+      "webglContexts": 4,
+      "webgpuContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 59,
+        "injected": 60
+      },
+      "moMs": 0.71,
+      "moCalls": 30,
+      "moMaxMs": 0.16,
+      "warmErrors": [],
+      "reports": [],
+      "title": "Google Earth",
+      "finalUrl": "https://earth.google.com/web/@0,-0.21170483,0a,22251752.77375655d,35y,0h,0t,0r/data=CgRCAggBQgIIAEoNCP___________wEQAA",
+      "partialLoad": false,
+      "sentinelMsCold": 1.985,
+      "sentinelMsWarm": [
+        1.705,
+        5.93,
+        1.86
+      ],
+      "costNotJudged": "warm 1.86 ms not judged: every reload lands in a new renderer process (2026-11-06: new renderer pids per reload; Google Maps keeps its), so the warm samples are cold ones: 1.66 ms on v0.7.0 and v0.7.1 alike",
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "bjsTrapArms": 0,
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__",
+        "__zone_symbol__loadfalse"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 17,
+        "pending": 2,
+        "where": [
+          "timeout 9874.425000011921 ms: at note (eval at <anonymous> (:1:37), <anonymous>:24:46) < at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at scheduleSweep (dxr-auto3d-sentinel.js:200:14)",
+          "timeout 500 ms: at note (eval at <anonymous> (:1:37), <anonymous>:24:46) < at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at startPoll (dxr-auto3d-sentinel.js:233:13)",
+          "timeout 500 ms: at note (eval at <anonymous> (:1:37), <anonymous>:24:46) < at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at poll (dxr-auto3d-sentinel.js:240:33)",
+          "timeout 500 ms: at note (eval at <anonymous> (:1:37), <anonymous>:24:46) < at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at poll (dxr-auto3d-sentinel.js:240:33)",
+          "timeout 500 ms: at note (eval at <anonymous> (:1:37), <anonymous>:24:46) < at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at poll (dxr-auto3d-sentinel.js:240:33)"
+        ]
+      },
+      "ourLogs": [],
+      "verdict": "REVIEW",
+      "reasons": [
+        "window keys not in the control load (likely page nondeterminism): __zone_symbol__loadfalse"
+      ],
+      "controlLoads": 2,
+      "ms": 37810
+    },
+    {
+      "id": "mapbox",
+      "group": "plain",
+      "url": "https://www.mapbox.com/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 0,
+      "webglContexts": 0,
+      "webgpuContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 4.9,
+      "moCalls": 78,
+      "moMaxMs": 0.3,
+      "warmErrors": [
+        "Clearbit: Please migrate to the new script. See https://grow.clearbit.com/migrate",
+        "Failed to load resource: the server responded with a status of # (Forbidden)"
+      ],
+      "reports": [],
+      "title": "Mapbox | Maps, Navigation, Search, and Data",
+      "finalUrl": "https://www.mapbox.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 3.4,
+      "sentinelMsWarm": [
+        0.1,
+        0.2,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "bjsTrapArms": 0,
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__",
+        "jQuery35106588529781131181"
+      ],
+      "keysNoise": [
+        "jQuery35106588529781131181"
+      ],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 25424
+    },
+    {
+      "id": "deckgl",
+      "group": "plain",
+      "url": "https://deck.gl/examples/hexagon-layer",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 0,
+      "webglContexts": 2,
+      "webgpuContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 58,
+        "injected": 60
+      },
+      "moMs": 0.8,
+      "moCalls": 51,
+      "moMaxMs": 0.2,
+      "warmErrors": [
+        "Failed to load resource: the server responded with a status of # ()"
+      ],
+      "reports": [],
+      "title": "deck.gl",
+      "finalUrl": "https://deck.gl/examples/hexagon-layer",
+      "partialLoad": false,
+      "sentinelMsCold": 2.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.5,
+        0
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "bjsTrapArms": 0,
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 17,
+        "pending": 2,
+        "where": [
+          "timeout 10000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at scheduleSweep (dxr-auto3d-sentinel.js:200:14) < at arm (dxr-auto3d-sentinel.js:184:5)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at startPoll (dxr-auto3d-sentinel.js:233:13) < at onContext (dxr-auto3d-sentinel.js:370:7)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at poll (dxr-auto3d-sentinel.js:240:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:26:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at poll (dxr-auto3d-sentinel.js:240:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:26:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at poll (dxr-auto3d-sentinel.js:240:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:26:147)"
+        ]
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 19118
+    },
+    {
+      "id": "arcgis-scene",
+      "group": "plain",
+      "url": "https://developers.arcgis.com/javascript/latest/sample-code/intro-sceneview/live/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 0,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 56,
+        "injected": 60
+      },
+      "moMs": 8.4,
+      "moCalls": 78,
+      "moMaxMs": 0.6,
+      "warmErrors": [],
+      "reports": [],
+      "title": "Intro to SceneView - Create a 3D map | Sample | ArcGIS Maps SDK for JavaScript",
+      "finalUrl": "https://developers.arcgis.com/javascript/latest/sample-code/intro-sceneview/",
+      "partialLoad": false,
+      "sentinelMsCold": 0.2,
+      "sentinelMsWarm": [
+        0.2,
+        0.2,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "bjsTrapArms": 0,
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 15,
+        "pending": 2,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at startPoll (dxr-auto3d-sentinel.js:233:13) < at onContext (dxr-auto3d-sentinel.js:370:7)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at poll (dxr-auto3d-sentinel.js:240:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:26:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at poll (dxr-auto3d-sentinel.js:240:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:26:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at poll (dxr-auto3d-sentinel.js:240:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:26:147)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at poll (dxr-auto3d-sentinel.js:240:33) < at eval (eval at <anonymous> (:1:37), <anonymous>:26:147)"
+        ]
+      },
+      "ourLogs": [],
+      "verdict": "REVIEW",
+      "reasons": [
+        "our MutationObserver spent 8.4 ms in 78 callback(s), longest 0.6 ms"
+      ],
+      "ms": 18106
+    },
+    {
+      "id": "webgpu-samples",
+      "group": "plain",
+      "url": "https://webgpu.github.io/webgpu-samples/sample/rotatingCube/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 0,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [],
+      "fps": {
+        "control": 60,
+        "injected": 61
+      },
+      "moMs": 0.1,
+      "moCalls": 3,
+      "moMaxMs": 0.1,
+      "warmErrors": [],
+      "reports": [],
+      "title": "webgpu-samples: rotatingCube",
+      "finalUrl": "https://webgpu.github.io/webgpu-samples/sample/rotatingCube/",
+      "partialLoad": false,
+      "sentinelMsCold": 2.1,
+      "sentinelMsWarm": [
+        0.1,
+        0.1,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "bjsTrapArms": 0,
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 17697
+    },
+    {
+      "id": "three-bloom",
+      "group": "engine",
+      "url": "https://threejs.org/examples/webgl_postprocessing_unreal_bloom.html",
+      "outcome": "converted",
+      "engine": "three.js",
+      "loadCore": 1,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 2.4,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "three.js r187"
+      ],
+      "fps": {
+        "control": 59,
+        "injected": 60
+      },
+      "moMs": 0.3,
+      "moCalls": 4,
+      "moMaxMs": 0.2,
+      "warmErrors": [],
+      "reports": [
+        "idle@1255",
+        "converting:three.js@1627",
+        "live:three.js@2002"
+      ],
+      "title": "three.js webgl - postprocessing - unreal bloom",
+      "finalUrl": "https://threejs.org/examples/webgl_postprocessing_unreal_bloom.html",
+      "partialLoad": false,
+      "sentinelMsCold": 2.3,
+      "sentinelMsWarm": [
+        0.2,
+        0.2,
+        0.2
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "bjsTrapArms": 0,
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 5,
+        "pending": 1,
+        "where": [
+          "timeout 9999.899999976158 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at scheduleSweep (dxr-auto3d-sentinel.js:200:14) < at arm (dxr-auto3d-sentinel.js:184:5)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at startPoll (dxr-auto3d-sentinel.js:233:13) < at onContext (dxr-auto3d-sentinel.js:370:7)",
+          "timeout 3000 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at probeMirror (dxr-auto3d-core.js:2485:25) < at eval (dxr-auto3d-core.js:2106:43)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at activate (dxr-auto3d-core.js:256:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at expandFor (dxr-auto3d-core.js:1530:19) < at refresh (dxr-auto3d-core.js:1514:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.7.1)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.7.1)",
+        "[info] [dxr-auto3d] Babylon.js adapter armed (core v0.7.1)",
+        "[info] [dxr-auto3d] core armed (v0.7.1) ",
+        "[info] [dxr-auto3d] three.js r187 renderer found on canvas",
+        "[info] [dxr-auto3d] converting canvas (three r187)"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 21595
+    },
+    {
+      "id": "playcanvas-home",
+      "group": "engine",
+      "url": "https://playcanvas.com/",
+      "outcome": "converted",
+      "engine": "PlayCanvas",
+      "loadCore": 1,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 2.7,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [],
+      "fps": {
+        "control": 60,
+        "injected": 60
+      },
+      "moMs": 0.5,
+      "moCalls": 10,
+      "moMaxMs": 0.3,
+      "warmErrors": [
+        "Failed to load resource: the server responded with a status of # ()"
+      ],
+      "reports": [
+        "idle@2203",
+        "converting:PlayCanvas@3994",
+        "live:PlayCanvas@4351"
+      ],
+      "title": "PlayCanvas | Open Source WebGL & WebGPU Game Engine",
+      "finalUrl": "https://playcanvas.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 2,
+      "sentinelMsWarm": [
+        0.2,
+        0.2,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "bjsTrapArms": 0,
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 3,
+        "pending": 1,
+        "where": [
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at startPoll (dxr-auto3d-sentinel.js:233:13) < at onContext (dxr-auto3d-sentinel.js:370:7)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at activate (dxr-auto3d-core.js:256:7)",
+          "timeout 3020 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at expandFor (dxr-auto3d-core.js:1530:19) < at refresh (dxr-auto3d-core.js:1514:9)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.7.1)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.7.1)",
+        "[info] [dxr-auto3d] Babylon.js adapter armed (core v0.7.1)",
+        "[info] [dxr-auto3d] core armed (v0.7.1) ",
+        "[info] [dxr-auto3d] PlayCanvas app found via AppBase constructor (canvas-id trap)",
+        "[info] [dxr-auto3d] PlayCanvas app on canvas#hero-canvas (WebGL2, found via AppBase constructor (canvas-id trap))"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 28728
+    },
+    {
+      "id": "babylon-playground",
+      "group": "engine",
+      "url": "https://playground.babylonjs.com/",
+      "outcome": "converted",
+      "engine": "Babylon.js",
+      "loadCore": 1,
+      "sentinelMs": 0.2,
+      "coreEvalMs": 5.3,
+      "webglContexts": 1,
+      "webgpuContexts": 0,
+      "engineOracle": [
+        "babylon"
+      ],
+      "fps": {
+        "control": 60,
+        "injected": 59
+      },
+      "moMs": 1.1,
+      "moCalls": 68,
+      "moMaxMs": 0.2,
+      "warmErrors": [],
+      "reports": [
+        "idle@5413",
+        "converting:Babylon.js@5482",
+        "live:Babylon.js@5837"
+      ],
+      "title": "Babylon.js Playground",
+      "finalUrl": "https://playground.babylonjs.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 2,
+      "sentinelMsWarm": [
+        0.2,
+        0.1,
+        0.3
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "bjsTrapArms": 1,
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 6,
+        "pending": 1,
+        "where": [
+          "timeout 8694 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at scheduleSweep (dxr-auto3d-sentinel.js:200:14) < at onContext (dxr-auto3d-sentinel.js:369:7)",
+          "timeout 500 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at startPoll (dxr-auto3d-sentinel.js:233:13) < at onContext (dxr-auto3d-sentinel.js:370:7)",
+          "timeout 1 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at An.SetImmediate (https://preview.babylonjs.com/babylon.js?t=1793851312370:1:215279) < at sc.addCamera (https://preview.babylonjs.com/babylon.js?t=1793851312370:1:558201)",
+          "timeout 250 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at activate (dxr-auto3d-core.js:256:7)",
+          "timeout 1 ms: at setTimeout (eval at <anonymous> (:1:37), <anonymous>:26:171) < at An.SetImmediate (https://preview.babylonjs.com/babylon.js?t=1793851312370:1:215279) < at sc.addCamera (https://preview.babylonjs.com/babylon.js?t=1793851312370:1:558201)"
+        ]
+      },
+      "ourLogs": [
+        "[info] [dxr-auto3d] three.js adapter armed (core v0.7.1)",
+        "[info] [dxr-auto3d] PlayCanvas adapter armed (core v0.7.1)",
+        "[info] [dxr-auto3d] Babylon.js adapter armed (core v0.7.1)",
+        "[info] [dxr-auto3d] core armed (v0.7.1) ",
+        "[info] [dxr-auto3d] Babylon.js engine found via Engine constructor (_gl trap)",
+        "[info] [dxr-auto3d] Babylon.js engine on canvas#renderCanvas (WebGL2, found via Engine constructor (_gl trap))"
+      ],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 29185
+    },
+    {
+      "id": "babylon-home",
+      "group": "plain",
+      "url": "https://www.babylonjs.com/",
+      "outcome": "none",
+      "engine": null,
+      "loadCore": 0,
+      "sentinelMs": 0.1,
+      "coreEvalMs": 0,
+      "webglContexts": 0,
+      "webgpuContexts": 1,
+      "engineOracle": [],
+      "fps": {
+        "control": 60,
+        "injected": 61
+      },
+      "moMs": 1,
+      "moCalls": 58,
+      "moMaxMs": 0.2,
+      "warmErrors": [],
+      "reports": [],
+      "title": "Babylon.js: Powerful, Beautiful, Simple, Open - Web-Based 3D At Its Best",
+      "finalUrl": "https://www.babylonjs.com/",
+      "partialLoad": false,
+      "sentinelMsCold": 3,
+      "sentinelMsWarm": [
+        0.4,
+        0.1,
+        0.1
+      ],
+      "ourExceptions": [],
+      "consoleErrorsIntroduced": [],
+      "protoDiff": [
+        "HTMLCanvasElement.getContext (changed)"
+      ],
+      "bjsTrapArms": 0,
+      "windowKeysDiff": [
+        "__THREE_DEVTOOLS__"
+      ],
+      "keysNoise": [],
+      "ourTimers": {
+        "created": 0,
+        "pending": 0,
+        "where": []
+      },
+      "ourLogs": [],
+      "verdict": "PASS",
+      "reasons": [],
+      "ms": 21586
+    }
+  ]
+}

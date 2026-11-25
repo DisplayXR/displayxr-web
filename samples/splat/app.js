@@ -66,6 +66,14 @@ try {
     // Half-scale per eye. After the interlace each eye receives roughly half the panel's
     // samples anyway, so the detail beyond this is rendered and then discarded.
     renderScale: 0.6,
+    // ?cursor=depth — the depth-aware cursor (opt-in). Cheapest on PlayCanvas, this page's default.
+    // Tune it from the URL to compare: &anchor=hybrid|screen|world &margin=0.003 &scope=window
+    ...(params.get('cursor') === 'depth' ? { cursor: sampleCursorOptions(params) } : {}),
+    // ?hands — tracked-hand controls (./hands): pinch to turn, two pinches to zoom. Inert without a tracker.
+    ...(params.has('hands') ? { hands: true } : {}),
+    // ?viewPath=cameras — one PlayCanvas camera per eye instead of one camera with N RenderViews
+    // (a device A/B: same splats, different per-view engine path).
+    ...(params.get('viewPath') === 'cameras' ? { playcanvasViewPath: 'cameras' } : {}),
   });
 } catch (err) {
   // A format the chosen engine cannot read (a .spz on PlayCanvas, a Streamed SOG on Spark)
@@ -99,4 +107,20 @@ if (handle) {
   } catch {
     statusEl.textContent = `Could not load ${url} with ${engineName} — check the URL, its format and its CORS headers.`;
   }
+}
+
+/**
+ * ?cursor=depth plus optional &anchor= &margin= &scope= &soften= &shape= &cursorDebug → addModel/addSplat's `cursor`
+ * option. &soften=both|off|alpha|blur A/Bs the crosstalk softening; &shape= fixes the sprite (default: the page's CSS cursor). &cursorDebug logs the cursor's per-frame cost once a second (three.js engine);
+ * &cursorDebug=both also keeps the OS cursor visible beside the sprite, to film the lag between them.
+ */
+function sampleCursorOptions(p) {
+  const o = {};
+  if (p.get('anchor')) o.anchor = p.get('anchor');
+  if (p.get('margin')) o.margin = Number(p.get('margin'));
+  if (p.get('scope')) o.pointerScope = p.get('scope');
+  if (p.has('cursorDebug')) o.debug = p.get('cursorDebug') === 'both' ? 'both' : true;
+  if (p.get('soften')) o.soften = p.get('soften'); // both | off | alpha | blur (crosstalk softening A/B)
+  if (p.get('shape')) o.shape = p.get('shape'); // auto (mirror the page's CSS cursor) | arrow | pointer | grab | grabbing | move
+  return Object.keys(o).length ? o : 'depth';
 }

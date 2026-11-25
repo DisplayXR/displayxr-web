@@ -1,32 +1,123 @@
 // Resolves the engines the test pages import into test/.deps/ (gitignored). Nothing is fetched
 // from threejs.org or a CDN at test time: three and playcanvas come from the npm registry (npm pack)
 // unless a local copy is named.
-//   THREE_BUILD_DIR=<dir with three.module.js + three.core.js>   (default: npm pack three@0.180.0)
+//   THREE_BUILD_DIR=<dir with three.module.js + three.core.js + three.webgpu.js + three.tsl.js>   (default: npm pack three@0.180.0)
+//   THREE_VERSION=<npm version or tag, e.g. 0.187.0 / latest>     (default 0.180.0; the canary runs `latest`, see ../README.md
+//                                                                  'Keeping up with three.js'). Re-run with a clean .deps/three.
 //   PLAYCANVAS_MJS=<path to build/playcanvas.mjs>                 (default: npm pack playcanvas@2.22.3)
-import { execFileSync } from 'node:child_process';
+//   SPARK_DIST=<dir with spark.module.js>                         (default: npm pack @sparkjsdev/spark@2.2.0)
+//   PLAYCANVAS_CF_MJS=<path to build/playcanvas.mjs of 2.23.0>    (default: npm pack playcanvas@2.23.0; the
+//                                                                  CameraFrame pages, cases/cameraframe.mjs)
+//   PLAYCANVAS_NEXT_MJS=<path to build/playcanvas.mjs of 2.24.0> (default: npm pack playcanvas@2.24.0; the engine
+//                                                                  playcanvas.com/examples runs. run.mjs PC_ENGINE=2.24 serves it
+//                                                                  for EVERY PlayCanvas page: the regression run)
+//   PC_ENGINES=<v>[,<v>…]   extra engines for the same run, e.g. PC_ENGINES=2.17.2 (npm pack, staged as
+//                           .deps/playcanvas-2.17/; then run.mjs PC_ENGINE=2.17). Sites ship whatever 2.x they
+//                           were built with: every adapter path is feature-detected and run on several.
+//   BABYLON_JS=<path to babylon.js (the UMD build)>                (default: npm pack babylonjs@9.32.0; the
+//                                                                  Babylon.js pages, cases/babylon.mjs)
+//   BABYLON_GUI_JS=<path to babylon.gui.js (the UMD build)>        (default: npm pack babylonjs-gui@9.32.0)
+//   SUPERSPLAT_VIEWER_DIR=<dir with the viewer's public/ index.html + index.js + index.css>
+//                                                                 (default: npm pack @playcanvas/supersplat-viewer@1.37.0;
+//                                                                  the real viewer, engine bundled, cases ssv*)
+// The addons the pages use (three's OrbitControls, PlayCanvas's CameraControls script) come from the
+// same npm versions, unless a local copy is found or named — so a box with no registry access (the
+// Windows panel box) can run the whole harness from local files:
+//   THREE_ORBIT_CONTROLS=<path to OrbitControls.js>        (else <THREE_BUILD_DIR>/../examples/jsm/controls/OrbitControls.js if it exists)
+//   PLAYCANVAS_CAMERA_CONTROLS=<path to camera-controls.mjs> (else <PLAYCANVAS_MJS>/../../scripts/esm/camera-controls.mjs if it exists)
+//   THREE_PASS_JS=<path to postprocessing/Pass.js>          (else <THREE_BUILD_DIR>/../examples/jsm/postprocessing/Pass.js if it exists;
+//                                                            Spark imports its FullScreenQuad)
+// Every step fails LOUDLY (non-zero exit, names the file and the override to use): a missing engine
+// otherwise shows up much later as a page that never converts. run.mjs checks the same files first.
+//
+// Windows: `npm` is `npm.cmd` there, which Node refuses to spawn without a shell (EINVAL since the
+// 2024 batch-file fix), so npm runs through the shell on win32. tar runs in the temp dir with a
+// relative archive name: a Git Bash GNU tar would read `C:\…` as a remote host.
+import { execFileSync, execSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, '.deps');
-const THREE = 'three@0.180.0';
+const THREE = `three@${process.env.THREE_VERSION || '0.180.0'}`;
 const PLAYCANVAS = 'playcanvas@2.22.3';
+const SPARK = '@sparkjsdev/spark@2.2.0'; // World Labs' splat renderer for three (peer: three >= 0.180)
+const PLAYCANVAS_CF = 'playcanvas@2.23.0'; // the engine superspl.at's viewer is built with (its devDependency)
+const PLAYCANVAS_NEXT = 'playcanvas@2.24.0'; // what playcanvas.com/examples runs (2026-11): PC_ENGINE=2.24 in run.mjs
+// Engine-pinned cases (cases/pc-engines.mjs, served under /pc-<X.Y>/): the oldest engine with Camera.xrViews
+// (2.20) and one older (2.17, must stay 2D with the reason). npm only; no local override.
+const PLAYCANVAS_PINNED = ['2.20.6', '2.17.2'];
+const SSV = '@playcanvas/supersplat-viewer@1.37.0'; // superspl.at's viewer: public/ is the standalone build
+const BABYLON = 'babylonjs@9.32.0';
+const BABYLON_GUI = 'babylonjs-gui@9.32.0'; // the UMD build (one file, sets window.BABYLON; the ESM-like pages delete it before the engine)
+const WIN = process.platform === 'win32';
 
+// The files the pages import, by .deps path (run.mjs's preflight checks the same list).
+const DEP_FILES = ['three/three.module.js', 'three/three.core.js', 'three/three.webgpu.js', 'three/three.tsl.js', 'three/OrbitControls.js', 'playcanvas/playcanvas.mjs', 'playcanvas/camera-controls.mjs', 'three/Pass.js', 'spark/spark.module.js',
+  'playcanvas-2.23/playcanvas.mjs', 'playcanvas-2.24/playcanvas.mjs', 'playcanvas-2.24/camera-controls.mjs', 'playcanvas-2.20/playcanvas.mjs', 'playcanvas-2.20/camera-controls.mjs', 'playcanvas-2.17/playcanvas.mjs', 'playcanvas-2.17/camera-controls.mjs', 'supersplat-viewer/index.html', 'supersplat-viewer/index.js', 'supersplat-viewer/index.css', 'babylon/babylon.js', 'babylon/babylon.gui.js'];
+
+function die(msg) {
+  console.error(`\ndeps: FAILED — ${msg}\n`);
+  process.exit(1);
+}
+function npmPack(spec, dest) {
+  const args = ['pack', spec, '--silent', '--pack-destination', dest];
+  try {
+    const text = WIN
+      ? execSync(`npm ${args.map((a) => `"${a}"`).join(' ')}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      : execFileSync('npm', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    return text.trim().split(/\r?\n/).pop().trim();
+  } catch (e) {
+    const why = String((e && (e.stderr || e.message)) || e).trim().split(/\r?\n/).slice(-3).join(' | ');
+    die(`npm pack ${spec} failed (${why}). No registry access? Point the env overrides in deps.mjs's header at local copies.`);
+  }
+}
+const packs = new Map();
 function packed(spec, files) {
-  const tmp = mkdtempSync(join(tmpdir(), 'dxr-auto3d-'));
-  const tgz = execFileSync('npm', ['pack', spec, '--silent', '--pack-destination', tmp], { encoding: 'utf8' }).trim().split('\n').pop();
-  execFileSync('tar', ['-xzf', join(tmp, tgz), '-C', tmp, ...files.map((f) => `package/${f}`)]);
+  let tmp = packs.get(spec);
+  if (!tmp) {
+    tmp = mkdtempSync(join(tmpdir(), 'dxr-auto3d-'));
+    const tgz = npmPack(spec, tmp);
+    try { execFileSync('tar', ['-xzf', tgz], { cwd: tmp }); } catch (e) { die(`could not unpack ${tgz} in ${tmp}: ${e.message}`); }
+    packs.set(spec, tmp);
+  }
+  for (const f of files) if (!existsSync(join(tmp, 'package', f))) die(`${spec} has no ${f}`);
   return (f) => join(tmp, 'package', f);
 }
-function ensure(dir, files, local, spec, srcPath) {
-  const dst = join(out, dir);
-  mkdirSync(dst, { recursive: true });
-  if (files.every((f) => existsSync(join(dst, f.split('/').pop())))) return console.log(`deps: ${dir} present`);
-  const from = srcPath ? () => srcPath : local ? (f) => join(local, f.split('/').pop()) : packed(spec, files);
-  for (const f of files) copyFileSync(from(f), join(dst, f.split('/').pop()));
-  console.log(`deps: ${dir} <- ${local || srcPath || spec}`);
+// One .deps file: from `local` (an explicit or derived local path) when given, else from the npm pack.
+function ensure(dir, file, local, env, spec) {
+  const name = file.split('/').pop();
+  const dst = join(out, dir, name);
+  mkdirSync(join(out, dir), { recursive: true });
+  if (existsSync(dst)) return console.log(`deps: ${dir}/${name} present`);
+  if (local && !existsSync(local)) die(`${env} names ${local}, which does not exist`);
+  const src = local || packed(spec, [file])(file);
+  copyFileSync(src, dst);
+  console.log(`deps: ${dir}/${name} <- ${local || spec}`);
 }
-ensure('three', ['build/three.module.js', 'build/three.core.js'], process.env.THREE_BUILD_DIR, THREE);
-ensure('playcanvas', ['build/playcanvas.mjs'], null, PLAYCANVAS, process.env.PLAYCANVAS_MJS);
+const env = (k) => (process.env[k] ? resolve(process.env[k]) : null);
+const derived = (base, rel) => { if (!base) return null; const p = resolve(base, rel); return existsSync(p) ? p : null; };
+const threeDir = env('THREE_BUILD_DIR'), pcMjs = env('PLAYCANVAS_MJS'), sparkDir = env('SPARK_DIST'), ssvDir = env('SUPERSPLAT_VIEWER_DIR');
+ensure('three', 'build/three.module.js', threeDir && join(threeDir, 'three.module.js'), 'THREE_BUILD_DIR', THREE);
+ensure('three', 'build/three.core.js', threeDir && join(threeDir, 'three.core.js'), 'THREE_BUILD_DIR', THREE);
+ensure('three', 'build/three.webgpu.js', threeDir && join(threeDir, 'three.webgpu.js'), 'THREE_BUILD_DIR', THREE); // WebGPURenderer (+ its WebGL2 fallback backend)
+ensure('three', 'build/three.tsl.js', threeDir && join(threeDir, 'three.tsl.js'), 'THREE_BUILD_DIR', THREE); // r187+: three.webgpu.js imports it
+ensure('three', 'examples/jsm/controls/OrbitControls.js', env('THREE_ORBIT_CONTROLS') || derived(threeDir, '../examples/jsm/controls/OrbitControls.js'), 'THREE_ORBIT_CONTROLS', THREE);
+ensure('three', 'examples/jsm/postprocessing/Pass.js', env('THREE_PASS_JS') || derived(threeDir, '../examples/jsm/postprocessing/Pass.js'), 'THREE_PASS_JS', THREE);
+ensure('spark', 'dist/spark.module.js', sparkDir && join(sparkDir, 'spark.module.js'), 'SPARK_DIST', SPARK);
+ensure('playcanvas', 'build/playcanvas.mjs', pcMjs, 'PLAYCANVAS_MJS', PLAYCANVAS);
+ensure('playcanvas-2.23', 'build/playcanvas.mjs', env('PLAYCANVAS_CF_MJS'), 'PLAYCANVAS_CF_MJS', PLAYCANVAS_CF);
+ensure('playcanvas-2.24', 'build/playcanvas.mjs', env('PLAYCANVAS_NEXT_MJS'), 'PLAYCANVAS_NEXT_MJS', PLAYCANVAS_NEXT);
+ensure('playcanvas-2.24', 'scripts/esm/camera-controls.mjs', derived(env('PLAYCANVAS_NEXT_MJS') && dirname(env('PLAYCANVAS_NEXT_MJS')), '../scripts/esm/camera-controls.mjs'), 'PLAYCANVAS_NEXT_MJS', PLAYCANVAS_NEXT);
+for (const v of [...PLAYCANVAS_PINNED, ...(process.env.PC_ENGINES || '').split(',')].map((x) => x.trim()).filter(Boolean)) {
+  const dir = `playcanvas-${v.split('.').slice(0, 2).join('.')}`;
+  ensure(dir, 'build/playcanvas.mjs', null, 'PC_ENGINES', `playcanvas@${v}`);
+  ensure(dir, 'scripts/esm/camera-controls.mjs', null, 'PC_ENGINES', `playcanvas@${v}`);
+}
+ensure('babylon', 'babylon.js', env('BABYLON_JS'), 'BABYLON_JS', BABYLON);
+ensure('babylon', 'babylon.gui.js', env('BABYLON_GUI_JS'), 'BABYLON_GUI_JS', BABYLON_GUI);
+for (const f of ['index.html', 'index.js', 'index.css']) ensure('supersplat-viewer', `public/${f}`, ssvDir && join(ssvDir, f), 'SUPERSPLAT_VIEWER_DIR', SSV);
+ensure('playcanvas', 'scripts/esm/camera-controls.mjs', env('PLAYCANVAS_CAMERA_CONTROLS') || derived(pcMjs && dirname(pcMjs), '../scripts/esm/camera-controls.mjs'), 'PLAYCANVAS_CAMERA_CONTROLS', PLAYCANVAS);
+for (const f of DEP_FILES) if (!existsSync(join(out, f))) die(`.deps/${f} is still missing after resolution`);

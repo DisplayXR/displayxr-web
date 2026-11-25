@@ -51,8 +51,10 @@ import {
 } from './inline3d-splat-perf.js';
 import { boundsFromPositions, boundsFromPositionsAsync } from './inline3d-viewer.js';
 import { cameraRigFromPose, displayRig } from './inline3d-three.js';
+import { displayMetricsFrom } from './inline3d-display-metrics.js';
 import {
   SplatEffects,
+  ENVELOPE_MAX_RECTS,
   EFFECTS,
   EASINGS,
   resolveRevealOption,
@@ -67,10 +69,19 @@ import {
   sequenceSpans,
 } from './inline3d-splat-effects.js';
 import { LiveOutgoing, resolveOutgoingOption, defaultOutgoing, yieldIdle } from './inline3d-splat-live.js';
+import { viewerEaseFor, frameTrackingState } from './inline3d-viewer-ease.js';
 import { VideoPlane, validateSetVideo, PAGE_VIDEO_ERROR, eyeSplit, EYE_SPLIT_UNIFORM, makeSbsMaterial } from './inline3d-splat-video.js';
-import { LayerRigCameras, validateLayerRig } from './inline3d-splat-layer-rig.js';
+import { LayerRigCameras, validateLayerRig, validateLayerRigOptions, DEFAULT_VIEWER_DISTANCE_M } from './inline3d-splat-layer-rig.js';
 import { RigTracker, remapViews, nodePose, sameRig } from './inline3d-splat-rig-map.js';
-import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag, DIAG_SWITCHES } from './inline3d-splat-diag.js';
+import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag, watchContent, DIAG_SWITCHES } from './inline3d-splat-diag.js';
+import {
+  glBufferLimits,
+  probeBufferLimits,
+  clampEyeBuffer,
+  clampWarning,
+  bufferScale,
+  mismatchWarning,
+} from './inline3d-buffer-limit.js';
 import {
   clamp,
   finite,
@@ -87,6 +98,7 @@ import {
   ORBIT_MAX_DEG,
   ORBIT_TAU_DRAG_S,
   ORBIT_TAU_REST_S,
+  DRAG_DEG_PER_TILE,
   WHEEL_LINE_PX,
   WHEEL_PAGE_PX,
   WHEEL_MAX_PX,
@@ -107,7 +119,17 @@ import {
   normalizeCameraPose,
   coverageExponent,
   declareViewRig,
+  parseClearColor,
+  validateSetStereo,
+  stereoScalarOf,
+  attachComfortDepth,
+  resolveDepthOption,
+  framedSubjectBounds,
 } from './inline3d-splat-shared.js';
+import { resolveCursorOption } from './inline3d-cursor-option.js';
+import { installShaderCacheRelease } from './inline3d-pc-shader-cache.js';
+import { installAutoProgramRelease } from './inline3d-pc-auto-release.js';
+import { releaseEntity as releaseEntityIn } from './inline3d-pc-release.js';
 
 /**
  * The component systems the tile's `AppBase` registers. Camera + GSplat draw the splat; Render,
@@ -358,13 +380,15 @@ const FLIP_Q = [1, 0, 0, 0];
 /**
  * SceneViewer's pivot as ONE matrix: content space → display space.
  *
- *   M = T(orbitCentre + (0,0,depthOffset)) · Rx(pitch) · Ry(yaw) · S(fit × zoom) · T(−focus)
+ *   M = T(orbitCentre + (0,0,depthOffset)) · Rz(roll) · Rx(pitch) · Ry(yaw) · S(fit × zoom) · T(−focus)
  *
- * which is exactly the product of its `_pivot` (position, 'XYZ' rotation, scale) and
+ * which is exactly the product of its `_pivot` (position, 'ZXY' rotation, scale) and
  * `_centering` (−focus) groups. Kept as a pure function so a test can hold the two together.
+ * Roll (the two-hand twist) is about the VIEW axis, so it sits outside yaw and pitch; at roll 0
+ * this is the old Rx · Ry product bit for bit.
  */
-export function pivotMatrix({ yaw = 0, pitch = 0, scale = 1, focus = [0, 0, 0], orbitCentre = [0, 0, 0], depthOffset = 0 }) {
-  const q = pivotQuat(yaw, pitch);
+export function pivotMatrix({ yaw = 0, pitch = 0, roll = 0, scale = 1, focus = [0, 0, 0], orbitCentre = [0, 0, 0], depthOffset = 0 }) {
+  const q = pivotQuat(yaw, pitch, roll);
   const R = poseMatrix([0, 0, 0], q);
   const out = new Float64Array(16);
   // columns of R·S
@@ -378,19 +402,25 @@ export function pivotMatrix({ yaw = 0, pitch = 0, scale = 1, focus = [0, 0, 0], 
   return out;
 }
 
-/** R = Rx(pitch)·Ry(yaw) — three's Euler order 'XYZ' — as a quaternion. */
-function pivotQuat(yawDeg, pitchDeg) {
+/**
+ * R = Rz(roll)·Rx(pitch)·Ry(yaw) — three's Euler order 'ZXY', SceneViewer's — as a quaternion.
+ * With roll 0 the Rz factor is the identity quaternion and the product is exactly Rx·Ry.
+ */
+function pivotQuat(yawDeg, pitchDeg, rollDeg = 0) {
   const a = (pitchDeg * DEG) / 2;
   const b = (yawDeg * DEG) / 2;
-  return qmul([Math.sin(a), 0, 0, Math.cos(a)], [0, Math.sin(b), 0, Math.cos(b)]);
+  const q = qmul([Math.sin(a), 0, 0, Math.cos(a)], [0, Math.sin(b), 0, Math.cos(b)]);
+  if (!rollDeg) return q;
+  const c = (rollDeg * DEG) / 2;
+  return qmul([0, 0, Math.sin(c), Math.cos(c)], q);
 }
 
 /**
  * The INVERSE pivot, as the TRS the engine's rig node takes. M⁻¹ = T(f)·S(1/s)·Rᵀ·T(−t), and a
  * uniform scale commutes with a rotation, so it is position f − Rᵀt/s, rotation Rᵀ, scale 1/s.
  */
-export function pivotInverseTRS({ yaw = 0, pitch = 0, scale = 1, focus = [0, 0, 0], orbitCentre = [0, 0, 0], depthOffset = 0 }) {
-  const q = pivotQuat(yaw, pitch);
+export function pivotInverseTRS({ yaw = 0, pitch = 0, roll = 0, scale = 1, focus = [0, 0, 0], orbitCentre = [0, 0, 0], depthOffset = 0 }) {
+  const q = pivotQuat(yaw, pitch, roll);
   const qi = [-q[0], -q[1], -q[2], q[3]];
   const t = [orbitCentre[0], orbitCentre[1], orbitCentre[2] + depthOffset];
   const rt = qrot(qi, t);
@@ -450,6 +480,40 @@ export function pageViewAxis(M) {
   const s = Math.cbrt(Math.hypot(M[0], M[1], M[2]) * Math.hypot(M[4], M[5], M[6]) * Math.hypot(M[8], M[9], M[10]));
   const fl = Math.hypot(M[8], M[9], M[10]) || 1;
   return { origin: [M[12], M[13], M[14]], forward: [-M[8] / fl, -M[9] / fl, -M[10] / fl], scale: s };
+}
+
+/**
+ * handle.setViewOffset — the mono camera moved IN ITS OWN PLANE, off-axis, with the focus plane
+ * pinned. A head-parallax analogue for the 2D tier (a phone's tilt), where there are no tracked
+ * eyes: the eye slides sideways/up, the window through the focus plane stays where it was, so the
+ * focus stays put on screen while nearer content moves against the farther. Not a rotation — the
+ * orbit (setPose / the drag) turns the SCENE about the focus; this moves the EYE, and the two
+ * compose.
+ *
+ *   e = (ox, oy) · c · tan(maxDeg)          camera-plane displacement, display units
+ *   pose' = pose · T(e.x, e.y, 0)
+ *   P'[8] = P[8] − P[0]·e.x / c,  P'[9] = P[9] − P[5]·e.y / c    (the window shifted by −e·n/c)
+ *
+ * `c` is the focus's distance along the camera's view axis, so |offset| = 1 swings the line of
+ * sight to the focus by `maxDeg` — the same comfort cone as the drag orbit (orbitMaxDeg, 15°).
+ * Being an ANGLE it is scale-free: zoom scales the scene about the focus, and c does not move.
+ * Writes into outPose/outProj and returns true; false (outputs untouched) when the offset is zero
+ * or the focus is not in front of the camera — the caller then draws the unshifted camera.
+ */
+export function offsetMonoView(pose, proj, ox, oy, c, maxDeg, outPose, outProj) {
+  if ((!ox && !oy) || !(c > 1e-6) || !Number.isFinite(c)) return false;
+  const k = c * Math.tan(maxDeg * DEG);
+  const ex = ox * k;
+  const ey = oy * k;
+  outPose.set(pose);
+  // pose · T(e): translate along the camera's own x/y axes (columns 0 and 1).
+  outPose[12] = pose[12] + pose[0] * ex + pose[4] * ey;
+  outPose[13] = pose[13] + pose[1] * ex + pose[5] * ey;
+  outPose[14] = pose[14] + pose[2] * ex + pose[6] * ey;
+  outProj.set(proj);
+  outProj[8] = proj[8] - (proj[0] * ex) / c;
+  outProj[9] = proj[9] - (proj[5] * ey) / c;
+  return true;
 }
 
 /**
@@ -523,14 +587,22 @@ export function capturePose(rest, flipY) {
  * (epic #36, P4d); until then the anchors are regexes (the npm build re-indents chunks with
  * tabs) and a miss warns once and renders unpatched rather than failing.
  *
+ * PlayCanvas 2.23 fixed it upstream: its perspective branch takes the focal length per axis
+ * (`vec2 focal = viewport_size.xy * vec2(center.projMat00, center.projMat11)`). That chunk is
+ * returned untouched with `native: true` and counts as fixed — it is not a miss, and must not
+ * warn that splats will draw at half height.
+ *
  * The rewritten lines are adapted from PlayCanvas engine src/scene/shader-lib/glsl/chunks/gsplat/vert/
  * gsplatCorner.js (the `gsplatCornerVS` chunk) @ v2.22.3, MIT (THIRD_PARTY_NOTICES.md).
  *
- * @returns {{src:string, ok:boolean}}
+ * @returns {{src:string, ok:boolean, native?:boolean}}
  */
 export function patchGsplatFootprint(src) {
   if (typeof src !== 'string') return { src, ok: false };
   if (src.includes('dxrFocalY')) return { src, ok: true };
+  if (/vec2\s+focal\s*=\s*viewport_size\.xy\s*\*\s*vec2\s*\(\s*center\.projMat00\s*,\s*center\.projMat11\s*\)/.test(src)) {
+    return { src, ok: true, native: true };
+  }
   const r1 = /vec2\s+J2\s*=\s*-J1\s*\/\s*vp\.z\s*\*\s*vp\.xy\s*;/;
   const r2 = /0\.0\s*,\s*J1\s*,\s*J2\.y\s*,/;
   if (!r1.test(src) || !r2.test(src)) return { src, ok: false };
@@ -548,6 +620,36 @@ export function patchGsplatFootprint(src) {
 
 let warnedFootprint = false;
 let warnedQuadExtent = false;
+
+/**
+ * Apply patchGsplatFootprint to the engine's GLSL chunk store (anything with get/set): rewrite the
+ * chunk on an engine that has the bug (≤ 2.22), leave it alone on one that fixed it (≥ 2.23,
+ * `native`), and warn once only when neither shape is there. Feature-detected on the chunk text,
+ * never on the engine version, so one SDK build serves the whole peer range.
+ *
+ * Through SDK 1.51.1 the native case fell into the warning branch: every 2.23.x / 2.24.x page logged
+ * "side-by-side splats will draw at half height" although they drew correctly.
+ *
+ * @returns {{ok:boolean, native?:boolean}}
+ */
+export function installGsplatFootprint(chunks) {
+  const corner = patchGsplatFootprint(chunks.get('gsplatCornerVS'));
+  if (corner.native) return corner;
+  if (corner.ok) {
+    chunks.set('gsplatCornerVS', corner.src);
+    return corner;
+  }
+  if (!warnedFootprint) {
+    warnedFootprint = true;
+    console.warn(
+      '[inline3d/splat] engine:playcanvas — this engine build does not have the gsplatCornerVS ' +
+        'lines the non-square-pixel footprint fix rewrites, so it is SKIPPED: side-by-side ' +
+        'splats will draw at half height (vertical stipple). Report the engine version; the ' +
+        'anchors are in js/inline3d-splat-playcanvas.js.',
+    );
+  }
+  return corner;
+}
 
 /**
  * Which way the engine gets N views into one canvas. `renderview` — one camera, N `RenderView`s
@@ -753,6 +855,45 @@ export function queryPickIndex(ix, xyz, origin, dir, coneRad = PICK_CONE_RAD) {
  * public methods, with the engine behind them instead of three. Not a SceneViewer subclass and
  * not field-compatible with one (docs/playcanvas-adapter.md §Divergences).
  */
+/**
+ * The light argument and view uniform format the forward renderer hands `getShaderInstance` /
+ * `getShaderVariant` for a mesh drawn in `layer`, so a warm-up issues the program the first draw
+ * looks up (the program library keys on the generated source, and the view uniform block is in it).
+ * Detected by shape, never by version:
+ * - PlayCanvas 2.23+: `getShaderInstance(pass, lightList, scene, shaderParams, viewUniformFormat)`,
+ *   the format per light list from `renderer.getViewUniformFormat(clustered, lightList)`;
+ *   `renderer.viewUniformFormat` no longer exists.
+ * - 2.22: `getShaderInstance(pass, lightHash, scene, shaderParams, renderer.viewUniformFormat,
+ *   layer.splitLights)`.
+ * `probe` only asks whether either shape is present (no layer needed). Returns null when neither is.
+ */
+export function rendererViewArgs(renderer, scene, layer, probe = false) {
+  if (!renderer) return null;
+  const clustered = !!scene?.clusteredLightingEnabled;
+  if (typeof renderer.getViewUniformFormat === 'function' && renderer.getViewUniformFormat.length >= 2) {
+    if (probe) return { modern: true };
+    const lightList = layer?.getLightList?.(clustered);
+    if (!lightList) return null;
+    return { modern: true, light: lightList, lightList, viewUniformFormat: renderer.getViewUniformFormat(clustered, lightList), sortedLights: undefined };
+  }
+  if (typeof renderer.viewUniformFormat === 'undefined') return null;
+  if (probe) return { modern: false };
+  return { modern: false, light: layer?.getLightHash?.(clustered) ?? 0, viewUniformFormat: renderer.viewUniformFormat, sortedLights: layer?.splitLights };
+}
+
+/**
+ * The light and view-format fields of a `getShaderVariant` params object for an unlit draw in the
+ * world layer (splat chunk variants, the transition overlay): `lightList` + its view uniform format
+ * on 2.23+, `sortedLights: []` + the renderer's format on 2.22.
+ */
+function variantViewParams(app, pc) {
+  const scene = app?.scene;
+  const layer = scene?.layers?.getLayerById?.(pc?.LAYERID_WORLD ?? 0);
+  const va = rendererViewArgs(app?.renderer, scene, layer);
+  if (va?.modern) return { lightList: va.lightList, viewUniformFormat: va.viewUniformFormat };
+  return { sortedLights: [], viewUniformFormat: va?.viewUniformFormat ?? null };
+}
+
 export class PlayCanvasSplatViewer {
   constructor(canvas, opts = {}) {
     const {
@@ -767,6 +908,7 @@ export class PlayCanvasSplatViewer {
       pitchLimit = PITCH_LIMIT,
       orbitMaxDeg = ORBIT_MAX_DEG,
       orbitEase = {},
+      orbitStyle = 'tilt',
       zoom,
       feather = 0,
       captureFit = 'height',
@@ -775,8 +917,23 @@ export class PlayCanvasSplatViewer {
       sky = false,
       pageCamera = false,
       toneMapping = 'none',
+      viewerEase,
+      cursor = null,
     } = opts;
     this.canvas = canvas;
+    // `clearColor` (opt-in): the eye cameras' clear, [r,g,b,a] in 0..1, or null = the transparent
+    // clear every tile had before it existed. An OPAQUE clear avoids stale / black pixels where the
+    // weave reads an alpha-0 hole (web#198).
+    this.clearColor = parseClearColor(opts.clearColor, opts.logTag || '[inline3d/splat]');
+    // `cursor: 'depth'` (ADR-046): the depth-aware cursor. OPT-IN AND FREE OTHERWISE — its module
+    // is imported only when asked for (attachEngine), and every per-frame hook is an optional call
+    // on `cursorDepth`, which stays null without it.
+    this._cursorOpt = resolveCursorOption(cursor, opts.logTag || '[inline3d/splat]'); // null = off
+    this.cursorDepth = null;
+    // The tracking-acquisition ease (./inline3d-viewer-ease.js): undefined = the session's
+    // createInline3D({ viewerEase }) default. Built on the first 3D frame, which knows the session.
+    this._viewerEaseOpt = viewerEase;
+    this.viewerEase = null;
     // controls:'page': the PAGE owns the camera (setPageCamera). No orbit, no idle, no fit; the
     // rig node carries the page's matrix instead of the inverse pivot.
     this.pageCamera = pageCamera === true;
@@ -803,6 +960,10 @@ export class PlayCanvasSplatViewer {
     // from where the press started, easing with τ = orbitEase.drag; release relaxes back with
     // τ = orbitEase.rest. `_orbitMode` is 'drag' | 'rest' | null (null = ordinary damping).
     this.orbitMaxDeg = orbitMaxDeg;
+    // 'tilt' (the default; photo splats: a capped tilt that relaxes) or 'turntable' (./model: an
+    // object you turn all the way round — SceneViewer's cumulative drag, DRAG_DEG_PER_TILE per
+    // tile width, no relax).
+    this.orbitStyle = orbitStyle === 'turntable' ? 'turntable' : 'tilt';
     this.orbitEase = { drag: orbitEase.drag ?? ORBIT_TAU_DRAG_S, rest: orbitEase.rest ?? ORBIT_TAU_REST_S };
     this._orbitMode = null;
     // Zoom bounds + relax (./inline3d-splat-shared.js §ZOOM). Wheel and pinch clamp to
@@ -856,6 +1017,13 @@ export class PlayCanvasSplatViewer {
     this.depthLimit = depthLimit;
     this.fitSweep = fitSweep;
     this.renderScale = renderScale;
+    // The device-limit clamp on the backing store (./inline3d-buffer-limit.js), as SceneViewer:
+    // the factor the last _resize applied on top of renderScale; warned once per viewer.
+    this._bufClamp = 1;
+    this._warnedBufClamp = false;
+    this._warnedBufMismatch = false;
+    /** Prefix for this viewer's warnings; ./model sets its own. */
+    this.logTag = opts.logTag || '[inline3d/splat]';
     this.pitchLimit = pitchLimit;
     this.idleSpin = this.pageCamera ? 0 : idleSpin;
     this.flipY = opts.flipY !== false;
@@ -865,15 +1033,28 @@ export class PlayCanvasSplatViewer {
     this._targetZoom = this._restZoom;
     this._depthOffset = 0;
     this._subjectHalf = [0, 0, 0];
+    // fitTo's opts.screenPlaneZ, as model units the pivot sits in front of the glass (0 = none):
+    // SceneViewer's, same use.
+    this._screenPlaneShift = 0;
+    this._framedDepth = null;
     this._yaw = 0;
     this._pitch = 0;
     this._targetYaw = 0;
     this._targetPitch = 0;
+    // Roll about the VIEW axis, degrees — SceneViewer's. Only the two-hand gesture
+    // (./inline3d-hands.js) and an explicit setPose({ roll }) write it, so every existing page is
+    // bit-identical at 0.
+    this._roll = 0;
+    this._targetRoll = 0;
     this._focus = { x: 0, y: 0, z: 0 };
     this._targetFocus = { x: 0, y: 0, z: 0 };
     this._orbitCentre = { x: 0, y: 0, z: 0 };
     this._focusRecentres = true;
     this._focusSettled = true;
+    // handle.setViewOffset: normalised camera-plane eye offset, mono only (offsetMonoView).
+    this._viewOffset = [0, 0];
+    this._offPose = new Float64Array(16);
+    this._offProj = new Float64Array(16);
     this.onFocusChange = null;
     this.onTick = null;
     /** controls:'page' — `(views|null) => void`, run once per frame before anything else. */
@@ -928,7 +1109,11 @@ export class PlayCanvasSplatViewer {
     this._tileBudget = undefined; // undefined = the engine's own default
     this._budgetViews = 1;
 
-    this._onResize = () => this._scheduleResize();
+    // Resize AND draw inside the observer callback (it runs after the frame's animation callbacks
+    // and before the paint). Deferring to the next animation frame, as this used to, let one
+    // paint show the old backing store stretched onto the new box: a visible jolt on every
+    // CSS resize of a woven canvas. See _resizeNow for the two cases that still defer.
+    this._onResize = () => this._resizeNow();
     this._ro = typeof ResizeObserver === 'function' ? new ResizeObserver(this._onResize) : null;
     if (this._ro) this._ro.observe(canvas);
     else if (typeof addEventListener === 'function') addEventListener('resize', this._onResize);
@@ -955,10 +1140,24 @@ export class PlayCanvasSplatViewer {
     this._applyTransform();
   }
 
-  fitTo(center, extent) {
+  /**
+   * SceneViewer.fitTo, same arithmetic. `opts.screenPlaneZ` (addModel's robust framing): the
+   * model-space z put on the glass when it is not the pivot's; the subject still turns about
+   * `center`. Unset: the centre is on the glass, as before. `opts.depthRange`: the subject's
+   * [back, front] model z for the `depth` option's measure (SceneViewer's, same use).
+   */
+  fitTo(center, extent, opts) {
     if (this.pageCamera) return; // the page frames its own camera
     const c = Array.isArray(center) ? center : [center.x, center.y, center.z];
     const e = Array.isArray(extent) ? extent : [extent.x, extent.y, extent.z];
+    const zp = opts && opts.screenPlaneZ;
+    this._screenPlaneShift = Number.isFinite(zp) && Number.isFinite(c[2]) ? c[2] - zp : 0;
+    // opts.depthRange: the subject's [back, front] model z as the `depth` option should measure it
+    // (robust framing: the surface's 1st–99th percentile), kept relative to the glass. Null = the
+    // fit box (±extent/2 about the centre), as before.
+    const dr = opts && opts.depthRange;
+    const glassZ = c[2] - this._screenPlaneShift;
+    this._framedDepth = Array.isArray(dr) && Number.isFinite(dr[0]) && Number.isFinite(dr[1]) ? [Math.min(dr[0], dr[1]) - glassZ, Math.max(dr[0], dr[1]) - glassZ] : null;
     this.setFocus(c, { snap: true });
     this._subjectHalf = [Math.abs(e[0]) / 2, Math.abs(e[1]) / 2, Math.abs(e[2]) / 2];
     const box = this.canvas.getBoundingClientRect();
@@ -975,7 +1174,7 @@ export class PlayCanvasSplatViewer {
     this._placeMonoForFit();
   }
 
-  setPose({ yaw, pitch, zoom, depthOffset } = {}) {
+  setPose({ yaw, pitch, zoom, roll, depthOffset } = {}) {
     if (this.pageCamera) throw new Error(PAGE_POSE_ERROR);
     // A snap, as on SceneViewer; it also ends an orbit relax (the page is driving now).
     if (yaw !== undefined || pitch !== undefined) this._orbitMode = null;
@@ -983,6 +1182,7 @@ export class PlayCanvasSplatViewer {
     if (pitch !== undefined) {
       this._targetPitch = this._pitch = clamp(pitch, this.pitchLimit[0], this.pitchLimit[1]);
     }
+    if (roll !== undefined) this._targetRoll = this._roll = roll;
     if (zoom !== undefined) {
       // A snap, and the new rest: a relax comes home HERE, not to 1×.
       this._targetZoom = this._zoom = this._restZoom = clamp(zoom, this.zoomOpts.min, this.zoomOpts.max);
@@ -997,13 +1197,35 @@ export class PlayCanvasSplatViewer {
       yaw: target ? this._targetYaw : this._yaw,
       pitch: target ? this._targetPitch : this._pitch,
       zoom: target ? this._targetZoom : this._zoom,
+      roll: target ? this._targetRoll : this._roll,
       depthOffset: this._depthOffset,
     };
   }
 
+  /**
+   * Move the pose by a delta, eased — SceneViewer.nudgePose's twin, what the hands
+   * (`@displayxr/inline3d/hands`) drive. Degrees to add, zoom a ratio to multiply (within
+   * `zoomOpts`, and it becomes the new REST, as a setPose zoom does, so a relax does not undo a
+   * two-hand zoom). Roll (the two-hand twist) is degrees about the view axis, as on SceneViewer.
+   * Counts as interaction for the idle turntable and ends an orbit relax, like a drag.
+   */
+  nudgePose({ yaw = 0, pitch = 0, zoom = 1, roll = 0 } = {}) {
+    if (this.pageCamera) throw new Error(PAGE_POSE_ERROR);
+    if (yaw || pitch) this._orbitMode = null;
+    if (yaw) this._targetYaw += yaw;
+    if (pitch) this._targetPitch = clamp(this._targetPitch + pitch, this.pitchLimit[0], this.pitchLimit[1]);
+    if (roll) this._targetRoll += roll;
+    if (zoom && zoom !== 1) {
+      const from = this._zoomMode === 'rest' ? this._zoom : this._targetZoom;
+      this._targetZoom = this._restZoom = clamp(from * zoom, this.zoomOpts.min, this.zoomOpts.max);
+      this._zoomMode = null;
+    }
+    this._lastInput = now();
+  }
+
   resetPose() {
     if (this.pageCamera) throw new Error(PAGE_POSE_ERROR);
-    this.setPose({ yaw: 0, pitch: 0, zoom: 1, depthOffset: 0 });
+    this.setPose({ yaw: 0, pitch: 0, zoom: 1, roll: 0, depthOffset: 0 });
     this._lastInput = now();
   }
 
@@ -1012,14 +1234,21 @@ export class PlayCanvasSplatViewer {
     const s = this._fitScale * this._zoom;
     const [hx, hy, hz] = this._subjectHalf;
     // SceneViewer's exact arithmetic (degrees → radians as `(d * Math.PI) / 180`), so the two
-    // viewers report bit-identical boxes (pinned by the behavioural-trace test).
+    // viewers report bit-identical boxes (pinned by the behavioural-trace test). Rows of
+    // R = Rz(roll) · Rx(pitch) · Ry(yaw), |row| · half = the AABB half-extent along that axis;
+    // at roll 0 the first two rows are the old Rx · Ry rows exactly.
     const p = (this._pitch * Math.PI) / 180;
     const y = (this._yaw * Math.PI) / 180;
+    const r = (this._roll * Math.PI) / 180;
     const cp = Math.cos(p), sp = Math.sin(p), cy = Math.cos(y), sy = Math.sin(y);
-    const ex = s * (Math.abs(cy) * hx + Math.abs(sy) * hz);
-    const ey = s * (Math.abs(sp * sy) * hx + Math.abs(cp) * hy + Math.abs(sp * cy) * hz);
+    const cr = Math.cos(r), sr = Math.sin(r);
+    // Rx . Ry rows
+    const a0 = cy, a1 = 0, a2 = sy;
+    const b0 = sp * sy, b1 = cp, b2 = -sp * cy;
+    const ex = s * (Math.abs(cr * a0 - sr * b0) * hx + Math.abs(cr * a1 - sr * b1) * hy + Math.abs(cr * a2 - sr * b2) * hz);
+    const ey = s * (Math.abs(sr * a0 + cr * b0) * hx + Math.abs(sr * a1 + cr * b1) * hy + Math.abs(sr * a2 + cr * b2) * hz);
     const ez = s * (Math.abs(cp * sy) * hx + Math.abs(sp) * hy + Math.abs(cp * cy) * hz);
-    const cz = this._depthOffset;
+    const cz = this._depthOffset + this._screenPlaneShift * s;
     return {
       center: { x: 0, y: 0, z: cz },
       extent: { x: 2 * ex, y: 2 * ey, z: 2 * ez },
@@ -1112,6 +1341,103 @@ export class PlayCanvasSplatViewer {
    * engine's `renderSceneColorMap` setter counts one request per camera. Cameras made later (a
    * view-path switch) inherit it via `_makeCamera`.
    */
+  /**
+   * Compile the forward programs `entity`'s meshes will draw with — through the RENDERER's own
+   * call (MeshInstance.getShaderInstance with the pass, layer light hash, sorted lights, view
+   * uniform format and each eye camera's live shaderParams it will pass), so the variant is the
+   * very one the first draw asks for, cached on the mesh instance — then finish each link in idle
+   * periods (KHR_parallel_shader_compile) instead of on that draw. PlayCanvas's forward renderer
+   * links synchronously on first use (asyncCompile = false): a glTF with ~13 lit materials froze
+   * 0.8–0.95 s on a panel. Calling material.getShaderVariant with hand-built params instead
+   * produces broken variants (`#include "litMainVS"` unresolved) — do not.
+   *
+   * Warm in the state you will draw in: lights, fog, the layer and the camera's render target
+   * key the variant. Needs one frame rendered (the cameras' shaderParams). Resolves the number of
+   * programs warmed (0: nothing to do, or an engine whose internals differ).
+   */
+  async warmEntity(entity, { timeoutMs = 4000 } = {}) {
+    const pc = this.pc;
+    const app = this.app;
+    if (!pc || !app || this._disposed || !entity) return 0;
+    const device = app.graphicsDevice;
+    const scene = app.scene;
+    const renderer = app.renderer;
+    if (!rendererViewArgs(renderer, scene, null, true)) return 0;
+    // [meshInstance, the layer ids it draws in] — a render/model component's own `layers`
+    const groups = [];
+    for (const c of [...(entity.findComponents?.('render') || []), ...(entity.findComponents?.('model') || [])]) {
+      if (c.meshInstances?.length) groups.push([c.meshInstances, c.layers?.length ? c.layers : [pc.LAYERID_WORLD]]);
+    }
+    if (!groups.length) return 0;
+    // Every camera that may draw it: the eye(s), and the layer rig's display/post cameras (a layer on
+    // the display rig — Home's round stage — is drawn ONLY by those, with their own shaderParams;
+    // warming through the eye camera alone missed it and issued a variant nobody draws).
+    const rig = this.layerRigs?.cams;
+    const cams = [this.eye, ...(this._viewPath === 'cameras' ? this._views : []), ...(rig?.display || []), ...(rig?.post || [])]
+      .map((c) => c?.camera)
+      .filter((c) => c?.camera?.shaderParams);
+    const forward = pc.SHADER_FORWARD ?? 0;
+    const shaders = new Set();
+    // Issuing a program compiles its two shaders on THIS thread: 13 lit programs at once were one
+    // 65 ms frame. Time-slice — yield to idle whenever a slice passes SLICE_MS.
+    const SLICE_MS = 8;
+    let slice = now();
+    try {
+      for (const cc of cams) {
+        const shaderParams = cc.camera.shaderParams;
+        // the renderer's own pick (renderForwardLayer): the camera's shader pass, else forward
+        const pass = cc.camera.shaderPassInfo?.index ?? forward;
+        for (const [mis, layerIds] of groups) {
+          for (const layerId of layerIds) {
+            if (cc.layers && !cc.layers.includes(layerId)) continue; // this camera never draws it
+            const layer = scene.layers.getLayerById(layerId);
+            if (!layer) continue;
+            const va = rendererViewArgs(renderer, scene, layer);
+            if (!va) continue;
+            for (const mi of mis) {
+              if (!mi?.mesh || !mi.material) continue;
+              if (((mi.shaderPassMask ?? ~0) & (1 << pass)) === 0) continue;
+              mi.ensureMaterial?.(device);
+              mi.material._scene = scene;
+              mi.material.prepareForRender?.(device, scene);
+              const si = mi.getShaderInstance(pass, va.light, scene, shaderParams, va.viewUniformFormat, va.sortedLights);
+              if (si?.shader) shaders.add(si.shader);
+              if (now() - slice > SLICE_MS) {
+                await yieldIdle(50);
+                if (this._disposed) return 0;
+                slice = now();
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.info(`${this.logTag} warmEntity: could not issue the programs (engine internals differ?)`, err);
+      return 0;
+    }
+    const pending = () => [...shaders].filter((x) => !x.ready && !x.failed && x.impl?.finalize);
+    const t0 = now();
+    while (pending().length && now() - t0 < timeoutMs && !this._disposed) {
+      for (const x of pending()) if (x.impl.isLinked?.(device)) x.impl.finalize(device, x) || (x.failed = true);
+      if (pending().length) await yieldIdle(50);
+    }
+    // still linking (or no completion query): finalize now — a block here, not on the first draw
+    for (const x of pending()) x.impl.finalize(device, x) || (x.failed = true);
+    return shaders.size;
+  }
+
+  /**
+   * Destroy `entity` (content a page added under `engine.root`) and release the programs its
+   * materials linked, plus its glTF container (`asset`) when nothing else draws from it —
+   * ./inline3d-pc-release.js, docs/content-lifecycle-rules.md. Returns { programs, container }.
+   */
+  releaseEntity(entity, { asset = null } = {}) {
+    if (!this.app || this._disposed) return { programs: 0, container: null };
+    const r = releaseEntityIn(this.app, entity, { asset });
+    this.onContentReleased?.(r);
+    return r;
+  }
+
   useSceneColor(on = true) {
     this.sceneColor = !!on;
     const cams = [this.eye, ...(this._viewPath === 'cameras' ? this._views : [])];
@@ -1122,6 +1448,8 @@ export class PlayCanvasSplatViewer {
   resetFit() {
     this._fitScale = 1;
     this._subjectHalf = [0, 0, 0];
+    this._screenPlaneShift = 0;
+    this._framedDepth = null;
     this._applyTransform();
   }
 
@@ -1141,19 +1469,25 @@ export class PlayCanvasSplatViewer {
   }
 
   /** wall.addScene's frame callback. Validate BEFORE drawing; replay the last good frame else. */
-  onFrame(views, layer) {
+  onFrame(views, layer, frame) {
     if (this._disposed) return;
     if (this._mode !== '3d') this.stopMono();
+    // cursor: 'depth' hands its depth to this layer where the runtime draws the web cursor (ADR-046 Amendment 4).
+    this._frameLayer = layer || null;
     // The rig these views were located with: Blink chained the rig declared BEFORE this callback,
     // and the tick below may declare a new one (a focus ease) for the NEXT locate.
-    if (this.layerRigs?.active) this._rigSnap = snapshotRig(this.layerRigSource?.(), this._rigSnap);
+    if (this.layerRigs?.active) {
+      this._rigSnap = snapshotRig(this.layerRigSource?.(), this._rigSnap);
+      // n for the layer rig: the browser's nominal viewer, asked once (async; no-op after).
+      this.layerRigs.noteLayer(layer);
+    }
     // Same moment, for the rig map: the rig these views were most likely located for (a tie-break).
     this._rigAtPull = this.rigTrack ? this.rigTrack.latest : null;
     // BEFORE the tick: a pose the page sets in here is the one this very frame renders.
     this._beforeFrame?.(views || null);
     this._tick();
     if (!views || views.length < 2) {
-      this._replayLastGood();
+      this._replayOrFlat();
       return;
     }
     const vps = this._vps;
@@ -1161,12 +1495,15 @@ export class PlayCanvasSplatViewer {
     for (const view of views) {
       const vp = layer && typeof layer.getViewport === 'function' ? layer.getViewport(view) : null;
       if (!vp || !(vp.width > 0) || !(vp.height > 0)) {
-        this._replayLastGood();
+        this._replayOrFlat();
         return;
       }
       vps.push(vp);
     }
     this._cacheGood(views, vps);
+    // Ease a tracking acquisition/loss on the copies (never the XRViews), before anything —
+    // the rig map, the layer rig, the live outgoing photo — reads them.
+    (this.viewerEase ||= viewerEaseFor(frame, this._viewerEaseOpt)).apply(this._lastGood.entries, frameTrackingState(frame));
     this._drawEntries(this._lastGood.entries, this._lastGood);
   }
 
@@ -1179,6 +1516,8 @@ export class PlayCanvasSplatViewer {
       this._monoRaf = requestAnimationFrame(loop);
       this._beforeFrame?.(null);
       if (this._disposed || this._mode !== 'mono') return; // the callback removed or re-wove us
+      this._frameLayer = null;
+      this.cursorDepth?.inactive(); // 2D: the normal cursor
       this._tick();
       this._drawMono();
     };
@@ -1209,6 +1548,8 @@ export class PlayCanvasSplatViewer {
     this._live = null;
     this._videoPlane?.destroy();
     this._videoPlane = null;
+    this.cursorDepth?.dispose();
+    this.cursorDepth = null;
     this.layerRigs = null; // its cameras go with the app
     try {
       this.app?.destroy();
@@ -1230,7 +1571,7 @@ export class PlayCanvasSplatViewer {
    * @param {object} o.perf  the resolved playcanvasPerfSettings().
    * @param {string} [o.viewPath]  force 'cameras' | 'renderview' (diagnostics).
    */
-  async attachEngine(pc, { preserveDrawingBuffer = false, perf, viewPath, antialias = false, patchSplats = true } = {}) {
+  async attachEngine(pc, { preserveDrawingBuffer = false, perf, viewPath, antialias = false, patchSplats = true, shaderCacheRelease = true, programRelease = true } = {}) {
     this.pc = pc;
     const device = await pc.createGraphicsDevice(this.canvas, {
       deviceTypes: [pc.DEVICETYPE_WEBGL2],
@@ -1246,6 +1587,11 @@ export class PlayCanvasSplatViewer {
       device.destroy?.();
       return null;
     }
+    // The engine keeps every compiled shader until the device dies, even once its program is
+    // destroyed: count them per program and free the last one out (./inline3d-pc-shader-cache.js).
+    // `?dxrdiag=keepshaders` leaves the engine's cache as it ships (A/B; page-wide, first tile wins).
+    if (shaderCacheRelease) installShaderCacheRelease(device);
+    else device.__dxrShaderCache ??= 'off (keepshaders)';
     const opts = new pc.AppOptions();
     opts.graphicsDevice = device;
     // No xr (AppBase constructs XrManager only when asked, and XrManager is what probes and
@@ -1257,6 +1603,11 @@ export class PlayCanvasSplatViewer {
     const app = new pc.AppBase(this.canvas);
     app.init(opts);
     guardDuplicateSystems(app);
+    // A material the page destroys (entity.destroy, a container's unload) keeps every program it
+    // linked for the device's life: release them a frame later, when nothing else uses them
+    // (./inline3d-pc-auto-release.js). `?dxrdiag=keepprograms` leaves the engine as it ships (A/B).
+    if (programRelease) installAutoProgramRelease(app, pc.Material);
+    else device.__dxrAutoRelease ??= 'off (keepprograms)';
     // The SDK sizes the buffer (double-width in 3D, 1:1 in mono), so the engine must never
     // resize it. RESOLUTION_FIXED is AppBase's DEFAULT, and with it `updateCanvasSize()` is a
     // no-op. Deliberately NOT calling setCanvasResolution/setCanvasFillMode: without explicit
@@ -1278,6 +1629,9 @@ export class PlayCanvasSplatViewer {
     // The SDK's frame drives the engine: no second rAF. `tick` is the engine's own loop body.
     app.requestAnimationFrame = () => {};
     this.app = app;
+    // The store may have been sized before the engine existed (from the probed limits, or none):
+    // re-check it against THIS context's. A no-op when nothing moves.
+    this._scheduleResize();
 
     // Footprint fix (§ patchGsplatFootprint) and the perf quad-extent cap, both as chunk
     // overrides. The gsplat chunks are registered by GSplatComponentSystem during init, so
@@ -1285,17 +1639,7 @@ export class PlayCanvasSplatViewer {
     // ./model passes patchSplats:false: its subject is a mesh, and a page adding a splat under
     // handle.engine.root on a model tile gets the engine's stock footprint (documented).
     const chunks = patchSplats ? pc.ShaderChunks.get(device, pc.SHADERLANGUAGE_GLSL) : null;
-    const corner = chunks ? patchGsplatFootprint(chunks.get('gsplatCornerVS')) : { ok: false, skipped: true };
-    if (corner.ok) chunks.set('gsplatCornerVS', corner.src);
-    else if (!corner.skipped && !warnedFootprint) {
-      warnedFootprint = true;
-      console.warn(
-        '[inline3d/splat] engine:playcanvas — this engine build does not have the gsplatCornerVS ' +
-          'lines the non-square-pixel footprint fix rewrites, so it is SKIPPED: side-by-side ' +
-          'splats will draw at half height (vertical stipple). Report the engine version; the ' +
-          'anchors are in js/inline3d-splat-playcanvas.js.',
-      );
-    }
+    const corner = chunks ? installGsplatFootprint(chunks) : { ok: false, skipped: true };
     this.footprintPatched = corner.ok;
     if (chunks && perf?.quadExtent) {
       const q = patchPlayCanvasQuadExtent(chunks.get('gsplatCommonVS'), perf.quadExtent);
@@ -1328,6 +1672,14 @@ export class PlayCanvasSplatViewer {
     if (this.featherPx > 0) this._makeFeather();
     this._applyTransform();
     app.start();
+    if (this._cursorOpt) {
+      const cursorOpts = this._cursorOpt;
+      import('./inline3d-cursor-depth-playcanvas.js')
+        .then(({ PlayCanvasDepthCursor }) => {
+          if (!this._disposed) this.cursorDepth = new PlayCanvasDepthCursor(pc, this, { ...cursorOpts, canvas: this.canvas });
+        })
+        .catch((err) => console.warn(`${this.logTag || '[inline3d/splat]'} cursor: 'depth' could not load; the normal cursor stays.`, err));
+    }
     return app;
   }
 
@@ -1648,7 +2000,7 @@ export class PlayCanvasSplatViewer {
   lensFrame() {
     const pose = Float64Array.from(this.mono.pose);
     const o = this._orbitCentre;
-    const fz = o.z + this._depthOffset;
+    const fz = o.z + this._liveDepthOffset();
     let c = -((o.x - pose[12]) * pose[8] + (o.y - pose[13]) * pose[9] + (fz - pose[14]) * pose[10]);
     if (!(c > 1e-6)) c = 1;
     return { rig: this.rigMatrix(), pose, c, t: Math.tan((this.mono.fov * DEG) / 2) };
@@ -1798,7 +2150,7 @@ export class PlayCanvasSplatViewer {
     const pc = this.pc;
     const e = new pc.Entity(name, this.app);
     e.addComponent('camera', {
-      clearColor: new pc.Color(0, 0, 0, 0),
+      clearColor: this.clearColor ? new pc.Color(this.clearColor[0], this.clearColor[1], this.clearColor[2], this.clearColor[3]) : new pc.Color(0, 0, 0, 0),
       nearClip: MONO_NEAR,
       farClip: MONO_FAR,
       fov: MONO_FOV,
@@ -1855,6 +2207,9 @@ export class PlayCanvasSplatViewer {
     const box = this.canvas.getBoundingClientRect();
     const aspect = box.height > 0 ? box.width / box.height : 1;
     this.boxAspect = aspect; // setVideo's plane reads it per frame (no layout read in the draw)
+    // and this, for its on-screen rect: a NEW object only when the size changed (the plane's rect
+    // check compares identity, so an unchanged frame allocates nothing).
+    if (!this.boxCss || this.boxCss.w !== (box.width || 0) || this.boxCss.h !== (box.height || 0)) this.boxCss = { w: box.width || 0, h: box.height || 0 };
     if (this.mono.capture) {
       captureProjection(this.mono.capture, aspect, this.mono.near, this.mono.far, this.mono.proj, this.captureFit);
       if (this.captureFit !== 'height') {
@@ -1867,14 +2222,43 @@ export class PlayCanvasSplatViewer {
     } else perspectiveFov(this.mono.fov, aspect, this.mono.near, this.mono.far, this.mono.proj);
   }
 
+  /**
+   * handle.setViewOffset — a normalised eye offset in the mono camera's plane (see offsetMonoView),
+   * clamped to the unit disc. Mono only: in woven 3D the head tracker owns the eyes and this is
+   * stored but not drawn; on controls:'page' the page owns the camera and it is ignored. A snap,
+   * like setPose, so the page eases it (and the frame loop draws it next frame).
+   */
+  setViewOffset(x, y) {
+    const r = Math.hypot(x, y);
+    const k = r > 1 ? 1 / r : 1;
+    this._viewOffset[0] = x * k;
+    this._viewOffset[1] = y * k;
+  }
+
+  /** The mono camera as drawn: the offset one when setViewOffset is engaged, else mono itself. */
+  _monoView() {
+    const m = this.mono;
+    const [ox, oy] = this._viewOffset;
+    if (this.pageCamera || (!ox && !oy)) return { proj: m.proj, pose: m.pose };
+    const o = this._orbitCentre;
+    const p = m.pose;
+    // The focus's distance along the view axis (−z): the pivot puts it at the orbit centre.
+    const c = -((o.x - p[12]) * p[8] + (o.y - p[13]) * p[9] + (o.z + this._liveDepthOffset() - p[14]) * p[10]);
+    return offsetMonoView(p, m.proj, ox, oy, c, this.orbitMaxDeg, this._offPose, this._offProj)
+      ? { proj: this._offProj, pose: this._offPose }
+      : { proj: m.proj, pose: m.pose };
+  }
+
   _drawMono() {
     const c = this.canvas;
     this._monoEntry ||= [{ proj: this.mono.proj, pose: this.mono.pose, x: 0, y: 0, width: 0, height: 0 }];
     const e = this._monoEntry[0];
-    e.proj = this.mono.proj;
-    e.pose = this.mono.pose;
-    e.width = c.width;
-    e.height = c.height;
+    const v = this._monoView();
+    e.proj = v.proj;
+    e.pose = v.pose;
+    const b = this._bufScale();
+    e.width = b.w || c.width;
+    e.height = b.h || c.height;
     this._drawEntries(this._monoEntry, null);
   }
 
@@ -1883,12 +2267,21 @@ export class PlayCanvasSplatViewer {
    * engine tick. Every entry is {proj, pose, x, y, width, height} in BUFFER pixels.
    */
   _drawEntries(entries, cache) {
+    // `_drawing` is what _resizeNow checks: never reallocate the buffer under a running render.
+    if (this._drawing) return this._drawEntriesInner(entries, cache);
+    this._drawing = true;
+    try {
+      return this._drawEntriesInner(entries, cache);
+    } finally {
+      this._drawing = false;
+    }
+  }
+
+  _drawEntriesInner(entries, cache) {
     const app = this.app;
     if (!app || !this.pc) return false;
     const pc = this.pc;
-    const el = this.canvas;
-    const sx = cache && cache.bufW > 0 && el.width ? el.width / cache.bufW : 1;
-    const sy = cache && cache.bufH > 0 && el.height ? el.height / cache.bufH : 1;
+    const { b, sx, sy } = this._entryScale(cache);
     if (this.pageCamera) {
       // The page's near/far join the caller's nearClip/farClip as a floor and a cap: only the
       // depth mapping moves, the runtime's frustum (fov, skew, principal point) stays untouched.
@@ -1940,8 +2333,11 @@ export class PlayCanvasSplatViewer {
       // setSource's wavefront: this frame's eye views, as the engine is about to compose them.
       this.onBeforeRender?.(entries, rect);
       // handle.setLayerRig: the display / post run cameras, on the same views (display: rounded).
-      if (this.layerRigs && this.layerRigs.sync()) {
-        this.layerRigs.frame(eyeViews ? rf.cull : entries, rect, f, eyeViews ? rf.eye.rig : rf.located ? rf.located.rig : cache ? cache.rig : null);
+      if (this.layerRigs) {
+        this.layerRigs.frame(eyeViews ? rf.cull : entries, rect, f, eyeViews ? rf.eye.rig : rf.located ? rf.located.rig : cache ? cache.rig : null, {
+          located: this.rigTrack && entries.length > 1 ? !!rf.located : null,
+          residual: this.rigTrack?.lastResidual ?? null,
+        });
       }
     } else {
       // Fallback: one camera per view, `rect` + `calculateProjection`.
@@ -1960,8 +2356,8 @@ export class PlayCanvasSplatViewer {
         this._budgetViews = entries.length;
         this._applyBudget();
       }
-      const W = el.width || 1;
-      const H = el.height || 1;
+      const W = b.w || 1;
+      const H = b.h || 1;
       for (let i = 0; i < entries.length; i++) {
         const e = entries[i];
         const cam = cams[i];
@@ -1974,6 +2370,15 @@ export class PlayCanvasSplatViewer {
         cam.camera.rect = new pc.Vec4(x / W, y / H, w / W, h / H);
         placeNode(cam, e.pose);
       }
+      // handle.setLayerRig on the N-camera path: N display / post cameras mirroring these, the
+      // views as located (this path draws the photo through them too — no remap here).
+      if (this.layerRigs) {
+        const rf = this._mapViews(entries, cache ? cache.rigAt : null);
+        this.layerRigs.frame(entries, rect, null, rf.located ? rf.located.rig : cache ? cache.rig : null, {
+          located: this.rigTrack && entries.length > 1 ? !!rf.located : null,
+          residual: this.rigTrack?.lastResidual ?? null,
+        });
+      }
     }
     this._updateFeather(entries[0].width * sx, entries[0].height * sy);
     // handle.makeSbsMaterial: the eye split, scene-wide (a material only declares the uniform).
@@ -1984,6 +2389,8 @@ export class PlayCanvasSplatViewer {
     }
     // handle.setVideo's plane: size, eye split, and a new frame's upload (./inline3d-splat-video.js).
     this._videoPlane?.beforeDraw(entries, rect);
+    // cursor: 'depth' — place the sprite and queue its lines for the tick below (no-op unless opted in).
+    this.cursorDepth?.frame(entries, this._frameLayer);
     app.tick(now());
     this._afterTick();
     return true;
@@ -2000,6 +2407,7 @@ export class PlayCanvasSplatViewer {
     }
     g.bufW = el.width || 0;
     g.bufH = el.height || 0;
+    g.boxAspect = this.boxAspect || 0; // the CSS shape these views were located for (see _replayLastGood)
     g.rig = this._rigSnap ? { ...this._rigSnap } : null; // a replay re-uses the rig of its views
     g.rigAt = this._rigAtPull ?? null;
     for (let i = 0; i < views.length; i++) {
@@ -2014,10 +2422,90 @@ export class PlayCanvasSplatViewer {
     }
   }
 
+  /**
+   * A session frame that cannot draw its own views still PRESENTS: the last good frame, or —
+   * before there is one — the mono camera into both halves (flat, the subject if loaded, else
+   * the clear colour). A woven canvas that is not redrawn can drop out of the frame the
+   * compositor aggregates (woven-canvas-rules, "redraw every frame"), and a load-fallback frame
+   * before the first stereo one is exactly when no cache exists. The only frame this cannot
+   * cover is one before the engine has attached: there is no GL context yet, and creating one
+   * here would create it with the wrong attributes.
+   */
+  _replayOrFlat() {
+    return this._replayLastGood() || this._drawFlatPair();
+  }
+
+  _drawFlatPair() {
+    if (this._disposed || !this.app || !this.pc) return false;
+    const b = this._bufScale();
+    const W = b.w || this.canvas.width;
+    const H = b.h || this.canvas.height;
+    if (!(W > 1) || !(H > 0)) return false;
+    const half = Math.floor(W / 2);
+    const v = this._monoView();
+    const pair = (this._flatPair ||= [0, 1].map(() => ({ proj: null, pose: null, x: 0, y: 0, width: 0, height: 0 })));
+    for (let i = 0; i < 2; i++) {
+      const e = pair[i];
+      e.proj = v.proj;
+      e.pose = v.pose;
+      e.x = i * half;
+      e.y = 0;
+      e.width = half;
+      e.height = H;
+    }
+    return this._drawEntries(pair, null);
+  }
+
   _replayLastGood() {
     const g = this._lastGood;
     if (!g || this._disposed) return false;
-    return this._drawEntries(g.entries, g);
+    // A box whose aspect changed since the cache (a CSS resize replayed before the runtime has
+    // located views for the new rect): the cached frustum was built for the OLD shape, and the
+    // viewports map onto the new buffer proportionally, so the picture would be stretched by
+    // exactly the aspect ratio change. Widen (or narrow) the frustum by the same factor —
+    // dividing the projection's x row by it — so the replayed frame keeps its proportions. One
+    // frame's approximation: the next located views carry the true frustum for the new window.
+    const f = g.boxAspect > 0 && this.boxAspect > 0 ? this.boxAspect / g.boxAspect : 1;
+    if (Math.abs(f - 1) < 1e-6) return this._drawEntries(g.entries, g);
+    const fixed = (this._aspectFixed ||= []);
+    fixed.length = g.entries.length;
+    for (let i = 0; i < g.entries.length; i++) {
+      const e = g.entries[i];
+      const o = (fixed[i] ||= { proj: new Float32Array(16), pose: null, x: 0, y: 0, width: 0, height: 0 });
+      o.proj.set(e.proj);
+      o.proj[0] /= f;
+      o.proj[4] /= f;
+      o.proj[8] /= f;
+      o.proj[12] /= f;
+      o.pose = e.pose;
+      o.x = e.x;
+      o.y = e.y;
+      o.width = e.width;
+      o.height = e.height;
+    }
+    return this._drawEntries(fixed, g);
+  }
+
+  /**
+   * The observer's resize, synchronous. Two cases still take the debounced path instead: a call
+   * that arrives while this viewer is already resizing (re-entrancy: setting canvas.width can
+   * queue more observer work), and one that arrives while it is drawing (a nested dispatch from
+   * inside the engine's tick). Reallocating the drawing buffer under a running render would
+   * leave that render half on a cleared store.
+   */
+  _resizeNow() {
+    if (this._disposed) return;
+    if (this._inResize || this._drawing) {
+      this._scheduleResize();
+      return;
+    }
+    this._resizePending = false; // this run supersedes a debounced one already queued
+    this._inResize = true;
+    try {
+      this._resize();
+    } finally {
+      this._inResize = false;
+    }
   }
 
   _scheduleResize() {
@@ -2037,17 +2525,68 @@ export class PlayCanvasSplatViewer {
     if (this._disposed) return;
     const box = this.canvas.getBoundingClientRect();
     if (box.width < 1 || box.height < 1) return;
+    this.viewerEase?.reset(); // a new window size moves every projection: not a viewer jump
     const dpr = Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2) * this.renderScale;
-    const w = Math.max(1, Math.round(box.width * dpr));
-    const h = Math.max(1, Math.round(box.height * dpr));
-    const bufW = this._mode === 'mono' ? w : w * 2;
+    // Clamp to the device's GL limits BEFORE sizing (./inline3d-buffer-limit.js). Measured on an
+    // Adreno 740 tablet: MAX_TEXTURE_SIZE 4096, a 5120-wide request silently became a 4096-wide
+    // drawing buffer, getViewport() still split 5120, and the eye boundary sat at 62.5%.
+    const c = clampEyeBuffer(
+      Math.max(1, Math.round(box.width * dpr)),
+      Math.max(1, Math.round(box.height * dpr)),
+      glBufferLimits(this.app?.graphicsDevice?.gl) || probeBufferLimits(),
+      { cols: this._mode === 'mono' ? 1 : 2 },
+    );
+    this._noteClamp(c);
+    const bufW = c.bufW;
+    const h = c.bufH;
     this._updateMonoProjection();
     const el = this.canvas;
-    if (el.width === bufW && el.height === h) return;
+    if (el.width === bufW && el.height === h) {
+      this._bufScale(); // unchanged; still name a browser-side clamp (once)
+      return;
+    }
     el.width = bufW;
     el.height = h;
+    this._bufScale(); // warns once if the browser clamped anyway
     if (this._mode === 'mono') this._drawMono();
     else this._replayLastGood();
+  }
+
+  /** The renderScale in force: the request times the device-limit clamp (SceneViewer's twin). */
+  get effectiveRenderScale() {
+    return this.renderScale * this._bufClamp;
+  }
+
+  _noteClamp(c) {
+    this._bufClamp = c.scale;
+    if (c.clamped && !this._warnedBufClamp) {
+      this._warnedBufClamp = true;
+      console.warn(clampWarning(this.logTag, c, this.renderScale));
+    }
+  }
+
+  /**
+   * How a frame's entries map into the buffer. Entries are in canvas-attribute px (getViewport()
+   * splits canvas.width), cached with that size; they are drawn into the REAL drawing buffer.
+   * Identity unless a resize happened since the cache or the browser clamped the buffer behind
+   * the SDK (the device-limit clamp in _resize normally prevents that).
+   */
+  _entryScale(cache) {
+    const b = this._bufScale();
+    const sx = cache && cache.bufW > 0 && b.w ? b.w / cache.bufW : 1;
+    const sy = cache && cache.bufH > 0 && b.h ? b.h / cache.bufH : 1;
+    return { b, sx, sy };
+  }
+
+  /** The real drawing buffer vs canvas.width/height; warns once per viewer on a mismatch. */
+  _bufScale() {
+    const el = this.canvas;
+    const b = bufferScale(el, this.app?.graphicsDevice?.gl || null);
+    if (b.mismatch && !this._warnedBufMismatch) {
+      this._warnedBufMismatch = true;
+      console.warn(mismatchWarning(this.logTag, el, b));
+    }
+    return b;
   }
 
   _tick() {
@@ -2064,6 +2603,8 @@ export class PlayCanvasSplatViewer {
     const ko = tau > 0 ? (dt > 0 ? 1 - Math.exp(-dt / tau) : 0) : k;
     this._yaw += (this._targetYaw - this._yaw) * ko;
     this._pitch += (this._targetPitch - this._pitch) * ko;
+    // Roll has no drag / relax phase (only the hands and setPose write it): the ordinary damping.
+    if (this._roll !== this._targetRoll) this._roll += (this._targetRoll - this._roll) * k;
     if (
       this._orbitMode === 'rest' &&
       Math.abs(this._targetYaw - this._yaw) < 0.01 &&
@@ -2123,7 +2664,7 @@ export class PlayCanvasSplatViewer {
    */
   eyeFrame() {
     const R = this.rigMatrix();
-    const es = this._mode === '3d' && this._lastGood ? this._lastGood.entries : [{ pose: this.mono.pose, proj: this.mono.proj }];
+    const es = this._mode === '3d' && this._lastGood ? this._lastGood.entries : [this._monoView()];
     const o = [0, 0, 0];
     for (const e of es) {
       const M = mat4Mul(R, e.pose);
@@ -2147,6 +2688,26 @@ export class PlayCanvasSplatViewer {
       up: unit(M[4], M[5], M[6]),
       tanHalfFovX: p0 > 0 ? 1 / p0 : 0.5,
       tanHalfFovY: es[0].proj?.[5] > 0 ? 1 / es[0].proj[5] : 0,
+    };
+  }
+
+  /**
+   * The MONO camera's frame in WORLD (content) space — the rig the page declared, not the tracked
+   * eyes: `origin`, unit `axis`/`right`/`up`, and `scale` = world units per rig unit (the rig
+   * node's uniform scale). The depth envelope keys on it, so it holds still under head motion.
+   */
+  monoFrame() {
+    const M = mat4Mul(this.rigMatrix(), this.mono.pose);
+    const len = (x, y, z) => Math.hypot(x, y, z) || 1;
+    const sx = len(M[0], M[1], M[2]);
+    const sy = len(M[4], M[5], M[6]);
+    const sz = len(M[8], M[9], M[10]);
+    return {
+      origin: [M[12], M[13], M[14]],
+      axis: [-M[8] / sz, -M[9] / sz, -M[10] / sz],
+      right: [M[0] / sx, M[1] / sx, M[2] / sx],
+      up: [M[4] / sy, M[5] / sy, M[6] / sy],
+      scale: Math.cbrt(sx * sy * sz),
     };
   }
 
@@ -2180,11 +2741,21 @@ export class PlayCanvasSplatViewer {
     return {
       yaw: this._yaw,
       pitch: this._pitch,
+      roll: this._roll,
       scale: this._fitScale * this._zoom,
       focus: [f.x, f.y, f.z],
       orbitCentre: [o.x, o.y, o.z],
-      depthOffset: this._depthOffset,
+      depthOffset: this._liveDepthOffset(),
     };
+  }
+
+  /**
+   * The display-space depth slide in force: the author's `depthOffset` plus the framing's
+   * screen-plane slide (fitTo's `screenPlaneZ`, which scales with fit × zoom). Equal to
+   * `depthOffset` for every subject framed without `screenPlaneZ`.
+   */
+  _liveDepthOffset() {
+    return this._depthOffset + this._screenPlaneShift * this._fitScale * this._zoom;
   }
 
   /**
@@ -2230,6 +2801,7 @@ export class PlayCanvasSplatViewer {
     };
     const endDrag = () => {
       dragging = false;
+      if (this.orbitStyle === 'turntable') return; // stays where it was turned
       this._targetYaw = restYaw;
       this._targetPitch = clamp(restPitch, this.pitchLimit[0], this.pitchLimit[1]);
       this._orbitMode = 'rest';
@@ -2259,7 +2831,8 @@ export class PlayCanvasSplatViewer {
       // Rest = where the pose was heading when pressed (an idle turntable's yaw included).
       restYaw = this._orbitMode ? restYaw : this._targetYaw;
       restPitch = this._orbitMode ? restPitch : this._targetPitch;
-      this._orbitMode = 'drag';
+      // turntable: the ordinary damping (no drag ease, no relax), as SceneViewer
+      this._orbitMode = this.orbitStyle === 'turntable' ? null : 'drag';
       this._lastInput = now();
     };
     this._onMove = (ev) => {
@@ -2273,6 +2846,20 @@ export class PlayCanvasSplatViewer {
       }
       if (!dragging) return;
       const box = el.getBoundingClientRect();
+      if (this.orbitStyle === 'turntable') {
+        // SceneViewer's drag (./inline3d-viewer.js): a full drag across the tile is a half turn,
+        // accumulated from the last move, near face following the pointer on both axes.
+        this._targetYaw += ((ev.clientX - startX) / Math.max(box.width, 1)) * DRAG_DEG_PER_TILE;
+        this._targetPitch = clamp(
+          this._targetPitch + ((ev.clientY - startY) / Math.max(box.height, 1)) * DRAG_DEG_PER_TILE,
+          this.pitchLimit[0],
+          this.pitchLimit[1],
+        );
+        startX = ev.clientX;
+        startY = ev.clientY;
+        this._lastInput = now();
+        return;
+      }
       const dx = (ev.clientX - startX) / Math.max(box.width, 1);
       const dy = (ev.clientY - startY) / Math.max(box.height, 1);
       const max = this.orbitMaxDeg;
@@ -2340,7 +2927,7 @@ export class PlayCanvasSplatViewer {
   /** The camera currently on screen: [proj, pose] of the first eye in 3D, the mono camera else. */
   currentView() {
     if (this._mode === '3d' && this._lastGood) return this._lastGood.entries[0];
-    return { proj: this.mono.proj, pose: this.mono.pose };
+    return this._monoView();
   }
 }
 
@@ -2649,6 +3236,77 @@ const PAGE_SETRIG_ERROR =
   "@displayxr/inline3d/splat: setRig() is not available with controls:'page' — the page owns the " +
   'camera (its camera IS the rig). Drive it with handle.setCameraPose(matrixWorld, { verticalFovDeg, near, far }).';
 
+/** handle.setDepthEnvelope's defaults, metres on the panel (Ride Spatial's depth rules v2). */
+export const DEPTH_ENVELOPE_DEFAULTS = Object.freeze({ maxFrontM: 0.02, edgeM: 0.001, bandM: 0.016 });
+
+/**
+ * handle.setDepthEnvelope's argument, validated and merged onto the current one (throws at the
+ * call). A key given replaces; `null` (the whole argument) turns the envelope off. Rects are kept
+ * as given (canvas fractions, y DOWN) plus `f` — [l, r, b, t] canvas-normalised, y UP — for the
+ * shader; more than ENVELOPE_MAX_RECTS keeps the heaviest (then largest) ones.
+ */
+export function validateDepthEnvelope(o, prev) {
+  if (o === null) return null;
+  const E = '@displayxr/inline3d/splat: setDepthEnvelope';
+  if (typeof o !== 'object' || Array.isArray(o)) throw new TypeError(`${E} takes an object or null.`);
+  const keys = ['maxFrontM', 'edgeM', 'bandM', 'stage', 'rects', 'viewerM', 'canvasSizeM'];
+  const unknown = Object.keys(o).filter((k) => !keys.includes(k));
+  if (unknown.length) throw new Error(`${E} — unknown option(s) ${unknown.join(', ')}.`);
+  const next = { ...DEPTH_ENVELOPE_DEFAULTS, stage: { x: 0, y: 0, w: 1, h: 1 }, rects: [], viewerM: null, canvasSizeM: null, ...(prev || {}) };
+  const num = (k, v, min, max = Infinity) => {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < min || v > max) throw new RangeError(`${E} — ${k} must be a finite number in [${min}, ${max}] (got ${v}).`);
+    return v;
+  };
+  const rect = (r, what) => {
+    if (!r || typeof r !== 'object') throw new TypeError(`${E} — ${what} must be { x, y, w, h }.`);
+    const x = num(`${what}.x`, r.x, -10, 10);
+    const y = num(`${what}.y`, r.y, -10, 10);
+    const w = num(`${what}.w`, r.w, 0, 20);
+    const h = num(`${what}.h`, r.h, 0, 20);
+    return { x, y, w, h, f: [2 * x - 1, 2 * (x + w) - 1, 1 - 2 * (y + h), 1 - 2 * y] };
+  };
+  for (const k of ['maxFrontM', 'edgeM', 'bandM']) if (k in o && o[k] !== undefined) next[k] = num(k, o[k], k === 'bandM' ? 1e-5 : 0, 1);
+  if ('viewerM' in o && o.viewerM !== undefined) next.viewerM = o.viewerM === null ? null : num('viewerM', o.viewerM, 0.05, 10);
+  if ('canvasSizeM' in o && o.canvasSizeM !== undefined) {
+    const c = o.canvasSizeM;
+    if (c === null) next.canvasSizeM = null;
+    else {
+      if (!Array.isArray(c) || c.length !== 2) throw new TypeError(`${E} — canvasSizeM must be [width, height] in metres, or null.`);
+      next.canvasSizeM = [num('canvasSizeM[0]', c[0], 1e-4, 10), num('canvasSizeM[1]', c[1], 1e-4, 10)];
+    }
+  }
+  if ('stage' in o && o.stage !== undefined) next.stage = o.stage === null ? { x: 0, y: 0, w: 1, h: 1 } : rect(o.stage, 'stage');
+  next.stage = next.stage.f ? next.stage : rect(next.stage, 'stage');
+  if ('rects' in o && o.rects !== undefined) {
+    if (o.rects !== null && !Array.isArray(o.rects)) throw new TypeError(`${E} — rects must be an array.`);
+    next.rects = (o.rects || [])
+      .map((r, i) => ({ ...rect(r, `rects[${i}]`), weight: r.weight === undefined ? 1 : num(`rects[${i}].weight`, r.weight, 0, 1) }))
+      .filter((r) => r.weight > 0 && r.w > 0 && r.h > 0)
+      .sort((a, b) => b.weight - a.weight || b.w * b.h - a.w * a.h)
+      .slice(0, ENVELOPE_MAX_RECTS);
+  }
+  if (next.edgeM > next.maxFrontM) next.edgeM = next.maxFrontM;
+  return next;
+}
+
+/**
+ * prepareSource's `warmEffects`: an array of effect names, or of { name, opts } (validated as a
+ * playEffect call, at prepareSource's own line). Returns [{ name, opts }].
+ */
+export function validateWarmEffects(list) {
+  if (list === undefined) return [];
+  if (!Array.isArray(list)) throw new TypeError('@displayxr/inline3d/splat: prepareSource warmEffects must be an array of effect names or { name, opts }.');
+  return list.map((w) => {
+    const e = typeof w === 'string' ? { name: w, opts: {} } : { name: w?.name, opts: w?.opts ?? {} };
+    validateEffectCall(e.name, e.opts, 'play');
+    return e;
+  });
+}
+
+// validateSetStereo lives in ./inline3d-splat-shared.js now (./model's setStereo shares it); it is
+// re-exported from here so every name this module exported before still resolves.
+export { validateSetStereo };
+
 /**
  * handle.setRig's arguments, validated and resolved (throws at the call, before anything runs).
  * @returns {{type:'display'|'camera'|'auto', o?:object}}
@@ -2891,6 +3549,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   // an advanced caller may reach this function directly.
   const ctl = resolveControls(opts);
   const pageMode = ctl.page;
+  const depthOption = resolveDepthOption(opts.depth);
   if (pageMode && ctl.ignored.length) {
     console.info(
       `[inline3d/splat] controls:'page' — the page owns the camera, so ${ctl.ignored.join(', ')} ` +
@@ -2920,10 +3579,29 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     nearClip: opts.nearClip,
     farClip: opts.farClip,
     sky: opts.sky,
+    viewerEase: opts.viewerEase,
+    cursor: opts.cursor,
+    // Opt-in; undefined = the viewer's own default (a transparent clear).
+    clearColor: opts.clearColor,
   });
 
   let handle = null;
   let unbindFocusInput = null;
+  // `depth: 'auto'` (opt-in): the comfort factor, multiplied under setStereo's on the DISPLAY rig
+  // declareDisplay sends (camera rigs and setVideo's own rig never carry it). Without the option:
+  // inert, `depthFactor` 1, nothing measured, nothing declared.
+  const depth = attachComfortDepth(out, {
+    option: depthOption,
+    canvas,
+    getTile: () => handle,
+    getBounds: () => (out.rig && out.rig.type !== 'camera' && !vid?.on ? framedSubjectBounds(viewer) : null),
+    getVH: () => viewer.vH,
+    apply: () => {
+      if (!pageMode && !vid?.on && out.rig?.type !== 'camera' && lastDisplayBase) declareDisplay(lastDisplayBase);
+    },
+    tag: '[inline3d/splat]',
+  });
+  if (pageMode) depth.ignore("controls:'page' (the page's camera rig)");
 
   // ── diagnostics (diag / ?dxrdiag — ./inline3d-splat-diag.js) ──
   const diagCfg = resolveDiag(opts.diag);
@@ -2949,7 +3627,6 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let removed = false;
   // handle.setLayerRig: the per-rig cameras and where they read the declared rig from.
   // Kill switch `nolayerrig`: requests are recorded but every layer stays on the eye camera.
-  let warnedLayerRigPath = false;
   function layerRigs() {
     if (!viewer.layerRigs) {
       viewer.layerRigs = new LayerRigCameras(viewer);
@@ -2970,6 +3647,25 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let cancelPendingVideo = null;
   let warnedAutoplayMuted = false;
 
+  // The per-eye buffer scale IN FORCE: the request (the `renderScale` option, or the last
+  // setRenderScale) times the device-limit clamp — e.g. 0.8 for a request of 1 on a device whose
+  // MAX_TEXTURE_SIZE cannot hold the full SBS store (./inline3d-buffer-limit.js).
+  // `renderScaleRequested` is the request as given. Real accessors: Object.assign below would
+  // copy a getter's value once.
+  Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
+  Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
+  // setVideo's current element: the <video> the plane is SHOWING (not one still waiting for its first
+  // frame), else null. Read-only. A player attached to this handle (./player attachPlayer) reads it
+  // to notice another setVideo taking the slot, which no event reports.
+  Object.defineProperty(out, 'videoElement', { get: () => (vid && vid.on ? vid.el : null), enumerable: true, configurable: true });
+  // The tile's canvas, for page chrome that sits beside it (attachPlayer's controls are its siblings).
+  Object.defineProperty(out, 'canvas', { value: canvas, enumerable: true, configurable: true });
+  // The current eye offset (after the unit-disc clamp), a fresh object per read.
+  Object.defineProperty(out, 'viewOffset', {
+    get: () => ({ x: viewer._viewOffset[0], y: viewer._viewOffset[1] }),
+    enumerable: true,
+    configurable: true,
+  });
   Object.assign(out, {
     backend: 'playcanvas',
     engine: null, // { app, root, camera } once the engine has booted — see below
@@ -3035,8 +3731,49 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       return pickModel(clientX, clientY);
     },
     setSource,
+    /**
+     * End a running setSource transition now (its end state at once); a no-op when none runs.
+     * The same thing a newer setSource does to an older one in flight (`pendingSwap.finish()`),
+     * exposed for a page that leaves the photo mid-crossfade and must not wait for it.
+     */
+    finishSwap() {
+      pendingSwap?.finish();
+      return out;
+    },
     prepareSource,
     setRig,
+    /**
+     * Compile `entity`'s mesh programs (content under handle.engine.root) off the frame, before
+     * it is shown — viewer.warmEntity. Resolves the number of programs warmed.
+     */
+    async warmEntity(entity, o) {
+      await booted;
+      await first.catch(() => null);
+      return removed ? 0 : viewer.warmEntity(entity, o);
+    },
+    /**
+     * Destroy `entity` (content under handle.engine.root) and release the programs its materials
+     * linked, and its container `asset` when nothing else draws from it — viewer.releaseEntity.
+     * Returns { programs, container }.
+     */
+    releaseEntity(entity, o) {
+      return removed ? { programs: 0, container: null } : viewer.releaseEntity(entity, o);
+    },
+    setStereo,
+    setDepthEnvelope,
+    /**
+     * This tile in physical units (core TileHandle.displayMetrics, from getDisplayInfo()). Never
+     * rejects: defaults, flagged in `source`, where the display cannot say.
+     */
+    async displayMetrics() {
+      let info = null;
+      try {
+        info = (await handle?.getDisplayInfo?.()) ?? null;
+      } catch {
+        /* no display API / no live layer: the defaults */
+      }
+      return displayMetricsFrom(info, canvas.getBoundingClientRect(), globalThis.devicePixelRatio || 1);
+    },
     setVideo,
     /**
      * Draw a layer of this tile's engine through the DISPLAY rig (round, physical-depth stage
@@ -3044,26 +3781,65 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
      * on the camera rig ('camera'). No second full pass: one extra camera over the named layers,
      * into the same target, in composition order. docs/playcanvas-adapter.md §setLayerRig and
      * docs/proposals/layer-display-rig.md (the exact mapping, and why it is not Kooima).
-     * `viewerDistance` (m) / `gain` set the rounding for the whole tile (last call wins).
+     * Options (`viewerDistance`, `gain`, `planeOffset`, `planeDistance`) are tile-wide and MERGE
+     * (a key given replaces; `null` clears) — see setLayerRigOptions.
+     * Works on both view paths (RenderViews and the N-camera fallback); layerRigState() says
+     * whether it engaged and, if not, why.
      */
     setLayerRig(layer, rig, o = {}) {
       const r = validateLayerRig(layer, rig, o);
-      if (viewer._viewPath === 'cameras' && !warnedLayerRigPath) {
-        warnedLayerRigPath = true;
-        console.warn('[inline3d/splat] setLayerRig needs the engine RenderView path; on the N-camera fallback the layer stays on the photo rig.');
-      }
-      layerRigs().set(layer, r.rig, { viewerDistance: r.viewerDistance, gain: r.gain });
+      layerRigs().set(layer, r.rig, r.opts);
       return out;
     },
-    /** The layers on the display rig (as the page named them), and what the last frame did. */
+    /**
+     * Change the per-eye buffer scale live (the `renderScale` option): e.g. full resolution on a
+     * screen that hides the splat and draws only stage quads, 0.6 elsewhere. The backing store is
+     * resized on the next animation frame (never mid-frame). The request is kept as given
+     * (`renderScaleRequested`); the store is still clamped to the device's GL limits, and
+     * `renderScale` reports what is in force. Returns the handle.
+     */
+    setRenderScale(s) {
+      if (typeof s !== 'number' || !Number.isFinite(s) || s <= 0 || s > 4) {
+        throw new RangeError('@displayxr/inline3d/splat: setRenderScale takes a number in (0, 4].');
+      }
+      if (viewer.renderScale !== s) {
+        viewer.renderScale = s;
+        viewer._scheduleResize();
+      }
+      return out;
+    },
+    /**
+     * The 2D tier's eye offset: `{x, y}` normalised in the mono camera's plane (+x right, +y up),
+     * clamped to the unit disc; |offset| = 1 swings the line of sight to the focus by orbitMaxDeg
+     * (15°), off-axis so the focus plane stays put — a head-parallax analogue (a phone's tilt)
+     * where there are no tracked eyes. Composes with the orbit. A snap: ease it in the page.
+     * `null` = {0, 0}. Mono only — a no-op for the pixels in woven 3D (the head tracker owns the
+     * eyes; the value is kept for a later fall back to 2D) and on controls:'page'.
+     */
+    setViewOffset(o) {
+      const x = o == null ? 0 : o.x ?? 0;
+      const y = o == null ? 0 : o.y ?? 0;
+      if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new TypeError('@displayxr/inline3d/splat: setViewOffset takes {x, y} finite numbers (or null).');
+      }
+      viewer.setViewOffset(x, y);
+      return out;
+    },
+    /** Change the layer rig's tile-wide options live (no layer change): merge, `null` clears. */
+    setLayerRigOptions(o = {}) {
+      layerRigs().setOptions(validateLayerRigOptions(o, 'setLayerRigOptions'));
+      return out;
+    },
+    /**
+     * What setLayerRig is doing: `path` ('renderviews' | 'ncamera' | 'mono') and `engaged` (the
+     * display-rig views were applied on the last drawn frame), `reason` when not, and the numbers
+     * (`viewerDistance`, `gain`, `planeM` — the plane that lands on the glass, as a distance from
+     * the photo's camera — `photoConvergenceM`, `planeOffset`, `located`).
+     */
     layerRigState() {
       const lr = viewer.layerRigs;
-      return {
-        display: lr ? [...lr.requests.keys()] : [],
-        disabled: !!lr?.disabled,
-        rounded: !!lr?.last.rounded,
-        gain: lr?.last.gain ?? null,
-      };
+      if (lr) return lr.state();
+      return { display: [], disabled: false, path: null, engaged: false, rounded: false, reason: 'no layer on the display rig', viewerDistance: DEFAULT_VIEWER_DISTANCE_M, viewerDistanceSource: 'default', gain: null, planeM: null, photoConvergenceM: null, planeOffset: 0, located: null };
     },
     /**
      * An unlit material showing the left half of `texture` to left-eye views and the right half to
@@ -3083,6 +3859,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       validateEffectCall(name, o, 'play');
       return first.then(() => (fx && !removed ? fx.play(name, o) : { finished: false }));
     },
+    warmEffect,
     /** Set a persistent effect (grade, clip, custom), hold a transition at `progress`, or null to remove. */
     setEffect(name, params) {
       validateEffectCall(name, params, 'set');
@@ -3100,6 +3877,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     effects: () => (fx ? fx.list() : []),
     remove() {
       removed = true;
+      depth.dispose();
       dropVideo(); // before the app goes: the plane's rVFC, and a <video> this handle made
       current = null;
       for (const p of [...livePrepared]) p.dispose();
@@ -3185,9 +3963,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   let initialViewRig = null; // the rig addScene is created with (controls:'page'), else the shorthand
   if (wall && wall.supported) {
     const onFrame = diag
-      ? (views, layer) => {
+      ? (views, layer, frame) => {
           const t = performance.now();
-          viewer.onFrame(views, layer);
+          viewer.onFrame(views, layer, frame);
           diag.frame(views, t); // after the draw: the overlay state is what this frame showed
         }
       : viewer.onFrame;
@@ -3198,8 +3976,14 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         ? { viewRig: (initialViewRig = pageViewRig({ verticalFovDeg: viewer.page.fov, convergence: 2, comfortDepth: ctl.comfortDepth })) }
         : { virtualDisplayHeight }),
       onLayerLost: viewer.onLayerLost,
+      bufferClamped: true, // this viewer clamps its own buffer; the core must never touch its context
       ...(observe ? { observe } : {}),
       ...(firstWovenHoldMs !== undefined ? { firstWovenHoldMs } : {}),
+      // The SDK covers this canvas across a move/resize (core rectCover): on by default here, the
+      // preview tier; 'off' for a page that runs its own cover.
+      rectCover: opts.rectCover === undefined ? 'auto' : opts.rectCover,
+      // The entry's double-attach claim (guardedAttach): lets THIS registration through.
+      _dxrClaim: opts._dxrClaim,
     });
   } else {
     viewer.startMono();
@@ -3243,13 +4027,18 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     out._resolveFirstWoven(handle ? handle.firstWoven : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 })));
     delete out._resolveFirstWoven;
   }
+  // The core window's `rewoven()`, forwarded like `firstWoven`: a page covers the canvas across a
+  // rect change (a shared canvas moved into a box, fullscreen) and releases on this. Without a
+  // session it settles `woven: false, reason: 'unsupported'` at once, the same shape. Replaces the
+  // deferred stub's forwarder, as `setSource` does.
+  out.rewoven = () => (handle && typeof handle.rewoven === 'function' ? handle.rewoven() : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 })));
 
   // addSplat's `displayRigLayers` sugar: [layer, …] or { layers: [...], viewerDistance, gain }.
   if (opts.displayRigLayers !== undefined) {
     const d = opts.displayRigLayers;
     const list = Array.isArray(d) ? d : d && Array.isArray(d.layers) ? d.layers : null;
-    if (!list) throw new TypeError('@displayxr/inline3d/splat: displayRigLayers — expected an array of layers, or { layers, viewerDistance?, gain? }.');
-    const o = Array.isArray(d) ? {} : { ...(d.viewerDistance !== undefined ? { viewerDistance: d.viewerDistance } : {}), ...(d.gain !== undefined ? { gain: d.gain } : {}) };
+    if (!list) throw new TypeError('@displayxr/inline3d/splat: displayRigLayers — expected an array of layers, or { layers, viewerDistance?, gain?, planeOffset?, planeDistance? }.');
+    const o = Array.isArray(d) ? {} : Object.fromEntries(Object.entries(d).filter(([k]) => k !== 'layers'));
     for (const l of list) out.setLayerRig(l, 'display', o);
   }
   // Replay what the page did before this module arrived — exclude() above all, which a product
@@ -3370,6 +4159,10 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     // three looks down −z; convergence is the focus's distance along that axis (the PLANE).
     const fwd = [-pose[8], -pose[9], -pose[10]];
     const d = (f.x - pose[12]) * fwd[0] + (f.y - pose[13]) * fwd[1] + (f.z - pose[14]) * fwd[2];
+    // A focus at or behind the camera has no zero-disparity plane in front of it: a transient
+    // before the first focus lands, or a focus moved behind the camera. Keep the rig as declared;
+    // convergence at infinity would put the whole scene in front of the glass.
+    if (!(d > 0)) return;
     if (!force && Math.abs(d - lastConvergence) < 1e-3) return;
     lastConvergence = d;
     out.rig.convergence = d;
@@ -3383,7 +4176,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
         fov: viewer.mono.fov,
       },
       {
-        convergence: d > 0 ? d : 0,
+        convergence: d,
         ipdFactor: out.rig.ipdFactor,
         parallaxFactor: out.rig.parallaxFactor,
         out: camRigObj,
@@ -3730,6 +4523,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       canvasAspect: box.height > 0 ? box.width / box.height : 4 / 3,
     });
     if (type !== 'auto') resolved.typeSource = 'setRig';
+    // What the asset (or addSplat's options) asked for, kept so setStereo(null) can go back to it.
+    resolved.stereoDefault = { ipdFactor: resolved.ipdFactor, parallaxFactor: resolved.parallaxFactor };
+    applyStereoTo(resolved);
     resolved.focusDefault = resolved.focus.slice();
     resolved.focusDefaultSource = resolved.focusSource;
     return resolved;
@@ -3746,7 +4542,16 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
   }
 
   /** Declare a DISPLAY rig to the runtime, unless that exact one is already declared. */
-  function declareDisplay(f) {
+  function declareDisplay(base, { raw = false } = {}) {
+    // raw: setVideo's own display rig — not the page's rig, so neither setStereo's factors nor
+    // the base setStereo re-declares from.
+    if (!raw) lastDisplayBase = base;
+    // The `depth` option's comfort factor (1 without it), × setStereo's: never on setVideo's rig.
+    const kd = raw ? 1 : depth.factor;
+    const f =
+      (stereoOverride || kd !== 1) && !raw
+        ? { ...base, ipdFactor: stereoScalar(base.ipdFactor ?? 1, 'ipd') * kd, parallaxFactor: stereoScalar(base.parallaxFactor ?? 1, 'parallax') * kd }
+        : base;
     const key = `${f.vH}|${f.ipdFactor ?? 1}|${f.parallaxFactor ?? 1}|${f.perspectiveFactor ?? 1}`;
     if (declaredDisplay === key) return;
     // Back at the boot rig from the shorthand it was built with: nothing to say.
@@ -3781,6 +4586,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       viewer.setFocus(modelToContent(resolved.focus), { snap: true, recentre: false });
       lastConvergence = Number.NaN;
       pushViewRig(true);
+      depth.ignore('a camera rig');
       return;
     }
     if (viewer.mono.capture) viewer.useDisplayCamera();
@@ -3799,6 +4605,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       resolved.focusDefaultSource = 'frame';
       resolved.frame = target;
       declareDisplay(disp);
+      depth.resume();
       return;
     }
     // The splat itself, as a display-rig addSplat frames it (the load-time path).
@@ -3811,6 +4618,130 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     }
     if (disp) resolved.frame = bounds ? { center: bounds.center.slice(), extent: bounds.extent.slice(), source: 'splat' } : null;
     declareDisplay(disp || { vH: bootFraming.vH });
+    if (bounds) depth.resume();
+  }
+
+  // ── handle.setStereo: live stereo strength on whatever rig is declared ──
+  /** { ipdFactor?, parallaxFactor? } set by handle.setStereo — sticky across setSource; null = none. */
+  let stereoOverride = null;
+  /** The display rig declareDisplay was last asked for, BEFORE setStereo's factors (to re-declare). */
+  let lastDisplayBase = null;
+  /** setStereo's factors onto a resolved rig, over the asset's own (stereoDefault). */
+  function applyStereoTo(r) {
+    const d = r.stereoDefault;
+    r.ipdFactor = stereoScalar(d.ipdFactor, 'ipd');
+    r.parallaxFactor = stereoScalar(d.parallaxFactor, 'parallax');
+  }
+  /** One scalar under setStereo: its absolute value, else `base` × its scale, else `base`. */
+  function stereoScalar(base, k) {
+    return stereoScalarOf(stereoOverride, base, k);
+  }
+
+  /**
+   * handle.setStereo({ ipdFactor, parallaxFactor }) — re-declare the rig in force with new stereo
+   * scalars, next frame, with no cut: the pose, focus and framing stay. A key given replaces, a key
+   * set to null goes back to the asset's own value, `null` clears both. Sticky across setSource and
+   * setRig. On a camera rig the values are ABSOLUTE (like addSplat's options); on a display rig
+   * they replace the declared display rig's factors.
+   */
+  function setStereo(o) {
+    const next = validateSetStereo(o, stereoOverride);
+    stereoOverride = next;
+    if (out.rig?.stereoDefault) applyStereoTo(out.rig);
+    redeclareStereo();
+    return out;
+  }
+  /** Re-declare the rig in force with setStereo's factors (deduplicated on a display rig). */
+  function redeclareStereo() {
+    if (pageMode || vid?.on || !out.rig) return; // pageTick reads out.rig; video exit calls this
+    if (out.rig.type === 'camera') pushViewRig(true);
+    else if (lastDisplayBase) declareDisplay(lastDisplayBase);
+  }
+
+  // ── handle.setDepthEnvelope: the frame envelope (./inline3d-splat-effects.js EFFECTS.envelope) ──
+  /** validateDepthEnvelope's result, or null (off). */
+  let envelope = null;
+  /** displayMetricsFrom(getDisplayInfo()) — metres per CSS px and the viewer; defaults until it lands. */
+  let envMetrics = null;
+  let envMetricsSeq = 0;
+  function refreshEnvelopeMetrics() {
+    const seq = ++envMetricsSeq;
+    const done = (info) => {
+      if (seq === envMetricsSeq) envMetrics = displayMetricsFrom(info ?? null, null, globalThis.devicePixelRatio || 1);
+    };
+    let p = null;
+    try {
+      p = handle?.getDisplayInfo?.();
+    } catch {
+      /* no display API: the defaults */
+    }
+    if (p && typeof p.then === 'function') p.then(done, () => done(null));
+    else done(null);
+  }
+  /**
+   * The envelope's inputs for this frame, all from the DECLARED rig (never the tracked eyes): null
+   * = off — no envelope, not a camera rig (a display rig is a portal; its depth is the page's), a
+   * stereo video holding the rig, no disparity to cap (ipdFactor 0), or no canvas box.
+   */
+  function envelopeState() {
+    const E = envelope;
+    const r = out.viewRig;
+    if (!E || !r || r.type !== 'camera' || vid?.on) return null;
+    const k = (r.ipdFactor ?? 1) * (r.metersToVirtual ?? 1);
+    if (!(k > 0) || !(r.verticalFov > 0)) return null;
+    // clientWidth/Height: no layout flush on a clean frame (a real canvas always has them)
+    const box = canvas.clientWidth === undefined ? canvas.getBoundingClientRect() : null;
+    const cw = box ? box.width : canvas.clientWidth;
+    const ch = box ? box.height : canvas.clientHeight;
+    if (!(cw > 0 && ch > 0)) return null;
+    const m = envMetrics || displayMetricsFrom(null, null, 1);
+    const W = E.canvasSizeM ? E.canvasSizeM[0] : cw * m.metersPerCssPx;
+    const H = E.canvasSizeM ? E.canvasSizeM[1] : ch * m.metersPerCssPx;
+    const tanY = Math.tan(r.verticalFov / 2);
+    const fr = viewer.monoFrame();
+    return {
+      origin: fr.origin,
+      axis: fr.axis,
+      right: fr.right,
+      up: fr.up,
+      tanX: tanY * (cw / ch),
+      tanY,
+      halfW: W / 2,
+      halfH: H / 2,
+      // world units = rig units × fr.scale: the convergence and the eye baseline both scale with it
+      invD: (r.convergenceDiopters || 0) / fr.scale,
+      kfp: fr.scale * k * (H / (2 * tanY)),
+      viewer: E.viewerM ?? m.nominalViewerM,
+      maxFront: E.maxFrontM,
+      stage: E.stage.f,
+      band: E.bandM,
+      edge: E.edgeM,
+      rects: E.rects,
+    };
+  }
+  /** Install / update / remove the tile-scope envelope effect (no-op until the effects exist). */
+  function syncEnvelope() {
+    if (!fx) return;
+    fx.setInternal('tile', 'envelope', envelope ? { state: envelopeState } : null);
+    const inst = fx.scopes.get('tile')?.get('envelope');
+    if (inst) inst.hidden = true; // the SDK's, not the page's: never in effects(), never stopEffect()ed
+  }
+  /**
+   * handle.setDepthEnvelope(opts | null) — cap how far the splat may come OUT of the glass by where
+   * it lands on the canvas (docs/splat-effects.md §Depth envelope). Tile-wide and LIVE: every asset
+   * shown — an incoming one included, from its first frame, and both sides of a crossfade — is
+   * judged through the rig declared right now. A key given replaces; null turns it off.
+   */
+  function setDepthEnvelope(o) {
+    const next = validateDepthEnvelope(o, envelope);
+    if (next && !envelope) {
+      refreshEnvelopeMetrics();
+      // a lazy layer may not answer getDisplayInfo yet: ask again once the tile is woven
+      Promise.resolve(out.firstWoven).then(() => envelope && refreshEnvelopeMetrics());
+    }
+    envelope = next;
+    syncEnvelope();
+    return out;
   }
 
   // ── handle.setRig: a live, reversible rig switch (docs/playcanvas-adapter.md §setRig) ──
@@ -3990,12 +4921,15 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       perf: perfResolved,
       viewPath: opts.playcanvasViewPath,
       antialias: antialias === true,
+      shaderCacheRelease: !diag?.has('keepshaders'),
+      programRelease: !diag?.has('keepprograms'),
     });
     if (!app || removed) return null;
     pcModule = pc;
     // diag: count the GL calls that can block (compile, link, status queries, readbacks, syncs),
     // from before the first asset's compile on
-    if (diag) diag.instrumentGl(app.graphicsDevice?.gl);
+    // + the live program / shader counts and the content-swap leak watch
+    if (diag) watchContent(diag, app, viewer);
     /**
      * ADVANCED, not covered by the semver promise: the engine objects behind this window.
      * `app` is the tile's `pc.AppBase`; `root` the content root, in the splat's content space
@@ -4021,6 +4955,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const kept = applyLoaded(loaded);
     current = { asset: loaded.asset, entity, res: loaded.res, kind: loaded.desc.kind, ...kept };
     fx = makeEffects(pcModule);
+    syncEnvelope(); // a setDepthEnvelope before the first asset
     // `reveal`: installed at its START state before the asset's first frame, played once the
     // tile is woven (handle.firstWoven — which is immediate in 2D) and the first frames are built.
     if (revealSpec) {
@@ -4130,7 +5065,12 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       mono: { fov: v.mono.fov, near: v.mono.near, far: v.mono.far, pose: Float64Array.from(v.mono.pose), capture: v.mono.capture },
       pose: {
         _yaw: v._yaw, _pitch: v._pitch, _targetYaw: v._targetYaw, _targetPitch: v._targetPitch,
+        _roll: v._roll, _targetRoll: v._targetRoll,
+        // The author's slide and the framing's screen-plane slide (fitTo's screenPlaneZ, web#327)
+        // are kept APART, as the viewer holds them: exitVideo assigns these back, so recording the
+        // effective sum in _depthOffset would apply the screen-plane slide twice on restore.
         _zoom: v._zoom, _targetZoom: v._targetZoom, _depthOffset: v._depthOffset,
+        _screenPlaneShift: v._screenPlaneShift, _framedDepth: v._framedDepth,
         _focusSettled: v._focusSettled, _focusRecentres: v._focusRecentres, _orbitMode: v._orbitMode, _lastInput: v._lastInput,
       },
       focus: { ...v._focus },
@@ -4154,7 +5094,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       v._placeMonoForFit();
       v._updateMonoProjection();
     }
-    declareDisplay({ vH: state.vH });
+    declareDisplay({ vH: state.vH }, { raw: true });
+    state.stereoAtEnter = stereoOverride;
     state.on = true;
   }
 
@@ -4188,6 +5129,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     } else out.viewRig = s.viewRig;
     lastConvergence = s.lastConvergence;
     state.on = false;
+    if (stereoOverride !== state.stereoAtEnter) redeclareStereo(); // a setStereo made while the video held the rig
+    depth.refresh(); // the `depth` option holds still under a video; measure again (no-op without it)
+
   }
 
   /** Tear the video down now (setVideo(null) / remove()). */
@@ -4205,7 +5149,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
    * handle.setVideo(src, options) — play a stereo video on THIS handle: no new canvas, layer or
    * session. The splat is hidden and a screen-locked plane on the display rig shows the video, each
    * eye its own half (sbs: left/right, tb: top/bottom); flat (mono), the left half at full
-   * resolution. Applies on the first frame the video has. Resolves to `{ video, remove(), stats() }`;
+   * resolution. Applies on the first frame the video has; `transition: 'crossfade'` (with
+   * `durationMs`, `easing`) dissolves from a video already on the plane, on the GPU, and is a cut
+   * from the splat. Resolves to `{ video, transition, remove(), stats() }`;
    * the page drives transport through `video`. setVideo(null) exits and restores the splat, the rig
    * and its declaration exactly as they were. Throws during an in-flight setSource.
    */
@@ -4232,7 +5178,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     if (owned ? r.autoplay !== false : r.autoplay === true) autoplay(el);
     // The guard state is taken NOW (setSource / setRig refuse from this call on), the pixels change
     // on the first frame the video has.
-    const state = { seq, el, owned, format: r.format, fit: r.fit, vH: r.vH ?? bootFraming.vH, on: false, saved: null, pending: true };
+    const state = { seq, el, owned, format: r.format, fit: r.fit, band: r.band, vH: r.vH ?? bootFraming.vH, on: false, saved: null, pending: true, rectOffs: new Set() };
     if (!prev || !prev.on) vid = state; // a pending one it supersedes is cancelled above
     return first
       .catch(() => null)
@@ -4244,23 +5190,56 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
           // Another video on screen: keep ITS snapshot (the pre-video state), swap the source.
           state.saved = live.saved;
           state.on = true;
+          state.stereoAtEnter = live.stereoAtEnter;
+          // S2: the plane outlives this swap; the replaced video's rect subscriptions go with it.
+          for (const off of live.rectOffs) off();
+          live.rectOffs.clear();
           if (live.owned && live.el !== el) releaseOwned(live.el);
           if (state.vH !== live.vH) {
             viewer.vH = state.vH;
             viewer._placeMonoForFit();
             viewer._updateMonoProjection();
-            declareDisplay({ vH: state.vH });
+            declareDisplay({ vH: state.vH }, { raw: true });
           }
         } else enterVideo(state);
         vid = state;
         state.pending = false;
+        // A crossfade only dissolves between two videos: from the splat (entry) it is a cut.
+        const fade = live && r.transition.type === 'crossfade' && r.transition.durationMs > 0 ? r.transition : null;
         viewer._videoPlane ||= new VideoPlane(viewer);
-        viewer._videoPlane.setSource(el, { format: state.format, fit: state.fit, vH: state.vH });
+        const faded = viewer._videoPlane.setSource(el, { format: state.format, fit: state.fit, vH: state.vH, band: state.band }, fade);
         const plane = viewer._videoPlane;
         return Object.freeze({
           video: el,
           format: state.format,
           fit: state.fit,
+          /** The letterbox band's aspect, or null. */
+          band: state.band,
+          /**
+           * Where the picture is on screen, in CSS px from the canvas's top-left, clipped to the
+           * canvas: `{ x, y, width, height }`. The bars are the canvas minus this. Null once
+           * another setVideo replaced this one, or before the first drawn frame.
+           */
+          get rect() {
+            return vid === state && viewer._videoPlane === plane ? plane.rect : null;
+          },
+          /** Called with the new rect whenever it changes (resize, band, a new size). Returns an unsubscribe. */
+          onRectChange(cb) {
+            if (typeof cb !== 'function') throw new TypeError('@displayxr/inline3d/splat: onRectChange(cb) — expected a function.');
+            if (vid !== state) return () => {};
+            // S2: never outlives this video — every subscription is dropped at the swap that
+            // replaces it (and with the plane on setVideo(null)).
+            // Each subscription is its own entry on the plane, so calling this twice is harmless.
+            const off = plane.onRect(cb);
+            const unsubscribe = () => {
+              off();
+              state.rectOffs.delete(unsubscribe);
+            };
+            state.rectOffs.add(unsubscribe);
+            return unsubscribe;
+          },
+          /** What this swap did: 'crossfade' only when a fade actually started, else 'cut'. */
+          transition: faded ? 'crossfade' : 'cut',
           /** Exit (setVideo(null)) — a no-op once another setVideo replaced this one. */
           remove: () => (vid === state ? setVideo(null) : Promise.resolve(null)),
           /** Upload accounting: frames drawn with the plane up, and texture uploads (new frames). */
@@ -4286,7 +5265,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
    */
   async function prepareSource(src, po = {}) {
     if (po === null || typeof po !== 'object') throw new TypeError('@displayxr/inline3d/splat: prepareSource options must be an object.');
-    const warm = po.transition !== undefined ? resolveSwap(po) : null; // the setSource options it will get; throws on a bad one
+    const warmList = validateWarmEffects(po.warmEffects);
+    const swapOpts = po.warmEffects === undefined ? po : Object.fromEntries(Object.entries(po).filter(([k]) => k !== 'warmEffects'));
+    const warm = po.transition !== undefined ? resolveSwap(swapOpts) : null; // the setSource options it will get; throws on a bad one
     const app = await booted;
     await first.catch(() => null);
     if (!app || removed) throw new Error('@displayxr/inline3d/splat: prepareSource on a removed tile.');
@@ -4315,6 +5296,8 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     diag?.mark('prepared', { ms: Math.round(performance.now() - t0), fetchOnly });
     // The transition the page declared: compile its shader now, in the dwell, not on its first frame.
     await prewarmTransition(warm); // null (no transition declared): the overlay only
+    // And the effects the page will play once this asset is in (a reveal after the swap).
+    for (const w of warmList) await warmEffect(w.name, w.opts);
     const entry = { loaded, source, state: 'ready', dispose: null };
     const prepared = {
       [PREPARED_TAG]: true,
@@ -4382,32 +5365,9 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
       const pc = pcModule;
       const made = [];
       for (const [chunkKey, codeOf] of fx ? wantChunks : []) {
-        const cams = [viewer.eye, viewer._live?.cam].filter(Boolean);
-        const code = codeOf();
-        let issued = 0;
-        for (const cam of cams) {
-          const mi = managerMi(cam, null);
-          const src = mi?.material;
-          const camera = cam.camera?.camera;
-          if (!src?.shaderDesc || !camera?.shaderParams || typeof src.getShaderVariant !== 'function') continue;
-          const m = new pc.ShaderMaterial(src.shaderDesc);
-          src.defines.forEach((v, k) => m.setDefine(k, v));
-          m.shaderChunks.copy(src.shaderChunks);
-          m.getShaderChunks(pc.SHADERLANGUAGE_GLSL).set('gsplatModifyVS', code);
-          m.blendState = src.blendState;
-          made.push(m.getShaderVariant({
-            device: viewer.app.graphicsDevice,
-            scene: viewer.app.scene,
-            objDefs: mi._shaderDefs,
-            cameraShaderParams: camera.shaderParams,
-            pass: 0, // SHADER_FORWARD
-            sortedLights: [],
-            viewUniformFormat: viewer.app.renderer?.viewUniformFormat ?? null,
-            vertexFormat: mi.mesh?.vertexBuffer?.format,
-          }));
-          issued++;
-        }
-        if (issued) prewarmed.add(chunkKey);
+        const got = issueChunkVariants(pc, codeOf());
+        made.push(...got);
+        if (got.length) prewarmed.add(chunkKey);
       }
       const cam = viewer.eye?.camera?.camera;
       if (wantOverlay && cam?.shaderParams) {
@@ -4420,8 +5380,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
             objDefs: p.mi._shaderDefs,
             cameraShaderParams: cam.shaderParams,
             pass: 0,
-            sortedLights: [],
-            viewUniformFormat: viewer.app.renderer?.viewUniformFormat ?? null,
+            ...variantViewParams(viewer.app, pc),
             vertexFormat: p.mi.mesh?.vertexBuffer?.format,
           });
           if (v) (made.push(v), issued++);
@@ -4434,6 +5393,75 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     }
   }
 
+
+  /**
+   * Issue (compile + link, not wait for) the gsplat render variant with `code` as its tile
+   * `gsplatModifyVS` chunk, on every eye camera's splat material: a throwaway material with the
+   * renderer's own description, defines and chunks asks the engine's program library for the
+   * variant the renderer will ask for (the library keys on the generated source + processing
+   * options, not on the material). Returns the issued shaders, for finalizeWhenLinked.
+   */
+  function issueChunkVariants(pc, code) {
+    const made = [];
+    for (const cam of [viewer.eye, viewer._live?.cam].filter(Boolean)) {
+      const mi = managerMi(cam, null);
+      const src = mi?.material;
+      const camera = cam.camera?.camera;
+      if (!src?.shaderDesc || !camera?.shaderParams || typeof src.getShaderVariant !== 'function') continue;
+      const m = new pc.ShaderMaterial(src.shaderDesc);
+      src.defines.forEach((v, k) => m.setDefine(k, v));
+      m.shaderChunks.copy(src.shaderChunks);
+      m.getShaderChunks(pc.SHADERLANGUAGE_GLSL).set('gsplatModifyVS', code);
+      m.blendState = src.blendState;
+      const v = m.getShaderVariant({
+        device: viewer.app.graphicsDevice,
+        scene: viewer.app.scene,
+        objDefs: mi._shaderDefs,
+        cameraShaderParams: camera.shaderParams,
+        pass: 0, // SHADER_FORWARD
+        ...variantViewParams(viewer.app, pc),
+        vertexFormat: mi.mesh?.vertexBuffer?.format,
+      });
+      if (v) made.push(v);
+    }
+    return made;
+  }
+
+  /**
+   * handle.warmEffect(name, opts) — compile the program playEffect(name, opts) will need, now,
+   * finishing the link in idle periods (KHR_parallel_shader_compile), so the effect's first frame
+   * does not block on it (a particle reveal's link: 250–300 ms on a panel). Keyed on the chunk
+   * the play would install with the tile effects on NOW — warm in the state you will play from.
+   * Resolves `true` once warm (or already warm), `false` where nothing could be warmed (an
+   * entity-scope effect, a custom fragment stage, no engine yet, an engine whose internals
+   * differ: it then compiles on its first frame, as before). Never throws after validation.
+   */
+  async function warmEffect(name, o = {}) {
+    validateEffectCall(name, o, 'play');
+    await first.catch(() => null);
+    if (removed || !fx || !pcModule || diag?.has('nowarm')) return false;
+    let code;
+    try {
+      code = fx.playChunkCode(name, o);
+    } catch {
+      return false;
+    }
+    if (!code) return false;
+    const key = `play|${code}`;
+    if (prewarmed.has(key)) return true;
+    await yieldIdle();
+    if (removed) return false;
+    try {
+      const made = issueChunkVariants(pcModule, code);
+      if (!made.length) return false;
+      await finalizeWhenLinked(made);
+      prewarmed.add(key);
+      return true;
+    } catch (err) {
+      console.info('[inline3d/splat] warmEffect skipped', err);
+      return false;
+    }
+  }
 
   /**
    * Creating a program only ISSUES its compile + link; the browser resolves the link when the
@@ -4489,6 +5517,7 @@ export function attachPlayCanvasSplat(out, wall, canvas, src, opts, pending = []
     const gen = ++sourceGen;
     if (diag) {
       rigLockArmed = true;
+      diag.contentSwap('setSource'); // the previous swap's outgoing asset is released by now
       diag.setPhase('swap', {
         transition: plan.sequence ? `${plan.sequence.name}(${plan.sequence.out.effect}>${plan.sequence.in.effect})` : plan.transition,
         outgoing: plan.sequence ? 'none (one splat)' : plan.outgoing || 'default',

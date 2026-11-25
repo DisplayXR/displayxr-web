@@ -5,74 +5,2210 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
-## Unreleased — proposed 1.25.0 (minor: a new experimental subpath)
+## Unreleased
 
-### Removed (ADR-053 P4: the runtime converts)
+### Added — `@displayxr/inline3d/lift` ("Convert to 3D", experimental, preview tier)
 
-- **lift: the in-page converter is gone.** `@displayxr/inline3d/lift` carries no model, no ONNX
-  Runtime, no depth-image-based live renderer and no local lift generator: the DisplayXR runtime's
-  conversion stack does the work (live conversion in place, Gaussians for Explore) and
-  `js/lift/native.js` is the SDK's only provider. Deleted: `providers/{depth-ort,inpaint-ort,ort,models,preprocess,still-post,index}.js`,
-  `models.json`, `live-dibr.js` + `shaders/`, `gen/`, `stubs/`, and most of `lift.js`. `lift()`
-  rejects with a `NativeLiftError` (`code: 'unavailable'`) where no converter exists (and no
-  `providers.lift` was given); a `<canvas>` is not converted. Options removed: `models`, `ort`,
-  `backend`, `prefetch`, `genParams`, `providers.{video,still,inpaint}`; `liftCapabilities()` no longer
-  reports `webFallback`; `createModelSource` / `loadOrt` are no longer exported; the `native` depth
-  provider rejects instead of falling back. The built-in bundle shrinks from 1.4 MB + 16.5 MB of ORT
-  wasm to one 1.4 MB file. Explore for a still or a paused frame needs a converter that lists
-  `gaussians` (or a caller-supplied lift provider such as the remote SHARP demo).
+- **The lift module lands on main** (was the `feat/lift` branch, displayxr-web#289). `lift(element, opts)`
+  converts a `<video>` or `<img>` in place in the DisplayXR Browser: the runtime's conversion stack does
+  the work (live conversion, and Gaussians for Explore), `js/lift/native.js` is the only provider, and
+  no model or ONNX Runtime ships with the SDK. A video gets a chip (Explore / Exit; ↓ SOG while
+  exploring); Explore turns the paused frame into a Gaussian scene with a bounded drag orbit, rendered by
+  the PlayCanvas splat viewer. Types in `lift.d.ts`; guides in `docs/lift.md`, `docs/lift-explore.md`
+  and `docs/lift-builtin.md`. `tools/lift-builtin` (`npm run build:lift-builtin`) builds the browser's
+  built-in bundle. This replaces the placeholder `js/lift/index.js`, so `./call/full` now gets a real
+  `lift` (2D participants can be lifted where a converter exists).
+- The chip shows Explore only when a converter makes Gaussians, and re-reads the converter caps when
+  the browser re-reports the lift state READY (#341).
 
-Adds a **preview-tier** subpath; nothing existing changes.
+## 1.59.0 — 2026-11-24
 
-### Added
+### Added — `wall.displayInfo` (synchronous display info)
 
-- **`@displayxr/inline3d/lift` — "Convert to 3D"** (experimental). `lift(element, opts)` lifts a
-  `<video>`, `<img>` or `<canvas>` in place: live depth-image-based rendering from a streaming
-  Video-Depth-Anything-Small while a video plays; on pause/end (or for a still) MoGe-3 depth → a
-  two-layer 3D Gaussian scene (`gen/`) → a bounded drag orbit with head parallax (`explore`). A state
-  machine (debounced pause, generation counter, visibility suspend), closed-shadow canvas placement
-  that follows `object-fit`, a builtin chip, and a pluggable provider registry
-  (`getRegistry().registerDepthProvider` for native/vendor depth). Models are never bundled:
-  `js/lift/models.json` (schema 1, with `blobBaseUrl` + per-entry `installer`) is resolved against
-  the page's `baseUrl`, else the public content-addressed blob store; onnxruntime-web is imported at
-  runtime. Types in `lift.d.ts`; guide in `docs/lift.md`.
+- The last `getDisplayInfo()` answer this document read, else the one the last page on this
+  origin read (a frozen copy of the six numeric fields, `cached: true`, in `localStorage`), else
+  `null`. The SDK now reads the display itself on the first live layer, and concurrent reads on
+  one layer share one browser call. A display read needs a layer that has delivered a frame, so
+  this is how a page sizes its FIRST woven frames at the view scale:
+  `sceneBufferSize(canvas, { sbs: true, viewScale: wall.displayInfo })` in the same task as
+  `addScene`. The hello-cube and camera-rig samples do.
 
-- **lift: vendor modules supersede the open default** — `liftCapabilities()` (cached per document:
-  `GET displayxr-lift://caps` inside the DisplayXR Browser's lift world, `native:false` anywhere else,
-  plus `webFallback` {webgpu, video, still}). With a native module a `<video>`/`<img>` is converted +
-  woven **in place by the browser** (`dxr-lift="auto"` + `dxr-lift-strength|convergence|priority`;
-  no DIBR, no model until pause); `handle.setPriority()`. On pause the depth comes from the module
-  (`native` DepthProvider, priority 100, ORT fallback) and, with `gaussians`, the scene too
-  (`native-gaussians` LiftProvider). The built-in uses it. docs/lift.md § Vendor modules.
-- **lift: the explore renderer is the PlayCanvas splat viewer** (was three + Spark). Same contract and
-  camera model; it adopts the live DIBR's WebGL2 context (`WebglGraphicsDevice` `options.gl`, state
-  handed over each frame), renders both eyes as `RenderView`s of one camera (one sort), and moves the
-  orbit onto the eyes (the engine bakes splat placement). The peer is now `playcanvas` (≥ 2.22.3), not
-  `three` + `@sparkjsdev/spark`. Anti-aliasing on by default (hidden-layer streaks). Rendering ~1.5×
-  the headroom at dpr 1 and no regeneration stalls; PLY load ~0.3 s slower (main-thread parse).
-  docs/lift-explore.md.
-- **lift: Download SOG** — `handle.exportSog()` / `downloadSog()` and a **↓ SOG** chip button: the lifted
-  scene as a SOG v2 bundle built in the page (JS lossless WebP writer — `canvas.toBlob` premultiplies
-  alpha — and a stored zip), with the DisplayXR camera block v2 (`rig:'camera'`, the lift's
-  intrinsics, `focus.point = [0,0,pivotZ]`, `dxr` factors). Opens on the camera rig in the gallery,
-  `addSplat` (both engines) and PlayCanvas. docs/lift.md § Download SOG.
-- **lift: explore comfort + depth** — `lift(el, { explore: { comfort, pivotTargetM, eyes } })`: a
-  metric scene whose pivot is > 25 % off 2 m is scaled about the camera to land there (the paused-CG-
-  video "too flat" panel finding; `stats.exploreScale`); `setDepth()` now also drives the explore
-  depth; `eyes:'tracked'` uses the runtime's eye positions as metres. `handle.capture()` returns the
-  next drawn frame as a PNG (the canvas has `preserveDrawingBuffer:false`).
-- `js/inline3d-playcanvas-engine.js` also re-exports `WebglGraphicsDevice` (additive; lets the lift
-  bundle leave the WebGPU backend out).
+### Fixed — the first woven frames of a wrong-shaped scene store
 
-### Notes
+- Every stereo frame, a page-sized scene canvas (`addScene` without `bufferClamped`) is checked:
+  each eye tile (`getViewport`) must have the canvas box's aspect. A store still shaped for flat
+  on the first woven frames (sized after an `await` or in a later rAF) gave each eye half the
+  scene until the page caught up. The SDK warns once, reports the count of wrong frames in one
+  `console.debug` line when it is right, and never resizes the store.
+- `firstWoven` waits while the store is wrong and runs its hold from when it became right (with
+  `wovenState`, a 'woven' read counts only `WOVEN_STATE_LAG_FRAMES` frames after the fix). Capped
+  at four holds: `woven: true, reason: 'store-capped'`.
+- Docs (porting §4, llms.txt): size the store before the first woven frame, in the same task as
+  `addScene`.
 
-- The lift built-in bundle (`tools/lift-builtin`) drops from 5.4 MB / 1.9 MB gzip / 0.88 MB brotli to
-  1.38 MB / 391 KB / 306 KB (Spark was 85 % of it). Its build now rewrites PlayCanvas's gsplat sort
-  worker to take its dependencies as parameters (minification-safe) and to run in-thread under a
-  worker-blocking CSP.
-- The Spark `createSplatRenderer` stereo fix (one update per frame from the eyes' midpoint) left with
-  the Spark explore renderer. **`addSplat` (`./splat`, Spark engine) still has the stereo double
-  regeneration**.
+## 1.58.1 — 2026-11-24
+
+### Fixed — `sceneBufferSize` ignores `viewScale` for the flat store (`sbs: false`)
+
+The recommended view scale belongs to the 3D mode (half the width per eye on a Leia panel). A page
+that kept passing it after falling back to 2D got a flat canvas at half resolution. The mono store
+is now always the full window (CSS box × devicePixelRatio ≤ 2), whatever `viewScale` says.
+
+## 1.58.0 — 2026-11-24
+
+### Added — `sceneBufferSize(canvas, opts)` sizes an `addScene` canvas the way a native app does (core)
+
+An `addScene` page sizes its own canvas, and the porting guide and samples taught
+`clientWidth × devicePixelRatio × 2`. On an 8K panel at 300% scaling that is a 15360×4320 store
+full screen; the browser silently shrank the drawing buffer to 10861×3054 (its area cap; no GL
+limit was hit) while `canvas.width` kept 15360, so `getViewport()` split the wrong width and the
+panel showed both images in one eye. `sceneBufferSize` returns the store to set: per eye, window
+device px × the display's recommended view scale when you pass `getDisplayInfo()` (the native
+rule: 3840×2160 per eye on that panel, a quarter of the pixels), else CSS box × devicePixelRatio
+capped at 2; then `renderScale`; then fitted to the GL limits **and** the browser's drawing-buffer
+area cap, warning once if it shrank. The porting guide (§4) and the `hello-cube` and `camera-rig`
+samples now use it.
+
+### Changed — the SDK's own buffers also respect the browser's drawing-buffer area cap
+
+The internal clamp behind `addImage`, `addVideo`, `./viewer`, `./splat` and `./model` now also
+caps the store's area at Chromium's own drawing-buffer cap (5760², 33.2 Mpx), not only the per-axis GL
+limits. It changes nothing below that size.
+
+### Fixed — the robust-framing fit guard now matches the native viewer to the last bit (`./model`)
+
+1.57.1 matched displayxr-common's sampling exactly, but the full-box guard on the fit extent was
+still computed in double. It now follows common's `RobustFitExtent` in float32, so the fit extent,
+and with it the model's scale, is identical between web and native when the guard binds. The change
+is in the last float bits only.
+
+## 1.57.1 — 2026-11-23
+
+### Changed — `addModel`'s robust framing now samples exactly as the native model viewer does
+
+The surface sampler behind `framing: 'robust'` now uses displayxr-common's specification
+(`common/robust_frame.h`, v2.35.0): the same 64-bit generator and seed, float32 arithmetic where
+the native code uses float, zero-area triangles skipped, and the same percentile index. The web
+and the native model viewer now draw the same samples and get the same pivot, screen plane and
+fit for a model (dino.glb's screen plane was 0.219 on the web vs 0.221 natively, only because the
+generators differed), so an undocked product keeps its exact size and placement. A model's frame
+moves by sampling noise only (well under 1% of its size).
+
+## 1.57.0 — 2026-11-23
+
+### Changed — `addModel` frames a mesh robustly by default (`./model`, preview tier: default pixels move)
+
+`addModel` used to frame a mesh on its axis-aligned bounding box: the box centre was both the turn
+pivot and the point on the screen plane, and the full box set the scale. One thin outlier (a tail,
+an antenna, a strap) skewed all three: the subject came out smaller, turned about a point behind
+its body, and most of it popped out of the glass. On both engines it now samples the surface at
+load (65 536 points, uniform by triangle area, fixed seed, in the bind / rest pose; a few tens of
+ms) and takes three numbers from it:
+
+- **Screen plane:** the surface's area-weighted 75th-percentile depth toward the viewer, so about
+  25% of the surface is in front of the glass. The 25% target matches the runtime's own default
+  for auto-convergence.
+- **Turn pivot:** the area-weighted median in x and z (y stays the box centre).
+- **Fit extent:** the per-axis 1st–99th percentile, with the same `margin`, swept width
+  (`fitSweep`) and `depthLimit` as before, but never tighter than the full box (measured about the
+  pivot) at 90% of the tile.
+
+Weighting by area, not vertex count, keeps dense detail (eyes, text) from dominating. A compact
+model with no outlier comes out at most ~12% larger than before; a model with an outlier is larger
+and sits further back. `handle.frame` now also carries `screenPlaneZ`, `depthRange` and the
+original `box`. `depth: 'auto'` measures the robust depth range against the new screen plane.
+Geometry the sampler cannot read (an InstancedMesh on three, an unreadable vertex stream) falls
+back to the box with one console line.
+
+**To keep the old framing,** pass `framing: 'box'`, which reproduces the previous numbers exactly;
+`frame:` still overrides everything. Any other `framing` value throws at the call. Details:
+[authoring-inline-3d.md § How addModel frames a model](docs/authoring-inline-3d.md#how-addmodel-frames-a-model).
+
+### Added — `fitTo(center, extent, { screenPlaneZ, depthRange })` (`./viewer`, `./splat` viewers)
+
+`SceneViewer.fitTo` and `PlayCanvasSplatViewer.fitTo` take an optional third argument:
+`screenPlaneZ` puts that model-space depth on the glass while the subject still turns about
+`center` (the slide scales with fit × zoom, so the depth stays on the glass under zoom), and
+`depthRange` is the `[back, front]` depth the `depth` option measures. The two-argument call is
+unchanged, bit for bit. `addSplat` does not use it.
+
+### Added — `backdropPlacement()`: where a backdrop plane goes behind a subject (core, `./depth`, `./three`)
+
+A pure helper, like `comfortDepthFactor`: give it how far the subject reaches behind the glass (at
+any turn and the largest zoom you allow, tile heights) and the canvas's physical height, and it
+returns the depth for a backdrop plane fixed to the display, at roughly 40% of the rear comfort
+budget and at least a small margin behind the subject. It also returns the plane size that hides
+its edge from any head position within 20 cm, the share of the budget used and the plane's
+disparity. It measures and never clamps: a subject past the budget gets a plane past it too, and
+`budgetUsed > 1` says so. The defaults reproduce the depth a page chose by eye on a 15.6" panel.
+
+### Docs — rule 10: a backdrop sits behind the subject, never on the glass
+
+`making-3d-look-right.md` gains a tenth rule. A CSS image behind a transparent canvas sits on the
+glass, so any part of the subject behind the glass hides a surface that disparity puts in front of
+it. Draw a photo backdrop in the scene instead: one unlit plane fixed to the display (on PlayCanvas,
+a child of `viewer.rigNode`), behind the subject, pre-blurred, mid-tone. No skybox, which is past
+the rear comfort zone on a display rig. `PlayCanvasSplatViewer.rigNode` and `.vH` are now in the
+types, marked ADVANCED; they already existed.
+
+## 1.56.3 — 2026-11-20
+
+### Docs — a depth floor for camera rigs, not just a ceiling (docs only; no API change)
+
+The guidance gave a camera rig's comfort product as a ceiling (≤ 1) and no floor or default, and
+pages built to it came out nearly flat. Every SDK-owned surface now carries one rule
+([authoring-inline-3d.md § Aim for real depth](docs/authoring-inline-3d.md#aim-for-real-depth)):
+use most of the comfort zone, since too little depth is a failure too; converge on the centre of
+interest so the subject straddles the glass; never rescale the world, set `metersToVirtual` (the
+true conversion, or `convergence / 2` for a world with no true scale, re-set per frame if the camera
+zooms a lot); then `ipdFactor` ≈ 1 for an open scene, or 0.8–1× of `cameraRigComfortFactor` for a
+bounded one. The comfort product stays the divergence ceiling. A display rig's `ipdFactor` /
+`parallaxFactor` 1 are its natural depth. Covered: `llms.txt`, `making-3d-look-right.md` rules 1
+and 4, `porting-three-js-apps.md` (Comfort, mistakes 13 and 14), the `metersToVirtual` /
+`ipdFactor` / `convergenceDiopters` doc comments in `index.d.ts` and `three.d.ts`, and
+`cameraRigComfortFactor` in `depth.d.ts`. `samples/camera-rig/` follows the rule: `ipdFactor` from
+the helper with a depth slider, the share of the zone in its readout, a textured floor in place of
+a line grid, a cover until `firstWoven`, and a flat view on `onLayerLost`.
+
+## 1.56.2 — 2026-11-20
+
+### Changed — `rectCover`'s fill comes from the page behind the canvas, not black (core; `'auto'` on `./splat` and `./model`)
+
+Without a `color`, the cover is now filled with the page's background behind the canvas: the first
+background color from the canvas up, if it is opaque, or the document's canvas color (CSS `Canvas`,
+which follows `color-scheme`) when nothing paints one. It is read at each raise, so a theme switch is
+followed. It stays black when the backdrop is not one opaque color (a translucent color, an image or
+a gradient). The fill only has to be opaque to hide the canvas's own raster, and a black one stood
+out: since the cover goes up only when a tile drops out of the weave, it is often a single frame in a
+drag, and on a light page that read as a black flash. A `color` the page names is used as before.
+
+### Docs — `createInline3D()` can still reject
+
+The `createInline3D` JSDoc and the README quick start now say so: it resolves `{ supported: false }`
+where inline 3D is unavailable, but the promise can reject, so catch it, log the error and show the
+2D view. No code change.
+
+## 1.56.1 — 2026-11-18
+
+### Fixed — `rectCover` no longer covers a tile the browser is still weaving (core; `'auto'` on `./splat` and `./model`)
+
+On a browser that reports `XRDisplayLayer.wovenState` (DisplayXR Browser on Windows), the cover now
+follows that report. Nothing is raised while the tile stays `woven` through a move or resize; the
+cover goes up only when the tile leaves the weave (`pending` / `withheld`) and comes down on the
+first `woven` read. Before, it went up on every change and stayed up for a hold. On browser 1.10.3
+the tile stays woven through a corner-drag resize, so the cover was woven with it: each eye got half
+of its 2D left eye, twice as wide, over the black fill (browser-pvt#364). Browsers without the report
+(macOS, Linux, Android, older Windows builds) keep the hold-based cover as before.
+
+### Fixed — a devicePixelRatio-only change now reaches scene windows (core + `./viewer`)
+
+A browser zoom or a drag to a monitor at a different scale changes devicePixelRatio without moving
+the CSS box, so ResizeObserver never fires. The core's `(resolution: Ndppx)` watcher only
+re-derived the buffers it owns, so an `addScene` window's `onResize(box)` never heard of the change
+and the page kept a backing store sized for the old dpr. It now runs `onResize` (which already
+compares dpr) for scene windows. `SceneViewer` (`./viewer`, and the Spark `./splat` / three-engine
+`./model` paths built on it) had only a ResizeObserver; it now arms its own re-arming resolution
+query, released in `dispose()`. (web#267)
+
+### Fixed — `cameraRigFromCamera` honours `camera.zoom`; a non-perspective camera no longer sends NaN (`./three`)
+
+`cameraRigFromCamera` read `camera.fov` only, so a zoomed `PerspectiveCamera` sent the runtime a wider
+frustum than the one it renders, and an `OrthographicCamera` (no `.fov`) produced a NaN
+`verticalFov`. It now uses `getEffectiveFOV()` when `zoom` is not 1 (at zoom 1 the descriptor is
+bit-identical to before), and a camera with no perspective FOV logs one console warning and gets a
+50° stand-in (three's default) instead of NaN. (web#268)
+
+### Fixed — removing a window gives the canvas back its own inline `will-change` / `transform` (core)
+
+Every `add*()` promotes the canvas with inline `will-change: transform` and `transform:
+translateZ(0)`, and nothing put the page's own inline values back. `handle.remove()` and the session
+ending now restore them; a value the page has rewritten since is left alone. (web#268)
+
+## 1.56.0 — 2026-11-13
+
+### Added — `./player`: `firstWoven` and `rewoven()` on the player handle (preview tier)
+
+`addPlayer()` handles now carry `firstWoven` and `rewoven()`, forwarded from the woven `addVideo`
+window the player is built on (settled at once with `reason: 'unsupported'` for a `'mono'` title or
+a wall without a session). A page cover over a player had no correct release signal: `'ready'` and
+`loadeddata` fire before the browser joins the layer, so a cover released there showed the raw
+side-by-side pair for up to a hold. Additive; nothing changes for pages that do not read them.
+
+### Docs — the mistakes agents and authors make most
+
+- `docs/authoring-inline-3d.md`: a player's cover releases on `player.firstWoven`; what shows
+  around a splat (the page, pre-blended flat) and when to pass `clearColor`; `addScene`'s
+  `onLayerLost` must draw a mono view, not no-op; the draw-order occlusion Rollout table now says
+  what ships (on by default since August 2026) instead of "not the default yet".
+- `docs/woven-canvas-rules.md`: the "transparent canvas weaves black" limitation is removed
+  (browser-pvt #255 closed: the black box was a page cover; transparent pixels are pre-blended).
+- `samples/hello-cube`: passes `onLayerLost` and drops to its mono loop.
+- `docs/woven-canvas-rules.md`: rule 5 names video/player signals that fire before the join;
+  rule 9 separates accidental full-tile covers from deliberate partial chrome.
+- `llms.txt`: the four most common mistakes up front.
+
+## 1.55.1 — 2026-11-11
+
+### Docs — a user depth slider on a camera (or display) rig
+
+`docs/authoring-inline-3d.md` § "A user depth slider": drive `ipdFactor` and `parallaxFactor`
+together (authored × s on a camera rig, s on a display rig) and hold `convergenceDiopters`,
+`verticalFov` and `metersToVirtual` (or `virtualDisplayHeight` / `perspectiveFactor`), so the
+zero-disparity plane never moves; ranges per rig; how the comfort product scales with s; why
+`metersToVirtual` is not the dial; the one-frame latency of a factor change (the attach pattern
+removes pose lag only); and going flat by easing s to 0 where `setStereoEnabled(false)` is
+refused. `cameraRigFromCamera`, `cameraRigFromPose` and `displayRig` already pass both factors
+through unchanged; a test now pins that, and that no other field depends on them. No code change.
+
+## 1.55.0 — 2026-11-11
+
+### Added — `groundPlaneRig()`: a suggested camera rig for a tilted map / strategy camera (`./depth`)
+
+A pure helper for a camera looking down at a ground plane with some tilt: it suggests the
+convergence that puts the ground at the view centre on the glass (`height / cos(tilt)`), reports
+the ground's disparity at the near and far edges, the near-edge pop-out of an object of given
+height and the far-edge recession (on-glass mm and perceived mm), the comfort factor and the
+runtime's comfort product, and returns `minHeight`, the zoom-in limit that keeps that object
+within a pop-out budget (`maxPopOutMm`, or the comfort zone's front side), and the
+`ipdFactorForBudget` alternative. It carries the canvas-size factor (`tileHeightM`, from
+`handle.displayMetrics()`): on-glass disparity scales with the canvas's physical height. Guideline
+only: it never applies, clamps or changes a rig. Typed in `depth.d.ts`; documented in
+`docs/authoring-inline-3d.md` § "A tilted map or strategy camera".
+
+## 1.54.0 — 2026-11-11
+
+### Added — the depth cursor for a page-owned scene: `cursorDisparityPxAt` and a documented recipe (`./cursor-depth`)
+
+A page that owns its scene and its picking on core `addScene` had to read the SDK source to feed
+`layer.setCursorDepth({ disparityPx, u, v })`. `docs/authoring-inline-3d.md` now has "Your own
+scene and your own picking": `DepthCursor` with your pick as `hitTest` on three.js, and
+`CursorRuntimeLink` + the new `cursorDisparityPxAt(views, u, v, point, canvasPx)` without it, plus
+the contract spelled out: device px between the two outermost rendered views, < 0 in front of the
+glass, raw (the runtime applies the policy), computed from the views you render (the rig and
+`ipdFactor` are already in them), `{ u, v }` with no depth over the canvas with nothing 3D under it,
+a single withdrawal over HTML chrome or off the canvas, the SDK-drawn fallback when support is not
+`"runtime"`, and the cost (once per frame; the runtime drops a depth 500 ms after the last frame
+that carried it). `cursorDisparityPxAt` is the maths every SDK depth cursor already uses, pulled
+out for one point; it returns `null` instead of guessing.
+
+## 1.53.1 — 2026-11-11
+
+### Fixed — the rig builders allocate nothing when given `opts.out` (`./three`, core)
+
+`cameraRigFromCamera`, `cameraRigFromPose` and `displayRig` took an `out` descriptor to reuse but
+still assigned fresh `position` / `orientation` literals on every call, so a rig declared every
+frame (as the docs recommend for a camera rig whose convergence follows the camera) cost two
+objects per frame regardless. They now write into `out.position` / `out.orientation` when those
+exist and create them only on the first call. Values are still copied, never aliased to the
+caller's vectors; the descriptor's fields and values are unchanged.
+
+## 1.53.0 — 2026-11-11
+
+### Added — `handle.stats()` reports the scene's frame clock (core, additive)
+
+A scene window's `stats()` now also returns `frameIntervalMs` and `cbMs` (`{ p50, p95 }` over the
+last 120 `onFrame` deliveries: the interval on the XR frame timestamp, and the wall time the
+callback took), `frameClockSamples`, `displayHz` / `displayHzSource` (from `XRSession.frameRate`
+when the session reports it, else `null`; the SDK does not guess it from the cadence), and a
+`paced` hint: `true` when the interval is steady, the callback uses at most half of it and, with a
+known refresh, the interval is a whole number of refresh periods. That is the signature of a
+compositor-capped frame, which an adaptive resolution scaler cannot fix by scaling down (a
+full-window woven canvas on an Android 3D tablet sits at a flat ≈ 33.5 ms whatever the scene
+costs). Typed as `SceneStats` / `SceneFrameClock` in `index.d.ts`; "Capped or slow?" in
+`docs/authoring-inline-3d.md` says how to read it. Two rings allocated once per scene window, no
+per-frame allocation; nothing is throttled or clamped. `frames` / `monoFrames` are unchanged.
+
+## 1.52.3 — 2026-11-11
+
+### Fixed — `./splat` and `./splat/playcanvas` types declare every runtime export (types only)
+
+Both entries have exported `readSogCamera`, `readSogMeta`, `applySplatPerf`, `SPLAT_PERF_PRESETS` and
+`resolveRig` at runtime for several releases, but `splat.d.ts` declared none of them, so a
+TypeScript app importing e.g. `readSogCamera` from `@displayxr/inline3d/splat` failed to type-check
+and had to declare it itself. All five are now declared in `splat.d.ts` and re-exported from
+`splat-playcanvas.d.ts`. No JavaScript changed.
+
+## 1.52.2 — 2026-11-11
+
+### Added — `./splat/rig`, and `readCloud` / `roomRGBE` / `ROOM_YAW_DEG` on `./splat/playcanvas` (experimental)
+
+For an app that builds its own scenes around a captured splat and so far reached into the SDK's
+internal files for the viewers' own math (which only works from a vendored copy, never from npm):
+
+- **`@displayxr/inline3d/splat/rig`**: `captureWindow` (the capture camera's off-axis window, the
+  projection the camera rigs draw the flat view through), `toRestSpace`, `aheadOfRest`,
+  `planeDistance`, `medianDisparityDistance`, `FOCUS_MIN_M`, `FOCUS_MAX_M`. Pure functions, no
+  engine or peer dependency, typed in `splat-rig.d.ts`.
+- **`@displayxr/inline3d/splat/playcanvas`** gains `readCloud(resource)` (centres + opacities of a
+  loaded gsplat resource, strided as the viewers sample them), `roomRGBE()` and `ROOM_YAW_DEG` (the
+  generated room environment). `readCloud` loads the viewer module on first call, so the entry stays
+  as light as before.
+
+All are re-exports of the functions the viewers themselves call (same module instances), so an app
+using them agrees with the SDK's own framing exactly. Experimental tier (`docs/sdk-stability.md`).
+
+### Fixed — `warmEntity` / `warmEffect` warm the right programs on PlayCanvas 2.23+ (`./splat`, `./model`, preview tier)
+
+PlayCanvas 2.23 changed how the forward renderer asks a mesh for its program: `getShaderInstance`
+now takes the layer's light list and a view uniform format built per light list
+(`renderer.getViewUniformFormat(clustered, lightList)`), and `renderer.viewUniformFormat` is gone.
+`warmEntity` checked for that property first, so on 2.23 and 2.24 it gave up at once and resolved
+0: a glTF was no longer compiled ahead of its first draw. `warmEffect` and the transition pre-warm
+asked for a variant with no view uniform block, which is not the program the draw uses. Both now
+detect the renderer's shape and pass exactly what it passes; 2.22.3 is unchanged. Measured in
+headless Chrome on a fresh copy of a glTF: programs warmed 0 → 1 on 2.23.3 and 2.24.0 (1 on
+2.22.3 before and after), and the first draw then creates no new variant.
+
+## 1.52.1 — 2026-11-11
+
+### Changed — PlayCanvas 2.24.0 supported alongside 2.22.3 and 2.23.x; samples load 2.24.0 (`./splat`, `./model`, preview tier)
+
+The peer range stays `playcanvas >=2.22.3 <3`, and one SDK build now works on 2.22.3, 2.23.x and
+2.24.0 at once: where an engine release changed something the SDK relies on, the SDK checks what it
+finds (shader chunk text, uniform names), never the version number. Three fixes came out of
+checking 2.24.0:
+
+- **`./model`: a transmissive (glass) glTF went black on PlayCanvas 2.23 and later.** The per-eye
+  grab-UV rewrite of `refractionDynamicPS` named `uScreenSize`, which 2.23 renamed `screen_size`
+  (moved into the view uniform block), so the material failed to compile. The rewrite now uses
+  whichever name the engine's chunk uses.
+- **Depth cursor (`cursor: 'depth'`) on splats found nothing on PlayCanvas 2.24**, so the arrow
+  stayed on the glass. The pick camera draws the eye camera's splats; 2.24 now applies a mesh
+  instance's per-camera visibility test even with frustum culling off, which hid them from the
+  pick pass. The SDK now lends the eye's splat draw to the pick camera for that one pass.
+- **The false "footprint fix SKIPPED … half height" warning is really gone on 2.23+.** The 1.51.0
+  fix detected 2.23's native footprint but still went down the warning branch.
+
+Samples and the cursor e2e pages now load `playcanvas@2.24.0`. The splat sample also takes
+`?pc=<x.y.z>` to swap the engine build and `?viewPath=cameras` to render each eye with its own
+camera, so a device A/B needs no rebuild. **2.22.3, 2.23.3 and 2.24.0 are all validated on a 3D
+panel and an Android 3D tablet** (splat stereo through orbit, zoom, resize and rotation; the depth
+cursor on a splat; glass glTF refracting in stereo; no footprint warning), and **2.24.0 is now the
+recommended pin** (`docs/playcanvas-adapter.md`). The earlier 2.23.3 tablet stereo loss did not
+reproduce on a page with one woven canvas.
+
+Tests: `test/playcanvas-chunks.test.mjs` runs every SDK shader rewrite against the real chunks of
+each engine version (copies in `test/playcanvas-chunks/`, refreshed with
+`node tools/playcanvas-chunks.mjs <version>`).
+
+## 1.52.0 — 2026-11-10
+
+### Added — a one-time hint when a camera rig orbits a fixed point; rig choice up front for agents (core, docs)
+
+`handle.setViewRig` now logs one `console.info` per window when a **camera** rig keeps its
+convergence point still while the camera swings 45° around it — the shape of a subject viewer on
+the wrong rig. It points to a display rig posed at the orbit target (`displayRig({ position:
+target, orientation: camera.quaternion, virtualDisplayHeight: 2·d·tan(fov/2) })`), which keeps the
+target on the glass at any window size and zoom. Read only: the rig is sent exactly as given, and
+first-person turns, walking and following a moving subject never trigger it. The docs gain that
+recipe (README, `docs/authoring-inline-3d.md` § *Which rig*), a depth-after-resize step in the
+porting checklist, and the rig decision in `llms.txt`. `docs/authoring-inline-3d.md` and
+`docs/porting-three-js-apps.md` now ship in the npm package: `llms.txt` and `AGENTS.md` already
+pointed agents at them, but an agent reading `node_modules` could not open either.
+
+### Changed — `rectCover` is live: a window drag shows moving 2D, not one frozen frame (core option, subpath default)
+
+While the cover is up, it now redraws the left eye of each new frame (one `drawImage` at CSS px per
+frame), once the page has redrawn for the new box (the eye's aspect within 3 % of the box's; until
+then the last picture stays, so a buffer resized a frame late never shows stretched). Before, the
+cover held the one snapshot taken at the change, and since every step of a window drag restarts the
+wait, a page with the cover on (`./splat`, `./model`, or `rectCover: 'auto'`) showed a still frame
+for the whole drag plus a hold. New field `rectCover: { live: false }` restores the still.
+`docs/woven-canvas-rules.md` §11 gains a resize checklist.
+
+### Added — `viewerIndependent`: stereo photos and video no longer start a viewer tracker (core)
+
+Every `add*()` takes `viewerIndependent` (default `true` for `addImage` / `addVideo`, `false` for
+`addScene`; image/video default to `false` under `untrackedFallback: 'mono'`), and every tile
+handle gains `setViewerIndependent(bool)` and a `viewerIndependent` getter. New export
+`inline3dViewerIndependentSupported()`. The SDK passes the declaration to the DisplayXR Browser
+(`XRDisplayLayerInit.viewerIndependent`, `XRDisplayLayer.setViewerIndependent`), which, while
+everything a page shows is viewer-independent, asks the runtime for the display's nominal viewer
+(runtime `XR_DXR_display_info` v25) — so a page that only plays stereo video never turns on a
+webcam viewer tracker. Advisory only: no pixel the SDK paints changes, and on a browser or runtime
+without the capability nothing is sent. While a page is viewer-independent its `trackingState`
+keeps its last value. See `docs/authoring-inline-3d.md` § *Viewer-independent content*.
+
+## 1.51.1 — 2026-11-09
+
+### Fixed — `./call`: `listShareableApps()` no longer lists stereo cameras as apps
+
+With two runtime stereo cameras (for example two 3D screens) and no app running, a DisplayXR Browser
+1.9.3+ gives both cameras the multi-source `3D Camera (DisplayXR) - <name>` label, and the listing
+took them for an older browser's app candidates. The legacy candidates now come only from a
+DisplayXR Browser that reports a release before 1.9.3; any other browser, or an unknown version,
+lists only real app-share devices. `openAppShare()` already refused a camera, so nothing wrong was
+ever sent; the list was wrong.
+
+## 1.51.0 — 2026-11-08
+
+### Added — `./call`: `openTabShare()`, share a browser tab in 3D
+
+Opens the browser's tab picker and returns a track for `shareContent`. In a DisplayXR Browser with
+stereo tab capture (1.9.4+), a picked tab comes back as a true side-by-side track, so receivers need
+nothing new; a window, a screen or any other browser comes back flat. Needs
+`MediaStreamTrackProcessor` for the stereo path.
+
+### Fixed — `./splat` (`engine: 'playcanvas'`): no false "footprint fix SKIPPED" warning on PlayCanvas 2.23
+
+Preview tier. PlayCanvas 2.23 fixed the side-by-side splat footprint upstream, so the SDK now
+leaves that shader chunk untouched there instead of warning that splats will draw at half height.
+2.22.3 is still patched as before, and remains the only version validated on a panel.
+
+## 1.50.0 — 2026-11-04
+
+### Fixed — `./camera`, `./call`: half-width side-by-side webcams keep their aspect ratio
+
+A USB stereo webcam that sends 3840x2160 half-SBS came through as a 3840x1080 centre crop: each eye
+2x too tall, with half the vertical view. Such a camera (listed by USB id, since its shape matches
+a 4K webcam's) is now read in its native mode and sent as 2560x720 with square-pixel eyes. Needs
+`MediaStreamTrackProcessor`; without it the camera opens as before. `prefer: 'mono'` stays raw.
+
+### Added — `@displayxr/inline3d/hands`: tracked hands, and pinch controls for every viewer (`./hands`, `./viewer`, `./model`, `./splat`)
+
+Preview tier. The DisplayXR Browser 1.8.0+ (Windows, with a hand provider such as an Ultraleap
+tracker) exposes standard WebXR Hand Input on an inline-3D session: one `XRInputSource` per hand
+with a 25-joint `XRHand`, located in the same rig frame as the eye views. The new subpath reads it
+and turns it into controls:
+
+- `watchHands(wall, onFrame)` — the tracked hands every session frame (`poses`, `radii`,
+  `joint(name)`, `thumbTip`, `indexTip`, `palmLength`), the browser's per-frame gate
+  (`state.gate`: `'available'` or why hands are withheld) and the hand `inputsourceschange`.
+- `HandGestureController` / `PinchDetector` — the DisplayXR Model Viewer's gesture math, ported:
+  hand-relative throughout — the pinch thresholds (2.5 cm enter / 4 cm exit), the orbit gain
+  (10 rad/m) and the two-hand separation guard are all stated for a 9.5 cm palm and scale by the
+  hand's own palm length, so a hand that arrives scaled turns the subject by the same angle for
+  the same finger travel; one pinched hand orbits, two pinched hands zoom (separation ratio), roll
+  (twist) and orbit (midpoint drag); EMA-smoothed, anchored on every mode change.
+- `handControls(wall, target)` — drives anything with the viewer pose surface from those
+  gestures; and the option **`hands: true`** on `addModel` / `addSplat` (both engines, every
+  entry) wires it for you, exposed as `handle.hands`. Pointer and wheel keep working alongside.
+- `SceneViewer.nudgePose(delta)` and `PlayCanvasSplatViewer.nudgePose(delta)` — move the pose by
+  an eased delta, counting as input for the idle turntable (what the hands call; a page may too).
+- `OrbitPose.roll` on both viewers — degrees about the view axis, outside yaw and pitch (Euler
+  order `'ZXY'`; the PlayCanvas pivot quaternion gains the same Rz factor), bit-identical to
+  before at roll 0; `getPose()` now reports `roll`. (The first cut left the PlayCanvas viewer
+  without a roll axis, so the two-hand twist did nothing on the default engine — found on the
+  panel 2026-11-04.)
+
+Inert everywhere else: no hands, nothing moves, no errors. New sample `samples/hands/` (the raw
+surface), and `?hands` on `samples/model/` and `samples/splat/`. The porting guide's "no input
+sources" row is corrected (web#229). Tracks DisplayXR/displayxr-web#228.
+## 1.49.3 — 2026-11-04
+
+### Fixed — a camera view is not "woven" before the camera's first frame; `frameAgeMs` tells a stalled track (`.`, `./camera`, `./call`)
+
+Core and preview tier. A camera view (`addCameraView`, and the call's self view, which is one)
+registers its tile on the wall with an SBS buffer it fills from the camera. That buffer started
+as a blank default 300x150 canvas, and the wall counted any image source as a stereo frame, so
+`firstWoven` settled `woven: true` (`hold-elapsed`) on a tile that had never shown the camera.
+On an Android 3D tablet whose camera track was `live` but delivered no frames, the call reported
+the self view woven over a black tile.
+
+- **Core:** an `addImage` source that is a canvas or image with no pixels (0x0) is not a stereo
+  frame: `firstWoven` / `rewoven()` wait for one. Sources that report no size keep the old rule.
+- **`./camera`:** the woven buffer starts 0x0 until the first camera frame is painted into it.
+- **New: `view.frameAgeMs`** and `weaveState().frameAgeMs` (also `call.diagnostics().self`): ms
+  since the camera last delivered a new frame to the view, null before the first. A stalled track
+  keeps its last frame on screen; a growing age is how a page shows "no video".
+
+## 1.49.2 — 2026-11-04
+
+### Fixed — the camera probe waits for the DisplayXR 3D camera before opening a plain lens (`./camera`, `./call`)
+
+Preview tier. In a DisplayXR Browser the runtime lists its 3D camera lazily. On a phone it is
+missing from the list right after a runtime restart, or after the camera service restarted. With
+the 3D camera absent, `camera: 'auto'` read the list once more and then opened the plain front lens.
+On some phones that open crashes the camera HAL while head tracking streams. The HAL restart takes
+the 3D camera down again, so the call never got it back: the self view stayed 2D, or the call
+reported "Camera busy".
+
+- **The wait:** with camera labels visible and no stereo-named device listed, `'auto'` / `'stereo'`
+  now wait up to `stereoWaitMs` (new option, default **2500 ms in a DisplayXR Browser**, 0
+  elsewhere) before opening any plain lens. They re-read the list on every `devicechange` and every
+  500 ms, and open the 3D camera as soon as it appears. `'mono'`, an explicit `deviceId` and
+  `label:` never wait. The rule is in [`docs/camera.md`](docs/camera.md), "Waiting for the 3D camera".
+- **No shape probe of a second lens in a DisplayXR Browser:** once a plain lens is in hand, the
+  last-resort probe no longer opens the other plain lenses to test whether one is a side-by-side
+  pair. There, a stereo webcam (a USB SBS one included, through the runtime's UVC source) is the
+  runtime's named "3D Camera". The extra open is the one that can crash a phone's camera HAL. Other
+  browsers keep the shape probe, which is how a USB stereo webcam is found there.
+- **Pinned:** when the default camera opens but delivers no picture (0x0), a lens that opens by id
+  is kept as the fallback, never stopped and reported as busy. This has worked since 1.48.0; a test
+  now covers it.
+
+## 1.49.1 — 2026-11-03
+
+### Fixed — app share on browsers without the app-share device patch (`./call`, `./camera`)
+
+Preview tier. A DisplayXR Browser that predates the app-share device patch (1.9.x) lists a running
+app through its 3D-camera device, as `3D Camera (DisplayXR) - <app>` with no `source` in
+`displayxrStereo` — and once the runtime offers more than one source it suffixes the REAL camera the
+same way, so the label cannot tell an app from a camera. On such a browser `camera: 'auto'` could
+open the app and send it as your face, and `listShareableApps()` found nothing.
+
+- **Detection by the opened track**: an app source advertises `baselineMm: 0` and
+  `horizontalFovDeg: 0` (runtime ADR-061 decision 2); a real camera never has baseline 0.
+  `isAppShareDevice()` now accepts that hint as well as `source: 'app'`. The legacy label alone is
+  never enough.
+- **Camera probe**: every probe path checks the opened track; an app is closed again and reported
+  in `skipped` with `reason: 'app-share'`, and probing goes on. Suffixed real cameras open as before.
+- **Discovery**: with no `DisplayXR: <app> (3D)` device listed, `listShareableApps()` returns the
+  `3D Camera (DisplayXR) - <name>` entries as candidates (`ShareableApp.legacy: true`, `appName`
+  from the label). `openAppShare()` verifies the opened track and rejects a real camera with
+  `code: 'not-app-share'` (stopped again); the descriptor's `appName` falls back to the label's name.
+
+## 1.49.0 — 2026-11-03
+
+### Added — the content tile: share a running 3D app into a call (`./call`, `./camera`)
+
+Preview tier. In the DisplayXR Browser a participant can share a running DisplayXR app, and every
+other participant sees it in 3D on their own display (runtime ADR-061, "3D screen share"). What is
+sent is the app's two views before weaving, side by side, on a **second video track** next to the
+camera; each receiver weaves it for its own panel. See [`docs/call.md` § Sharing a 3D app](docs/call.md#sharing-a-3d-app).
+
+- **Discovery** (`./call`): `listShareableApps()`, `watchShareableApps(cb)`, `isAppShareDevice()`,
+  `openAppShare(deviceId)`. The browser lists each app as a `videoinput` labelled
+  `DisplayXR: <app> (3D)` (id `dxr-app:…`); detection takes the label, the id prefix or the track's
+  `displayxrStereo.source === 'app'`, so browsers that do not expose the hint fields yet work, and a
+  missing `zeroDisparityShiftFrac` reads as 0. `openAppShare` is when the runtime asks the user on
+  the sender's machine; a Deny rejects with `code: 'share-denied'`.
+- **Sharing**: `handle.shareContent(stream, descriptor)`, `handle.stopContent({ stopTrack })`,
+  `handle.content`; the `content` event (`{ id | 'self', on, appName }`); `CallPeer.content`;
+  `tile(id, 'content')` (`data-dxr-kind="content"`); `selfContentView` (`<dxr-call self-content-view>`)
+  for a woven preview of your own share.
+- **Display-referred convergence**: the content message carries the disparity of the sender's
+  display plane (`convergence: { known: true, frac }`, 0 for every app today); a receiver applies
+  it directly, never measures the frames, and its depth slider still adds.
+- **Wire**: `hello.content: true` (capability) and a `content` message, both additive (wire version
+  stays 1). The content transceiver is added only when both hellos say `content`, by the pair's
+  offerer with a same-generation re-offer, so an older participant never gets a second video
+  m-line (nor a second camera sender) — they keep seeing your camera, and you get
+  `warning { code: 'content-unsupported' }`. While content is on, the camera sends at 60% of its
+  bitrate; the content track gets the side-by-side budget and holds its resolution.
+- `weave`, `speaking` and `display` events now carry `kind: 'camera' | 'content'`.
+- **`./camera`: a running app is never a camera.** Its label says "3D", so `stereoLabelHint` would
+  have preferred it: no probe path of `openCamera` (and so `camera: 'auto'`) opens an app-share
+  device, `exclude: false` included, and `label:` searches skip them. They are in `skipped` with
+  `reason: 'app-share'` (`CameraSkip.reason`, new).
+
+### Fixed — the Ultraleap hand tracker is excluded by its bare brand name; the default camera is not opened blind (`./camera`, `./call`)
+
+1.48.0's built-in exclusion list is generic words (hand tracking, tracking camera, eye tracking,
+depth camera). On Windows an Ultraleap (Leap 2 / Leap Motion Controller) enumerates as a UVC device
+labelled just **"Ultraleap"**, with modes of 2:1 or squarer, so neither the list nor the pair shape
+caught it; with its tracking service stopped it was free and, as the browser's *default* camera on
+that box, became the call's self view (win box, 2026-11-04). The list now also names `ultraleap`,
+`leap motion`, `infrared` and `ir camera`.
+
+While an excluded device is listed and labels are visible, the default camera is no longer opened
+blind and closed again: the first camera that is not excluded is opened by id, so a sensor is never
+started (an eye tracker's camera must not be). With labels hidden the prime stays blind, as before.
+
+### Added — `prefer: 'label:<text>'` opens the first camera whose label contains the text (`./camera`, `./call`)
+
+For a URL or a config, where a per-origin `deviceId` is useless: `openCamera({ prefer: 'label:hd webcam' })`,
+`addCall(wall, el, { camera: 'label:brio' })`. Case-insensitive; with no permission yet the default
+camera is primed once and let go so the labels become visible; no match rejects with `no-camera`.
+Explicit like a `deviceId`, so it opens an excluded device too. The call sample passes
+`?camera=label:…` (and a bare `?camera=<deviceId>`) straight through.
+
+## 1.48.0 — 2026-11-03
+
+### Changed — auto-convergence is measured on the sender's raw frames (`./call`)
+
+Preview tier. A stereo participant was converged by each RECEIVER, which measured the disparity of
+the point between the person's eyes on the frame it decoded: a compressed copy, often downscaled
+by WebRTC, measured again by every participant. The sender now measures it on its own raw camera
+frames, before encoding, and sends the result on the data channel (`conv { d, c }`, `d` a
+fraction of the per-eye width; at most 5 a second while the person moves, one every 400 ms while
+they hold still). Each receiver still applies it as a per-eye crop, so the stream keeps the full
+picture and every receiver keeps its own depth slider and display. The sender measures whatever
+its self view does, including `selfView: false`, and sends nothing while its camera is off or from
+a mono camera.
+
+- New option **`sendConvergence`** (default `true`; `<dxr-call no-send-convergence>`). `false`
+  sends nothing and leaves the measuring to the receivers.
+- Additive on the wire, so the wire version stays 1. A sender advertises it with `hello.conv:
+  true`. A sender without it (1.47 and earlier), or one silent for 1.2 s, is measured by the
+  receiver exactly as before, and an older receiver ignores `conv`. The depth cursor still copies
+  the received frames while it hovers a tile.
+- `diagnostics().peers[i].autoConverge` gains `source` (`'sender'` / `'local'` / `null`),
+  `senderFrac` and `samples`. A failed local measurement no longer drops a value held from the
+  sender.
+- `docs/call.md` § *Auto-convergence is measured by the sender*.
+
+### Added — headless-mode hooks for an app that owns its layout (`./call`)
+
+Preview tier. Everything a chat app that lays out the call itself (`ui: false`, `layout: 'none'`)
+needed and had to work around; the tiles stay module-owned. Docs: `docs/call.md` § *Hooks for an
+app that owns its layout*.
+
+- **Names.** Option `name` (≤ 64 characters, control and bidi characters stripped), sent in
+  `hello`; `CallPeer.name`; `handle.setName()` re-sends it; event `name { id, name }`. Additive on
+  the wire (wire version stays 1): an older peer ignores it.
+- **App messages.** `handle.send(peerId, data)` / `handle.broadcast(data)` on the call's data
+  channel (`{ type: 'app', d }`): JSON, ≤ 16 KiB serialised, ≤ 20 a second per participant (over a
+  cap: `false`, nothing sent); event `message { from, data }`. Only app messages reach the page.
+  An older peer drops them silently.
+- **Events.** `signal { state, code? }` (+ `handle.signal`): connected / reconnecting / closed.
+  `weave { id, state, reason?, ms }`: a tile's first join and its re-join after a resize, per
+  participant and `'self'`. `speaking { id, on }`, for participants and `'self'`.
+- **Layout.** `tileCover` (default `'auto'` with `layout: 'none'`): the core's `rectCover` on every
+  woven tile and a stereo self view. `theme.tileAspect: 'fill'`: no aspect imposed, each tile's
+  crop follows its own box (the numeric default is unchanged). `handle.tile('self')`
+  (`data-dxr-peer="self"`); under `layout: 'none'` the footer and self slot are
+  `display: contents` so the page places the self tile. `handle.setSelfView(on)` removes / restores
+  its layer. A hidden (0×0) tile is no longer painted or measured.
+- **Devices.** `handle.setMic(deviceId)`, `handle.setAudioOutput(sinkId)` (tiles that join later
+  too), `handle.localStream`.
+- **Quality.** The `quality` event gains `path` (`'host'` / `'srflx'` / `'prflx'` / `'relay'`, from
+  the selected ICE candidate pair) and `rttMs`.
+- `<dxr-call>`: `name` attribute, `tile-aspect="fill"`, and the five new events as `dxr-call:*`.
+
+### Fixed — the camera probe opened a hand-tracking camera (`./camera`, `./call`)
+
+Preview tier. Found on hardware (Windows, DisplayXR Browser 1.9.1): with no stereo pair open,
+`camera: 'auto'`'s last-resort "try every device" loop opened a hand-tracking camera — an ordinary
+video input, wide enough to pass for a side-by-side pair — and the call sent its picture as 3D.
+Every probe path (the named-pair fast path, the default camera, the last resort) now skips devices
+whose label marks a sensor (hand tracking, eye tracking, a "tracking camera", a depth camera), plus
+the new `openCamera({ exclude })` / call `cameraExclude` list; `false` turns the built-in list off.
+Left-out devices appear in `skipped` with `excluded: true`; an explicit `deviceId` is opened
+regardless. Also: the browser's "3D Camera (DisplayXR)" is listed LAST on Windows, so the probe no
+longer assumes it is the default — a default that is a pair only by its shape no longer wins over a
+camera that names itself a pair, and with an excluded default the first plain camera is the
+fallback. `addCameraView` gains `aspect: 'fill'` and `rectCover`.
+
+### Added — the dev signalling server ships in the package
+
+`signaling/dev-server.mjs` and the five modules it imports are in the published files (not an
+`exports` entry): run it by path, or import `startDevServer` from the file. Copy it unbundled
+(`signaling/README.md`).
+
+### Docs — frosted chrome over a tile works on DisplayXR Browser 0.1.16+
+
+`docs/woven-canvas-rules.md` rule 10 and §5, and `docs/call.md`: since DisplayXR Browser 0.1.16 the
+compositor draws a tile mono inside each `backdrop-filter` rect (displayxr-browser#120;
+`samples/composition` is the validated case), so partial frosted chrome over a tile is fine. Never
+frost a whole visible tile; effects on a tile or its ancestors (rule 7) are unchanged. The SDK's
+own chrome keeps its near-solid tint. `docs/call.md` also notes that changing only the `#room=`
+fragment of a page with a live call does not re-join (reload, or navigate with a changed query).
+
+## 1.47.6 — 2026-11-03
+
+### Fixed — a page that destroys PlayCanvas materials no longer keeps their programs (`./splat`, `./model`)
+
+Preview tier. When a page destroys a material on a PlayCanvas tile the SDK created, either
+directly or through a glTF container's `asset.unload()`, the SDK now destroys the programs that
+material linked, one frame later, when no mesh instance in the app, no material asset in the
+registry and no still-alive material holds them. A page that follows the engine's own teardown
+(`entity.destroy()` plus destroying or unloading what it drew with) is bounded without calling
+`handle.releaseEntity`. Measured on macOS, 24 swaps of distinct products under one tile: 2 live
+programs (25 created, 23 deleted), against 25 (none deleted) before. A kiosk app with one
+persistent stage had reached 170 live programs over 28 screen changes.
+
+Content shown again after its material was destroyed recompiles on its first draw
+(`handle.warmEntity` hides that). A material the page keeps alive keeps its programs.
+`?dxrdiag=keepprograms` turns the release off for an A/B, and the overlay shows
+`release patched (−N)`. It installs only on PlayCanvas 2.22.x's `Material` shape and otherwise
+reports `release skipped: …`. `docs/content-lifecycle-rules.md` rule 1 and §6 are updated.
+
+### Added — `handle.releaseEntity`: swap content in a PlayCanvas tile without leaking its programs (`./splat`, `./model`)
+
+Preview tier. PlayCanvas never frees a shader program by itself: its `ProgramLibrary` caches every
+variant for the device's life, and `Material.destroy()` (which `entity.destroy()` and a container's
+`asset.unload()` reach) only empties `material.variants`. A page that swaps glTFs under
+`handle.engine.root` (a carousel, a catalogue) therefore kept every program it ever showed, and a
+desktop driver keeps each linked program's compiled form (about 5 MB per program, measured on one
+Linux driver): a production page's GPU process grew about 8 MB/min for as long as it was open.
+
+- `handle.releaseEntity(entity, { asset })` on `addSplat(…, { engine: 'playcanvas' })` and
+  PlayCanvas `addModel` handles: collects the programs the entity's materials linked, destroys the
+  entity, unloads its glTF container `asset` unless something else in the tile still draws from it,
+  then destroys each collected program nothing left uses (`Shader.destroy()`, the engine's own
+  release). Returns `{ programs, container }`. A no-op on Spark and three.
+  Measured over 24 distinct models: live programs 5 → 47 without it, bounded at 5–16 (the model on
+  screen) with it.
+
+### Fixed — the engine kept every compiled shader until the device died (`./splat`, `./model`)
+
+Preview tier. PlayCanvas 2.22.3 keeps every compiled vertex and fragment shader in a
+module-private cache keyed by source, and `WebglShader.destroy()` deletes only the program. So
+even with the programs destroyed, two compiled shaders per program stayed (10 → 91 over the same 24
+swaps). The SDK now counts, per cached shader, the programs that use it and deletes it with the last
+one, on every PlayCanvas device it creates (`js/inline3d-pc-shader-cache.js`: a run-time patch of the
+engine's `WebglShader` prototype, since the engine is the page's own dependency; it installs only on
+the 2.22.x shape and otherwise steps aside). With `releaseEntity`, shaders stay at exactly twice the
+live programs. `?dxrdiag=keepshaders` turns it off for an A/B.
+
+### Added — live GL object counts and a leak warning in `?dxrdiag` (`./splat`, `./model`)
+
+The diagnostics overlay shows live programs and shaders on the tile's context (created and deleted
+since diag attached) and the shader-cache fix's state; the dump carries them under `glObjects`. At
+each content swap the SDK sees (`setSource`, a glTF container loaded into the tile's registry,
+`releaseEntity`) it samples the live program count, and warns once when it has not dropped across
+10 swaps of one kind and rose at more than 60% of them. `addModel`'s PlayCanvas tile now honours
+`?dxrdiag` too. Nothing runs when diag is off.
+
+### Docs
+
+- New [`docs/content-lifecycle-rules.md`](docs/content-lifecycle-rules.md): what a swap must release,
+  PlayCanvas and three.js engine facts, the hook-and-plateau pass test, the SDK's own swap paths
+  measured, and what the SDK does vs what the page owns.
+
+## 1.47.5 — 2026-11-01
+
+### Fixed — the camera permission prime could open a phone lens and crash its camera (`./camera`, `./call`)
+
+Before camera permission, `openCamera('auto')` primed on `{1280x720, facingMode: 'environment'}`.
+On a phone whose lenses all report the same facing, that picked camera 0, one lens of the 3D
+camera's pair, and on some phones a plain open of that lens, or its teardown, crashes the camera
+service. The prime now asks for the default camera with no constraints. The DisplayXR Browser lists
+its 3D camera first, so the prime opens the pair directly and no lens is opened. A desktop webcam is
+still opened once and kept, and is then asked for the usual 1280x720 mode without a second start.
+With labels visible but no 3D camera listed, the list is read once more before the fallback, since
+a runtime 3D camera can appear late after a runtime restart.
+
+## 1.47.4 — 2026-10-31
+
+### Fixed — a declared 3D camera with portrait eyes was dropped for a plain one (`./camera`, `./call`)
+
+- `openCamera` kept a device as a pair only if it was wider than 2.5:1. A phone's front pair with
+  portrait eyes (720x1280 each, so a 1440x1280 frame) failed that test: the SDK stopped the
+  "3D Camera (DisplayXR)" track and fell back to the plain default camera. A track whose settings
+  say `displayxrStereo.layout === 'side-by-side'` is now a pair whatever its aspect, so the SDK no
+  longer falls back once the browser offers a stereo track. Shape is still the guess for devices
+  that say nothing (USB pairs).
+
+### Fixed — before camera permission, `openCamera` opened a phone's front (head-tracker) lens (`./camera`, `./call`)
+
+Touches `./camera` (`openCamera`'s `auto` / `stereo` probe) and so `./call`'s camera. With camera
+permission already granted, nothing changes.
+
+- Without permission the device labels are empty, so the probe used to open the platform default
+  camera just to get them: on a phone that is the front lens the head tracker holds, and opening
+  it coincided with every camera dropping out for about 2.4 s. It now primes permission on an
+  environment-facing camera (`facingMode: { ideal: 'environment' }`), reads the list again, and
+  opens a camera that names itself stereo **by id before the default**. A desktop webcam that
+  reports no facing is opened once and kept as the mono fallback (no extra camera start); a phone
+  with no pair still falls back to the default (front) camera for a self view.
+- `camera-busy` now reads "camera unavailable: in use by another app (e.g. eye tracking) or unable
+  to deliver a picture". A 3D camera that is listed but cannot deliver also fails with
+  `NotReadableError`, so "every camera is in use" was wrong for it.
+
+## 1.47.3 — 2026-10-31
+
+### Fixed — a rear 3D camera's view was mirrored (`./camera`, `./call`)
+
+Touches `./camera` (`addCameraView`, new read-only `StereoCamera.facing`) and `./call` (its self
+tile). Front cameras and webcams behave exactly as before.
+
+- `addCameraView`'s `mirror` now defaults to true **unless the track faces the environment**
+  (`getSettings().facingMode === 'environment'`, a rear camera). Mirroring is right for a self view
+  and wrong for a camera pointed at the world: on a tablet's rear 3D camera the scene came out
+  mirrored (each half flipped and the eyes swapped). An unknown facing (most desktop webcams) still
+  mirrors; an explicit `mirror` still wins.
+- `StereoCamera.facing`: the track's `facingMode` (`'user'`, `'environment'`, `'left'`, `'right'`)
+  or null when the browser does not say.
+- `./call`'s self tile uses the same default (it passed `mirror: true`), and `samples/camera`
+  initialises its Mirror checkbox from the view.
+
+## 1.47.2 — 2026-10-30
+
+### Docs only — two more panel findings in the shipped guide
+
+No code change. `docs/making-3d-look-right.md` and `docs/woven-canvas-rules.md` (both in the
+package):
+
+- **Rule 9:** a `firstWoven` of `woven: false` is not "no 3D here". Drop the cover and keep drawing
+  both eyes, since the layer can still join, and go flat only on `onLayerLost` or with no session.
+  Never draw one full-width flat picture into a canvas the browser is still weaving: each eye
+  would see a different half of it. To show a flat picture on purpose, remove the scene, or call
+  `setStereoEnabled(false)` and keep drawing every view.
+- **Rule 5:** in front of the glass, contrast matters more than the depth number. Keep bright
+  subjects off near-black backgrounds, above all the ones that come closest; dark grey is the
+  minimum, not the target.
+
+## 1.47.1 — 2026-10-29
+
+### Fixed — a splat on a camera rig briefly declared convergence at infinity (`./splat`, PlayCanvas)
+
+Touches the preview tier (`./splat` on PlayCanvas) only.
+
+- When a camera-rig splat's focus sat at or behind its camera — in practice the first push, before
+  the first focus has landed — the adapter declared `convergence: 0` (infinity), which asks for
+  the whole scene in front of the glass, for one push. It now keeps the rig as declared until the
+  focus is in front of the camera. Seen on a panel as one such rig in the first 0.3–2 s of each
+  page of an app built on 1.47.0 (and silently in earlier versions); 1.47.0's one-time
+  convergence-0 warning is what surfaced it, and it no longer fires from the SDK's own rigs.
+
+## 1.47.0 — 2026-10-29
+
+The look-right release: a short guide for people and coding agents (`docs/making-3d-look-right.md`,
+`llms.txt`), depth measurements and comfort-zone helpers, and opt-in `clearColor`, `setStereo` on
+`./model` and `depth: 'auto'`. Every addition is opt-in: without the new options a page renders
+exactly as on 1.46.0; the only default change is a few one-time console warnings.
+
+### Comfort depth: zone-of-comfort helpers and an opt-in `depth` option
+
+Touches the core (`.`: new pure exports), `./three` and `./depth` (the same pure exports), and the
+preview tier (`./model`, `./splat`: one new opt-in option, one read-only handle field). Without
+`depth`, every page renders exactly as before: no rig is declared that was not, nothing is measured.
+
+- **`comfortZone({ viewerM = 0.6, zone = 'shibata' })`** → `{ zone, viewerM, frontD, behindD,
+  frontMm, behindMm }`: the vergence–accommodation comfort zone at a viewing distance, in diopters
+  and on-screen mm. `'shibata'` (Shibata et al. 2011: ≈ 0.57 D in front / 0.63 D behind at 0.6 m;
+  behind unbounded once the far limit passes infinity), `'percival'` (±1/3 D), or a number.
+- **`comfortDepthFactor({ frontH, backH, tileHeightM, viewerM, zone })`** → the largest `k ≤ 1` that
+  puts a display-rig subject (depth in tile heights) inside the zone, from the exact geometry at
+  real proportions. Only ever lowers depth; 1 on missing / invalid input.
+- **`cameraRigComfortFactor({ zNear, zFar, convergence | convergenceDiopters, verticalFov, aspect,
+  tileHeightM, viewerM, zone, ipdFactor, metersToVirtual })`** → the multiplier on a camera rig's
+  eye separation that puts its nearest / farthest points at the zone's edge. A measurement, **no
+  cap**: a camera rig's ipdFactor 1 is only physical in metre-scale worlds, so this may be well
+  above 1. Infinity with nothing off the plane, NaN on bad input. No warning is added for camera
+  factors above 1.
+- **`depth: 'auto' | { zone }`** on `addModel` (both engines) and `addSplat` (Spark and
+  PlayCanvas), display rig only: the framed subject's depth (zoom 1, no orbit), the canvas's
+  physical height (`displayMetrics()`) and the display's NOMINAL viewer distance (0.6 m when it
+  reports none) give `k = comfortDepthFactor(…)`, applied to the display rig's `ipdFactor` and
+  `parallaxFactor` together, multiplied with `setStereo`'s values (Spark, which has no setStereo:
+  the whole factor). Re-measured on first framing, a canvas resize, the first weave and a display
+  event; never on zoom, orbit or per frame; re-declared only when k changes. Ignored with one
+  warning on a camera rig / `controls: 'page'`; an invalid value throws at the call.
+  `handle.depthFactor` reads the factor in force (1 without the option).
+
+### Making 3D look right: depth measurements, opt-in helpers and one-time warnings
+
+Touches the core (`.`: new pure exports, console warnings only), `./three` (re-exports, one
+warning), the new `./depth` subpath, and the preview tier (`./viewer`, `./model`, `./splat`), all
+opt-in. **Nothing clamps, refuses or overrides what a page asks for**: without the new options
+every page renders exactly as on 1.46.0; the only default change is the console warnings below.
+
+- **Depth measurements** (`./depth`, also on the root; the pure helpers on `./three`):
+  `disparityPct({ depthH, aspect, viewerM, heightM, ipdFactor })` (display rig: `e·z/(V∓z)` over
+  the tile width, the small-depth limit without `heightM`),
+  `cameraRigDisparityPct({ z, convergence, ipdFactor, metersToVirtual, verticalFov, aspect })`
+  (`100·b·(1/D − 1/z)/(2·tan(fov/2)·aspect)`, + behind, − in front), and `depthBudgetFromBounds`
+  (a `getSubjectBounds()` box → tile heights and % of the tile width). Pure; for a raw `addScene`
+  page or an agent checking its numbers. No budget tiers are built in: depth ranges measured on a
+  panel are in `docs/authoring-inline-3d.md`, as reference points.
+- **`clearColor`** on `SceneViewer` / `addModel` / `addSplat` (three and PlayCanvas):
+  `[r, g, b, a]` in 0..1 or a CSS colour. Unset = the transparent clear, as before. An opaque clear
+  avoids the stale / black pixels the weave can show where it reads alpha 0 (web#198); match the
+  page colour behind the canvas.
+- **`ModelHandle.setStereo({ ipdFactor, parallaxFactor } | null)`** (both engines), mirroring
+  `SplatHandle.setStereo`: a depth slider. RELATIVE on the display rig (1 = by construction), sticky,
+  `null` restores; `ipdScale` / `parallaxScale` accepted. Re-declares the display rig explicitly
+  from the first call (nothing is declared before it). `handle.rig` reads the values in force;
+  under `controls: 'page'` the page's camera rig takes them, absolute.
+- **One-time console warnings** (`[inline3d]`, once per handle, the rig still sent as given): a
+  camera rig with `convergenceDiopters` 0 / unset ("convergence at infinity puts the whole scene in
+  front of the glass …"; also once per page from `cameraRigFromCamera` / `cameraRigFromPose` at
+  convergence 0, not repeated by `setViewRig` for that descriptor), a display rig with
+  `ipdFactor` or `parallaxFactor` above 1, a camera rig whose `verticalFov` is above π (degrees).
+  And a layer the browser keeps `'withheld'` until `firstWoven` / `rewoven()` settles on it now
+  logs its `withheldReason` once, with a hint (`cross-pass:*` / `no-quad`: a `filter`,
+  `opacity < 1`, `mask`, `clip-path`, `mix-blend-mode` or `backdrop-filter` on the canvas or an
+  ancestor). A transient withheld (a move, a resize) says nothing. `withheldReasonHint` is exported.
+- **Docs corrected**: the camera-rig comfort note said N ≈ 0.5 m and "the runtime clamps". The
+  nominal viewer is 0.6 m on a desktop panel, and the runtime does NOT comfort-clamp an
+  app-declared rig (XR_DXR_view_rig §3); it clamps only values outside a field's sanity range.
+- Internal: `validateSetStereo` moved to `js/inline3d-splat-shared.js` (still exported from the
+  PlayCanvas splat module); new `js/inline3d-depth-budget.js` is in the published file set.
+
+## 1.46.0 — 2026-10-14
+
+### Depth cursor: when the runtime draws the web cursor, hand it the depth (runtime ADR-046 Amendment 4)
+
+Touches `./cursor-depth`, `./three` (`DepthCursor`), the core tile handle, and the preview tier
+(`./model`, `./splat`, `./call`, `./camera`), all only under `cursor: 'depth'`.
+
+- In a DisplayXR Browser whose runtime draws the web cursor (`XRDisplayLayer.getCursorDepthSupport()`
+  → `"runtime"`: Windows, `XR_DXR_cursor_depth` spec ≥ 8), the depth cursor draws **no sprite** and
+  never hides the CSS cursor. Each frame it calls `layer.setCursorDepth({ disparityPx, u, v })` with
+  the **raw** content disparity under the footprint in **device px between the outermost views**
+  (< 0 = in front; no margin, clamp or filter: the runtime applies the one policy), `{ u, v }` with no
+  `disparityPx` over the element with nothing 3D under it, and `setCursorDepth()` once to withdraw
+  (pointer off the element, 2D, teardown). The runtime draws the browser's own cursor (`grab`,
+  `pointer`, `url(…)`), lifted, softened and late-latched.
+- `"none"`, an older browser, or any other browser: unchanged — the SDK sprite, its softening and
+  CSS-shape mirroring, exactly as before. The browser answers `"none"` until its weave session is
+  live, so a `"none"` is re-asked (below).
+- The support probe: a `"none"` is re-asked every 2 s for the first 6 asks, then every 10 s with no
+  cap (`CURSOR_RUNTIME_SLOW_RETRY_MS`), so a weave session that reports late (tens of seconds on a
+  cold GPU) still hands the cursor to the runtime. A browser without the API is never probed.
+- Covered: `DepthCursor` (pass `update(views, { layer })`; `./model`/`./splat` on three do it),
+  the PlayCanvas cursor (`./model`, `./splat`), and the stereo-pair cursor (`./call`, `./camera`,
+  through the tile handle; its matched output-px disparity → device px).
+- New: `CursorRuntimeLink`, `cursorRuntimeCapable`, `cursorDisparityPx`, `CURSOR_RUNTIME_RETRY_MS`,
+  `CURSOR_RUNTIME_PROBES`, `CURSOR_RUNTIME_SLOW_RETRY_MS` (`./cursor-depth`); `CursorPlacement.contentDisparity` /
+  `contentDisparityPx` / `runtime`; tile handle `setCursorDepth()` / `getCursorDepthSupport()`;
+  `XRDisplayLayer.setCursorDepth?` / `getCursorDepthSupport?` and `XRCursorDepthInit` in the types.
+  `DepthCursor.update`'s second argument may now be `{ nowMs, layer }` (a number still works).
+- Needs DisplayXR Browser with page API patch 0409 (browser-pvt #285) and runtime spec 8 (runtime
+  #2088); safe to ship earlier, since it only activates on `"runtime"`.
+
+
+## 1.45.1 — 2026-10-13
+
+### Fixed — `cursor: 'depth'` showed up under a finger (touch)
+
+- On a touch device, dragging a finger over a scene drew the 3D cursor, though the browser shows no
+  cursor there. Since 1.44.0 the pointer took every `pointermove` / `pointerrawupdate` whatever
+  its `pointerType`. Now only a **mouse** or a **hovering pen** places the cursor. A touch or a pen
+  in contact clears it, including a tap that never moves (so no stale mouse hover stays up), and
+  the CSS cursor is never hidden for them. This covers every backend (three.js `./model`,
+  PlayCanvas `./model` / `./splat`, the `./call` / `./camera` pair cursor). They all share
+  `CursorPointer`.
+- New `cursorPointerHovers(e)` in `./cursor-depth`. An event with no `pointerType` (synthetic)
+  counts as a mouse, as before.
+
+## 1.45.0 — 2026-10-13
+
+### Packaging
+
+- `js/inline3d-cursor-shape.js` (new in this release, imported by `./cursor-depth` and so by
+  `./three`) is now in the published file set. A new unit test fails whenever a published module
+  imports a file the package does not ship.
+
+### Depth cursor: the sprite is the page's CSS cursor — any keyword, and `url()` images (ADR-046 §C, page side)
+
+Touches `./cursor-depth`, `./three` (`DepthCursor`) and the preview tier (`./model`, `./splat`,
+`./call`, `./camera`), all only under `cursor: 'depth'`.
+
+- The lifted cursor was always the arrow, so over a model whose page cursor is `grab` it showed an
+  arrow. It now draws what the browser would show: the page's computed CSS cursor under the pointer.
+  - **Every standard keyword** has a procedural sprite in the arrow's style (white fill, dark
+    outline, the OS cursor's 19 CSS px, its hotspot at its natural point): `pointer`, `grab`,
+    `grabbing`, `move` / `all-scroll`, `text` / `vertical-text`, `crosshair`, `not-allowed` /
+    `no-drop`, `help`, `wait`, `progress`, `copy`, `alias`, `context-menu`, `cell`, every resize
+    cursor (`n/s/e/w/ne/nw/se/sw-resize`, `ns/ew/nesw/nwse-resize`, `col-resize`, `row-resize`),
+    `zoom-in`, `zoom-out`; `auto` / `default` and anything unknown → the arrow.
+  - **`none`** draws nothing and keeps the OS cursor hidden: a page that hides its cursor on purpose
+    stays that way.
+  - **`url(a) x y, url(b), fallback`**: the first url that loads as an image (crossOrigin
+    'anonymous' — same-origin and `data:` always do; cross-origin without CORS falls to the next
+    item), at its natural CSS size capped at 128 px; hotspot = the explicit `x y`, else a `.cur`
+    file's own, else 0 0. Loaded async and cached per URL; the keyword fallback is drawn until it is
+    ready.
+  - All of it softened like the arrow, in the cursor's own material (keyword sprites and images are
+    textures on one soft quad: one shader program, the same 13-tap blur and opacity). No CSS filter,
+    no CSS opacity.
+- **`cursor: { shape }`**: `'auto'` (default, mirror the CSS), `'none'`, or a sprite name
+  (`CURSOR_SHAPES`) to fix it. **`cursor: { shapeFor(hit) }`**: decide per drawn frame
+  (`{ u, v, point, css, cssValue }` → a name, or nothing for `shape`'s answer).
+- **Behaviour change — the CSS hide.** The cursor no longer writes `canvas.style.cursor = 'none'`
+  while it draws: it sets a `data-inline3d-cursor-hidden` attribute (on the canvas, or on `<html>`
+  for `pointerScope: 'window'`, replacing the `inline3d-cursor-hidden` class) plus one injected
+  `cursor: none !important` rule. The page's own cursor value is never touched, so it can be read
+  back (the attribute is lifted for the read and put back in the same task, so nothing paints).
+  Reads happen only on frames that draw the sprite, after pointer moves (at most every 100 ms) and
+  at once on pointerdown / pointerup. A page that checked `style.cursor === 'none'` should check
+  the attribute (or `getComputedStyle(canvas).cursor`).
+- `tools/cursor-shape-capture/run.mjs`: headless per-sprite captures over the lifted model sample
+  (keywords, a `data:` url() image, `none`), hotspot stability and the Shop grab → grabbing → grab
+  sequence, failing on any GL error; the samples take `&shape=`.
+
+### Fixed — `cursor: 'depth'` (PlayCanvas) over a layer on the display rig (#185)
+
+- A layer moved with `handle.setLayerRig(name, 'display')` is drawn by the layer rig's cameras, not
+  the eye camera, so the pick never saw it and the cursor stayed on the glass over it (a round
+  stage, a map tile under a camera-rig photo). The layer rig's post run, and its display run when
+  it is not rounded, now join the eye pick. A ROUNDED display run (a camera rig, gain ≠ 1) gets a
+  second low-res pick pass through the same round views, and each hit becomes the point the photo
+  views show at the same pixels in both eyes, so the placement (unchanged) puts the arrow in front
+  of the stage as the panel shows it. The two passes merge by the nearest point. Same cadence and
+  readback as before (every other frame, asynchronous); the second pass exists only while a layer
+  is on the display rig, and nothing at all without `cursor: 'depth'`.
+
+### Added — a `pc.ShaderMaterial` can take part in the depth pick
+
+- `CURSOR_DEPTH_PICK_GLSL` and `CURSOR_DEPTH_PICK_WGSL` (`./cursor-depth`): `{ declarations, output }`
+  snippets that write the pick id and, under `DEPTH_PICK_PASS`, the pick depth with the engine's own
+  `pickPS` chunk. Since 1.44.0 the pick pass leaves out a ShaderMaterial that does not write the
+  depth target; with these it is hit like any engine material. docs/authoring-inline-3d.md §A cursor
+  that respects depth.
+
+## 1.44.0 — 2026-10-13
+
+Touches the **core** `./three` (`DepthCursor`), `./cursor-depth`, and the **preview tier** (`./model`,
+`./splat`, `./call`, `./camera`: `cursor: 'depth'`). **One deliberate look change:** a LIFTED depth
+cursor is now softened by default. On the glass nothing changes (nothing is drawn there).
+
+### Depth cursor responsiveness (`./model`, three.js)
+
+- The arrow follows the **newest** pointer position every frame, and the pick is amortised (3 rays a
+  frame) instead of casting the whole footprint synchronously.
+- BVH pick: three-mesh-bvh 0.9.15 (MeshBVH only, MIT) is vendored at `js/vendor/three-mesh-bvh.js`
+  and loaded **only** with `cursor: 'depth'`. Nothing on the page is mutated. Skinned, morphing,
+  instanced and batched meshes, and partial draw ranges, keep three's own raycast.
+- The pointer comes from `pointerrawupdate` (coalesced samples) where the browser has it.
+- CarConcept, headless: `update()` 8.2 → 0.16 ms mean, 50.6 → 0.5 ms max.
+- New `cursor: { debug: true | 'both' }`: rolling cost stats; `'both'` keeps the OS cursor visible
+  beside the sprite (the latency check).
+- If you vendor the SDK, copy `js/vendor/` too. The BVH slice imports bare `three`.
+
+### Depth cursor: crosstalk softening of the lifted arrow (runtime ADR-046 Amendment 2 §B.7 parity)
+
+- On a lenticular panel a lifted, white, sharp-edged arrow ghosts: crosstalk leaks a copy one
+  disparity away, and its visibility scales with contrast × edge sharpness. The runtime softens its
+  cursor by lift; every web depth cursor now does the same, constant for constant, so web and
+  native cursors look alike: an edge blur of 0.1 × the ghost offset (the neighbouring views' split,
+  panel px), capped at 6% of the arrow's drawn height and 8 px, and an opacity easing from 1 to 0.5
+  with a smoothstep over 0.03 eye baselines of lift. Both are exactly zero on the glass, and the
+  tip (the click point) never moves. Defaults tuned on a Windows Leia panel and confirmed on a Mac.
+- **`cursor.soften`** on `./model`, `./splat`, `./call`, `./camera`, and `soften` on `DepthCursor`:
+  `'both'` (default), `'off'` (the crisp arrow, pixel-identical to 1.43), `'alpha'`, `'blur'`, or
+  `{ mode, blurK, blurMaxPx, blurMaxFrac, alphaMin, fullD }` over the defaults. Validated at the call.
+- Drawn in the cursor's own material: a quad padded by the blur radius whose fragment shader
+  evaluates the arrow analytically at the runtime's 13 blur taps (three and PlayCanvas), or the
+  same function rasterised into the woven buffer (stereo pairs). Never a CSS `filter` or `opacity`.
+  A frame with nothing to soften draws the crisp mesh as before; zero cost without `cursor: 'depth'`.
+- `./cursor-depth` exports the pieces: `cursorSoften`, `cursorGhostPx`, `cursorProjectToCanvas`,
+  `cursorPlacementSoften`, `cursorSoftArrowGLSL`, `cursorSoftArrowRaster`, `cursorSoftArrowSample`,
+  `resolveCursorSoften`, `parseCursorSoften`, `CURSOR_SOFTEN_DEFAULTS`, `CURSOR_SOFTEN_KERNEL`, and
+  more. The samples take `&soften=both|off|alpha|blur` next to `?cursor=depth`.
+- docs/authoring-inline-3d.md §A cursor that respects depth.
+
+### Fixed — `cursor: 'depth'` (PlayCanvas): no GL error storm from an app's own `ShaderMaterial`
+
+- The depth pick pass renders into two colour targets (pick id + pick depth). A mesh whose
+  `pc.ShaderMaterial` writes only one output (a custom backdrop, frame or chrome quad) had every
+  pick draw rejected with `GL_INVALID_OPERATION: Active draw buffers with missing fragment shader
+  outputs` — hundreds a second on a panel, until Chromium stopped reporting them. Such meshes are now
+  left out of the pick pass (they never reached the pick buffer anyway), so nothing the cursor sees
+  changes. Materials that handle `DEPTH_PICK_PASS`, followed through their `#include`s (the
+  engine's gsplat material included), stay in.
+
+### Fixed — the depth cursor drifted off a still pointer while the camera moved
+
+- With `cursor: 'depth'` and the default `anchor: 'hybrid'`, a still pointer's arrow was pinned in
+  the SCENE, so anything that moved the camera rig under it carried it away: `./model`'s idle
+  turntable (8°/s) put it ~0.26 of the canvas off the pointer within ~6 s, and a damped drag or a
+  scripted camera did the same. The kept line of sight now lives in the display's frame (relative
+  to the canvas, in canvas heights), as in the runtime's `u_cursor_depth`, which works in display
+  space: a rig orbit, pan or zoom leaves the arrow on the pointer, and a head move still
+  parallaxes it like content. A canvas whose shape changes under a still pointer (a resize)
+  re-anchors, as does the head pulling back past the anchor eye. `'screen'` and `'world'` are
+  unchanged (neither keeps state across frames).
+
+## 1.43.1 — 2026-10-13
+
+### Fixed — `warmEntity` on a display-rig layer
+
+- `warmEntity` warmed only through the eye camera(s). A mesh on a layer moved to the display rig
+  (`setLayerRig`, e.g. a round stage) is drawn **only** by the layer rig's cameras, with their own
+  `shaderParams`, so its real program still linked on first draw while the warm issued a variant
+  nobody draws. It now warms through the layer rig's display/post cameras too.
+
+## 1.43.0 — 2026-10-12
+
+### `./splat` (PlayCanvas) — `warmEffect`: no frozen frame when a reveal first plays
+
+- **`handle.warmEffect(name, opts)`** compiles the program `playEffect(name, opts)` will need and
+  links it in idle time (`KHR_parallel_shader_compile`), so the effect's first frame no longer
+  blocks on the link. On a Windows panel `'assemble'` froze for 250–300 ms on every cold session.
+  Resolves `true` once warm, `false` when nothing could be warmed (entity scope, custom fragment
+  stage). It is also on the deferred handle, so it can be called right after `addSplat`.
+- **`prepareSource(src, { warmEffects: [...] })`** warms effects you will play once that asset is
+  in (names or `{ name, opts }`), after its load and its transition pre-warm.
+- docs/splat-effects.md §Warming an effect.
+
+### `./splat` + `./model` (PlayCanvas) — `warmEntity`: a glTF's first draw without the freeze
+
+- **`handle.warmEntity(entity)`** (splat handle: content under `handle.engine.root`; model
+  handle: defaults to the model) compiles the entity's lit programs in idle time through the
+  renderer's own `MeshInstance.getShaderInstance`, with its exact pass, light hash, lights, view
+  format and the eye cameras' live shader params. It then links them off the frame
+  (`KHR_parallel_shader_compile`, time-sliced issuing), so the first draw no longer blocks.
+  PlayCanvas links every new lit program synchronously on first draw: a 13-material car froze
+  0.8–0.95 s on a panel. On Khronos CarConcept (13 programs), headless: 0 links on show (from 13),
+  worst frame 20 ms (from 102 ms with the shader cache warm, 2.69 s cold), pixel-identical. Spark
+  and three resolve 0. docs/playcanvas-adapter.md §warmEntity.
+
+## 1.42.1 — 2026-10-12
+
+Touches the **preview tier** (`./call`, `./camera`) only: auto-convergence and the stereo-tile depth
+cursor are steadier on a wide-baseline camera. No API change.
+
+### Auto-convergence holds the face on a 120 mm-baseline camera
+
+- Found on the SR laptop's built-in stereo camera (120 mm baseline, grayscale): auto-convergence
+  flipped between the face and the background. On a dim frame the sparse block grid (1.5 blocks
+  apart) matched ~9 blocks, 3-4 on the face, too few to form the subject mode, so the background
+  won. The grid is now one block apart (~36 blocks: the face on every frame, ±1 px instead of ±4),
+  and a mode's bin widens with its disparity (10%), so a near face's own relief stays one group.
+- The convergence shift may now reach 20% of the eye width (was 12%): that camera sees a face at
+  0.6 m at ~22% of the eye width, ~11% per eye, which left no room to lean in.
+
+### Stereo-tile depth cursor: steady at foreground edges
+
+- The footprint was matched from the left eye's image only. At a foreground edge the left eye's
+  block can sit on the subject while the right eye's sits on the background, and the arrow jumped
+  out and back frame to frame. Each footprint point is now matched from BOTH eyes, every match must
+  pass a left-right consistency check (matched back, it lands within 1 px of where it started), and
+  the nearest value counts only when a second sample agrees; otherwise the arrow stays on the
+  glass. Over 20 live frames across a face edge: 200 → 35 large jumps.
+
+## 1.42.0 — 2026-10-11
+
+Touches the **core** `./three` (`DepthCursor`) and the **preview tier** (`./model`, `./splat`,
+`./call`, `./camera`: `cursor: 'depth'`), plus `./cursor-depth` (`CURSOR_DEFAULT_TUNING`). **One
+deliberate default change.**
+
+- **Depth-cursor margin 0.03 → 0.015 eye baselines (default change),** about 1 mm of crossed
+  on-screen disparity at a 63–65 mm IPD instead of about 2 mm. Runtime ADR-046 Amendment 2 A.2 was
+  halved after a Windows panel check, because 0.03 floated visibly off the content. The runtime
+  makes the same change (`U_CURSOR_DEPTH_DEFAULT_MARGIN`), so web and native cursors still agree.
+  Every depth cursor takes the default from `CURSOR_DEFAULT_TUNING`: `DepthCursor`,
+  `cursor: 'depth'` on both engines, and the stereo-tile pair cursor. `margin` still overrides it:
+  pass `margin: 0.03` for the 1.41.0 look.
+
+## 1.41.0 — 2026-10-11
+
+Touches the **core** `./three` (`DepthCursor`'s look and two defaults) and the **preview tier**
+(`./model`, `./splat`, `./call`, `./camera`: `cursor: 'depth'`), plus `./cursor-depth` (additive
+exports, one deprecation). **Two deliberate default changes**, per runtime ADR-046 Amendment 2
+("one cursor policy everywhere"): pages that use a depth cursor will see it sit further forward and
+stop going behind the glass.
+
+### Depth cursor: one policy everywhere, and the arrow
+
+- **Never behind the glass (default change).** The target is now `d < 0 ? max(d − margin, −0.6) : 0`:
+  the cursor only comes forward, to stay ahead of content that comes out of the screen. Over content
+  on or behind the glass it stays on the glass. The clamp is `[−0.6, 0]` (was `[−0.6, +0.6]`), and
+  `cursorTarget` never returns more than 0 whatever a tuning's `maxDisparity` says.
+- **Margin 0.005 → 0.03 eye baselines (default change),** about 2 mm of on-screen disparity at a
+  65 mm IPD: the value native apps and the runtime use. `margin` still overrides it.
+- **On the plane it is the OS cursor.** Nothing is drawn unless the filtered disparity is at or past
+  −0.005 baselines (about 0.3 mm) and at least 0.5 panel px. Off the subject the sprite is now
+  **hidden**, not drawn at zero disparity, and the CSS cursor the page set is left alone (a cursor
+  the page changes while the sprite hides it is no longer overwritten on restore).
+- **The arrow replaces the crosshair.** Every depth cursor (three, PlayCanvas, and the stereo-tile
+  cursor on `./call` / `./camera`) draws the same classic arrow: 12 × 19 px proportions, white with a
+  dark outline, its **tip** on the hotspot. Its default size is the OS cursor's, 19 CSS px of the
+  canvas, recomputed as the canvas resizes; `height` still overrides. `DepthCursor`'s `color`
+  default is now white. Mirroring a page's CSS cursor (`grab`, `url(…)`) into the sprite is future
+  work (ADR-046 Amendment 2 §C).
+- **The stereo-tile cursor runs on the shared core.** `./call` / `./camera` take the target, margin,
+  threshold, filter and arrow from `./cursor-depth` instead of their own copies. Tile pixels convert
+  to eye baselines through the tile's `displayMetrics()` (the panel's pixel pitch, × the eye
+  separation; the CSS reference px until it answers).
+  - This subsumes 1.40.2's change (#164), which already moved the stereo
+    tile's margin from ~1–2 buffer px to **2 mm** of on-screen disparity (0.3 mm hand-back),
+    converted through `displayMetrics()`. That conversion is kept. The margin and threshold are now
+    the core's 0.03 / 0.005 **eye baselines** (≈1.9 mm / 0.3 mm at the default 63 mm eye
+    separation) rather than fixed millimetres, so stereo tiles, lifted tiles (runtime #1908) and
+    scenes share one rule.
+  - The comfort cap is now the core's −0.6 baselines (it was 8 % of the eye width).
+  - The pair cursor's own constants (`PAIR_CURSOR_MARGIN_M`, `PAIR_CURSOR_SHOW_M`,
+    `PAIR_CURSOR_SHOW_MIN_PX`, `PAIR_CURSOR_CLAMP`; an internal module, not public API) are gone.
+- **`./cursor-depth`, additive:** `cursorShouldDraw`, `CURSOR_DRAW_THRESHOLD`, `CURSOR_DRAW_MIN_PX`,
+  `cursorDefaultHeight`, `CURSOR_ARROW_CSS_PX`, `CURSOR_ARROW`, `CURSOR_ARROW_FILL`,
+  `cursorArrowInset`, `cursorArrowMesh`, `cursorArrowFootprint`, `cursorFootprint` (typed now),
+  `CURSOR_FILL_COLOR` / `CURSOR_OUTLINE_COLOR`. `CursorPlacement` gains `solved` and
+  `pxPerBaseline`, and `active` now means "drawn". `CursorDepthPlacer.update` takes an optional
+  `canvasPx` for the pixel floor. **Deprecated:** `cursorCrosshairMesh` (unused by the SDK; removed
+  in 2.0).
+
+## 1.40.2 — 2026-10-11
+
+Touches the **preview tier** (`./call`, `./camera`) only; no API change.
+
+### Stereo-tile depth cursor: the margin is 2 mm on the glass
+
+- The arrow now floats **2 mm** (of on-screen disparity) in front of content that comes out of the
+  screen, and hands back to the OS arrow under **0.3 mm** — the runtime's 0.03 / 0.005 of the eye
+  baseline, so a stereo tile's cursor and a lifted tile's (runtime #1908) sit identically. 1.40.1
+  used ~1–2 buffer px, which on a small tile was a fraction of a millimetre. Physical units come from
+  the tile's `displayMetrics()` (the panel's pixel pitch); before it answers, the CSS reference px.
+
+## 1.40.1 — 2026-10-11
+
+Touches the **preview tier** (`./call`, `./camera`) only: how `cursor: 'depth'` looks and moves. No
+API change.
+
+### Stereo-tile depth cursor: the normal arrow, and only ever in front of the screen
+
+- **It never goes inside the display.** 1.40.0 put the cursor at the depth of whatever was under
+  it, so over a background behind the glass it sank behind the glass too. Now the depth only moves
+  to keep content that comes OUT of the screen from overlapping it; over anything on or behind the
+  glass it stays on the screen plane.
+- **It is the normal arrow, not a crosshair.** On the plane nothing is drawn: it is the OS cursor,
+  untouched. Only while the person under it pops out is the arrow drawn into both halves, just in
+  front of them, at the OS arrow's size (19 CSS px; `height` still overrides it), with the OS
+  cursor hidden exactly then. The footprint now covers the arrow's body, not a ring round its tip.
+- Same filter as before: it comes forward fast and hands back to the OS arrow smoothly as the
+  content sinks. Matches the native lifted-content cursor (runtime #1908).
+
+## 1.40.0 — 2026-10-10
+
+Touches the **preview tier** (`./call`, `./camera`) only: one new option, off by default. New type
+`PairCursorOptions`; nothing removed, no default changes.
+
+### `./call` + `./camera` — a depth cursor on stereo tiles (`cursor: 'depth'`)
+
+- The scene cursor of 1.36.0 (runtime ADR-046) comes to the call and the camera view. Over a 3D
+  tile — a stereo peer, or your own stereo self view — a crosshair just in front of the person
+  under the pointer replaces the CSS cursor. Before, the flat cursor sat on the glass, drawn over a
+  face whose disparity says it is in front: the depth violation ADR-046 is about.
+- A pair has no scene and no depth buffer, so the depth is **measured**: the cursor's footprint is
+  block-matched between the two halves of the tile's own frames (the same matcher auto-convergence
+  uses), the nearest confident match wins, and the crosshair is drawn into both halves with that
+  disparity plus a small margin. Nothing matched → the display plane. Same fast-rise / slow-sink
+  filter as the scene cursor. A mirrored self view flips the pointer, never the disparity.
+- Zero cost when off: the option is validated at the call, and the cursor module is a dynamic
+  import made only on opt-in. When on, it costs nothing until the pointer is over a woven tile,
+  then a ~15 Hz grayscale copy of that tile's source (it shares the auto-convergence copy) and a
+  9-block match when the pointer or the copy changes.
+- `addCall(…, { cursor: 'depth' })`, `<dxr-call cursor="depth">`, `addCameraView(…, { cursor:
+  'depth' })`; `{ height, pointerScope }` tune it (`margin` / `anchor` are scene-only and refused).
+  Lifted (2D→3D) and flat tiles keep the normal cursor. `diagnostics().peers[i].cursor` reads the
+  last placement. The `call`, `call-embed` and `camera` samples turn it on (`?cursor=0` turns it off).
+
+## 1.39.0 — 2026-10-09
+
+Core (`.`) changes are **additive**, with every existing default unchanged: `firstWoven` and
+`rewoven()` settle on the browser's `wovenState` report where it exists (the hold path elsewhere,
+byte for byte), the optional `onResize` on `addScene`, a warning on a double attach (the call
+proceeds as before), and the display reads (`getDisplayInfo()` / `getRenderingModes()` /
+`requestRenderingMode()`) waiting for a layer's first frame instead of answering `null` / `[]`
+early. One **preview-tier default** changes: `rectCover` is `'auto'` on `./splat` and `./model`
+(`'off'` in the core). New types only (`WovenState`, `WovenWithheldReason`, `RectCoverOption`);
+nothing removed.
+
+### Core: `firstWoven` / `rewoven()` settle on the browser's join report (`.`, additive)
+
+- **`XRDisplayLayer.wovenState`** (`'pending' | 'woven' | 'withheld'`, plus `withheldReason`) is
+  the browser's per-frame report of whether a layer's rect went into the weave (DisplayXR Browser
+  draft PR #258, Windows, feature-flagged). Detected with `'wovenState' in
+  XRDisplayLayer.prototype`. Where it is absent (mac, Linux, Android, Windows builds without it)
+  nothing changes: the hold, `confirmed: false`, byte for byte.
+- Where it is present:
+  - **`firstWoven`** settles `{ woven: true, confirmed: true, reason: 'woven' }` on the first
+    `'woven'` read once a stereo frame is drawn, with no hold.
+  - **`rewoven()`** settles on a `'woven'` read that follows a `'withheld'`/`'pending'` read seen
+    after the call, or three session frames after the last box change seen after the call, or,
+    when no box change is seen after the call, three session frames after the call. The report
+    is a live per-frame level trailing the join by 1–3 frames, so a read three frames on reflects
+    the rect as it was at the call; a `'woven'` from the old rect, or one read on the frame of the
+    call, never settles it. A stereo frame since the call is still required, and the cap stays.
+    - The no-change case is the common one: a page that moves the canvas, then calls
+      `rewoven()`. It used to wait a full hold of steady `'woven'` reads (a kiosk panel run:
+      46/46 calls confirmed, median 1206 ms, the same as the timer path). It now settles about
+      three frames after the call (~50 ms). The timer path (no `wovenState`) is unchanged.
+  - **The cap stays, as a safety.** A layer that never leaves `'withheld'` (a CSS effect on an
+    ancestor) settles `{ woven: false, confirmed: true, reason: <withheldReason> }` (or
+    `'pending'`) four holds after the call, never sooner than 4.8 s. That is a level, not a loss:
+    the canvas is not taken flat and `rewoven()` keeps working.
+- **New read-only `handle.wovenState` / `handle.withheldReason`** on the `TileHandle`, read live
+  (`null` where the browser does not report it, `'pending'` while the window has no layer). Types:
+  `WovenState`, `WovenWithheldReason`; `FirstWovenResult.reason` gains `'woven'`, `'pending'` and
+  the withheld tokens.
+- "Woven" means submitted to the weave. A GPU-stage failure after submit is not reflected.
+
+### Cover across a rect change, owned by the SDK (`rectCover`; core primitive, subpath default)
+
+- **New `rectCover` option on every `add*()`**: `'auto' | 'off' | { color?, snapshot? }`. Once a
+  window has woven, a change of its canvas's CSS size, dpr or page position raises a cover on the
+  frame the change is seen, and cuts it when `rewoven()` settles. A further change while it is up
+  restarts the wait. `remove()` and session end take it out of the DOM.
+  - **What the cover is:** a 2D canvas placed as the canvas's next sibling, never a second woven
+    canvas. It has `pointer-events: none` and `data-inline3d-cover`, and it is filled with `color`
+    (default `#000`).
+  - **The snapshot:** with `snapshot` (the default), the cover also shows the last frame: the left
+    eye, cover-fit to the new box. It is taken once per change, with one `drawImage` into a canvas
+    the size of the CSS box. Never `toDataURL`, never per frame.
+  - **Not before the first join:** cover a fresh canvas yourself until `firstWoven` (rule 5).
+- **Defaults.** `'off'` on the core `addScene` / `addImage` / `addVideo` (frozen tier, unchanged).
+  **`'auto'` on `./splat` and `./model`, all engines.** That is a default change in the preview
+  tier: a page that already runs its own cover passes `rectCover: 'off'`.
+- **`rewoven()` now also restarts on a pure move** (core, timing only). The box it watches gained
+  the canvas's page position (viewport rect plus document scroll, whole CSS px). A canvas moved
+  to another place at the same size goes through the same identity gap. Scrolling the document is
+  not a move. A scroll inside a nested scroller does read as one.
+- From a kiosk demo that keeps one woven canvas and moves it between screens: a black box at the
+  new rect for 0.4–1.2 s, covered by hand on timers until now.
+
+### Resize and draw in the same task (`./splat`, `./model`; core `onResize`, additive)
+
+- **The PlayCanvas viewer** (`./splat` `engine: 'playcanvas'`, `./model`'s default engine) now
+  resizes its backing store and replays the last frame inside the ResizeObserver callback, which
+  runs before the paint. Before, it waited for the next animation frame, and for one paint the
+  old store was shown stretched onto the new box.
+  - **The replay keeps its proportions.** The cached frustum's x row is scaled by the aspect
+    change, until the runtime's next views carry the true one.
+  - **Guards.** A callback that arrives while the viewer is drawing, or re-entrantly while it is
+    resizing, takes the old one-frame debounce instead.
+  - **Not covered:** `./splat` on Spark and `./model` `engine: 'three'` (`SceneViewer`) keep the
+    one-frame debounce for now.
+- **Core `addScene(…, { onResize(box) })`**, optional. It is called in the same ResizeObserver
+  callback with `{ width, height, dpr }`, so a page-drawn window can resize and draw before the
+  paint too. It runs only on a real change, and a throw is caught. Without it, nothing changes:
+  no observer is attached to a scene canvas.
+
+### Display reads wait for the layer's first frame (core `.`, additive, no new API)
+
+- **`getDisplayInfo()` / `getRenderingModes()` / `requestRenderingMode()`**, on a tile handle or
+  the wall, called before the window's layer has delivered its first frame now **wait for it** and
+  ask the layer then. Before, a page calling them right after `add*()` got `null` / `[]` (and a
+  request answered "not forwarded"): the browser only answers once the layer has a weave session,
+  and `null` is documented as "no glasses-free display". Found by the samples panel test (#151),
+  which worked around it page-side with `await handle.firstWoven`; that is no longer needed.
+  - **Released by** the first `'woven'` read where the browser reports `wovenState`, or the
+    layer's first stereo frame elsewhere. No first-woven hold. A `'withheld'` read does not
+    release: the layer reads it right after creation, before the weave session can answer
+    (measured on a Chromium 156 panel build: released on it, `getDisplayInfo()` answered `null`
+    at 1.55 s while the layer only read `'woven'` at ~3.9 s).
+  - **A `null` / `[]` answer before the cap is not returned.** The read is asked again on each
+    later release signal (the next `'woven'` read, or the next session frame once a stereo frame
+    has been drawn) and resolves with the first non-empty answer, on both paths.
+    `requestRenderingMode()` is forwarded once on the release, not retried.
+  - **Capped** at the first-woven cap: four holds from the layer's construction, never under
+    4.8 s. Only past it is the layer's `null` / `[]` returned, as a real absence.
+  - **Unchanged:** once a read on the layer has answered for real, later calls go straight
+    through; no session, no live layer, a failed layer, or a window removed / session ended
+    mid-wait settles at once, as before.
+
+### Double-attach warning (core, and the `./splat` / `./model` entries)
+
+- `addScene` / `addImage` / `addVideo` / `addSplat` / `addModel` on a canvas that is still
+  registered on the same wall (not yet `remove()`d) now **warns**, once per canvas. The warning
+  names the method and the live registration, and says the call is rebuilding the layer (a fresh
+  0.4–1.2 s identity gap) or putting a second renderer on the context.
+- **It is a warning only, so no page changes behavior.** The call proceeds exactly as before: the
+  core closes and rebuilds the layer, the subpaths attach a new renderer, and the call returns its
+  own new handle. A page that re-adds to swap pictures keeps working.
+- To swap content, redraw a source canvas or use `setSource`. To re-register on purpose,
+  `remove()` first.
+- `./splat` and `./model` check at their entry, not only in `addScene`: their renderer exists
+  before their core window, so a second call during the first one's load is caught too.
+- From a kiosk demo that attached its stage twice per screen visit.
+
+### Every session frame presents (`./splat`, `./model`, `./viewer`)
+
+- The viewers behind the scene subpaths now draw on **every** session frame they are handed. This
+  covers the PlayCanvas viewer (`./splat` `engine: 'playcanvas'`, `./model`'s default) and
+  `SceneViewer` (`./splat` on Spark, `./model` `engine: 'three'`, `./viewer`).
+  - **Before the first good frame,** a frame they cannot draw (a short view list, a missing or
+    degenerate viewport) used to draw nothing. It now draws the mono camera into both halves: the
+    subject flat if it is loaded, a cleared frame if not. Afterwards they replay the last good
+    frame, as before.
+  - **No source, or nothing visible,** still draws a frame.
+  - **Before the engine has created its GL context,** nothing can be presented, and creating one
+    early would give it the wrong attributes.
+  - The dark-blink rule holds: no clear without a draw.
+- **Note for `addScene` pages:** the SDK cannot enforce this for a window your page draws. Draw on
+  every `onFrame` ([`woven-canvas-rules.md`](docs/woven-canvas-rules.md), "redraw every frame").
+  A fully transparent woven frame weaves **black**: a browser bug (browser-pvt #255), listed there
+  as a known limitation.
+
+## 1.38.0 — 2026-10-09
+
+Touches the **preview tier** (`./call`, `./splat`) only: one default and two additive handle
+methods. No export changes; `SplatHandle` gains two methods in `splat.d.ts`.
+
+### `./call` — the stereo self view auto-converges too
+
+- The call's self view now follows the call's **`autoConverge`** option (default `true`) instead of
+  being hard-wired off, so your own stereo camera feed sits at the display plane like the remote
+  tiles. `autoConverge: false` turns it off for both. (`samples/camera` also starts with
+  auto-convergence on.)
+
+### Splat handle: `finishSwap()` and `rewoven()` (scene subpath `./splat`, additive)
+
+- **`handle.finishSwap()`** ends a running `setSource` transition now: the incoming asset at its
+  end state, the outgoing one gone, in this task. A no-op when none runs. The sequencer already
+  did this internally when a newer swap landed; it is now a page call. Needed by a page that keeps
+  ONE woven canvas across screens and leaves a photo screen mid-crossfade: without it the next
+  screen waited a transition out (about 1 s measured) before it could draw, and the canvas showed
+  nothing meanwhile.
+- **`handle.rewoven()`** forwards the core window's `TileHandle.rewoven()` (1.1x), which the splat
+  handle had left out while forwarding `firstWoven`. Cover the canvas across a rect change (moved
+  into a box, fullscreen, a layout resize) and release on it; `{ woven: false, reason:
+  'unsupported' }` at once without a session.
+- Both came from a kiosk demo's fast screen switching (black box in the moved canvas, a stalled
+  stage queue), vendored there as a local patch first.
+
+## 1.37.1 — 2026-10-07
+
+### Depth cursor: hybrid anchor keeps the line of sight, not the foot
+
+- 1.37.0's `'hybrid'` held the sprite's foot on the glass while the pointer was still. When the
+  depth under a still pointer changed (content animating under a resting mouse, or the first
+  frames after load), the sprite then rose along the display NORMAL. For an off-axis viewer that
+  pulls it off the pointer (27 px in the runtime's off-axis capture).
+- It now keeps the line of sight from the last pointer move, and sits on that line at the current
+  depth:
+  - **head moves:** the sprite stays put (it parallaxes, as in 1.37.0);
+  - **depth changes:** the sprite slides along that line, so it stays on the click point for the
+    viewer who placed it;
+  - **stop frame:** still continuous.
+- Matches the runtime's `XR_DXR_cursor_depth` v3 rule. Tests cover it, including an off-axis
+  depth-change case and a head moving nearer; each mutant is caught.
+
+## 1.37.0 — 2026-10-07
+
+Driven by a tester's run on a head-tracked panel (the depth cursor shipped in 1.36.0). Additive
+API, plus two deliberate default changes to the cursor, which is opt-in, so nothing changes for a
+page that does not use it.
+
+### Depth cursor: parallax, margin, overlays, visibility
+
+- **The cursor now parallaxes like the content (new default `anchor: 'hybrid'`).** 1.36.0 kept
+  the sprite on the line of sight through the pointer. Its image on the glass then never moved
+  with the head: disparity without motion parallax. On a head-tracked display that reads as "at
+  the glass", behind the content it should sit on.
+  - **Hybrid:** follows the pointer exactly while it moves, and stays world-fixed while the
+    pointer is still, so it parallaxes with the content as you look around. It is continuous at
+    the moment the pointer stops.
+  - **`anchor: 'screen'`:** the 1.36 behaviour.
+  - **`anchor: 'world'`:** always straight in front of the pointer's canvas point.
+- **Default margin 0.03 → 0.005** (eye-baseline units, about 1.5 mm at 60 cm). The old default
+  floated 1–2 cm off shallow content; the cursor now rests on what it hovers. There's also a
+  `margin` option.
+- **`pointerScope: 'window'`:** the cursor stays active over DOM layered on the canvas (overlay
+  buttons), and the CSS cursor is hidden page-wide while it shows.
+- **Filled, outlined crosshair** instead of 1 px lines, which read too thin through the lens.
+  Both engines draw it the same way.
+- **`./model` / `./splat`:** `cursor` also takes an object, `{ margin, anchor, height,
+  pointerScope }`, validated at the call.
+- **`./cursor-depth`:** `CURSOR_ANCHOR_MODES`, `CursorOptions`, `resolveCursorOption`,
+  `cursorCrosshairMesh`, `cursorModelMatrix`; `CursorDepthPlacer` takes `{ anchor }`.
+- **Docs:** `hitTest` must be cheap and cover everything that sticks out.
+- **e2e:** `test:e2e:cursor` adds a head-move check on the real viewers. Hybrid and world stay
+  world-fixed and screen slides; this holds on both engines, for models and splats.
+
+## 1.36.0 — 2026-10-07
+
+Additive everywhere it touches: the **core** `./three` (new helpers, minor per
+`docs/sdk-stability.md`), the **preview-tier** `./model` and `./splat` (one new option,
+`cursor: 'depth'`), and a new dependency-free subpath `./cursor-depth`. Nothing existing changes;
+nothing runs unless a page asks for it (`cursor: 'depth'`, or constructs a `DepthCursor`).
+
+### Depth-aware cursor — `DepthCursor` (`./three`) + `./cursor-depth`
+
+- **The cursor rises to the content it hovers.** The CSS cursor is drawn on the glass (zero
+  disparity), so over content that pops out it sits *behind* what it covers: a depth violation.
+  `new DepthCursor(THREE, { canvas, hitTest: raycastHitTest(THREE, [model]) })` tracks the pointer,
+  hit-tests the cursor footprint against your content, and places a crosshair just in front of the
+  nearest hit (add `cursor.object` to the scene; call `cursor.update(views)` each frame before
+  rendering). It hides the CSS cursor exactly while the crosshair replaces it, and gives it back in
+  2D and off the canvas.
+- **Same maths as native apps.** `./cursor-depth` is a line-for-line port of the runtime's
+  `u_cursor_depth` (displayxr-runtime ADR-046, `XR_DXR_cursor_depth`): the same geometry
+  (solved from the views alone, so display and camera rigs, scale and head tracking just work),
+  the same defaults (margin, comfort clamp, fast rise / slow sink), and the same test numbers.
+- **Head motion leaves it put.** The crosshair stays under the mouse on the glass while you look
+  around; only its depth follows the content under that line of sight.
+- **`./model` and `./splat`: `cursor: 'depth'`** (preview tier, additive). This is one option on
+  both engines:
+  - **PlayCanvas:** hit-tests with the engine's own depth picker. One low-res pass covers meshes
+    and splats; it runs every other frame, only while the pointer is over the tile.
+  - **three / Spark:** raycasts the subject. On Spark that is about 8 ms a ray, so it's amortised
+    to one ray a frame; PlayCanvas is the cheaper engine for splats with the cursor.
+  - **No option, no cost:** nothing is built, and on PlayCanvas the cursor module isn't even
+    downloaded.
+  - **Samples:** `samples/model/?cursor=depth`, `samples/splat/?cursor=depth`.
+- `DepthCursor` option `raysPerFrame`, for an expensive hit test.
+- **e2e:** `npm run test:e2e:cursor` drives the real viewers (both engines, model and splat) with
+  two off-axis views and checks the crosshair sits at *content − margin* over the subject and on
+  the glass off it.
+
+## 1.35.0 — 2026-10-06
+
+Touches the **preview tier** (`./camera`, `./call`) additively. The core is unchanged (one new
+unit test pins its existing behaviour).
+
+### `./call` + `./camera` — the self view never shows a squeezed pair (web#131)
+
+- **The self view follows its tile's `firstWoven`.** Seen once in the DisplayXR Browser: a
+  call's self view showed the whole packed L|R pair in each eye under a `You · 3D` badge, the
+  look of a canvas the browser is not weaving. `addCameraView` now watches `handle.firstWoven`
+  the way a remote tile does: on `woven: false` (`'layer-failed'`, `'session-ended'`) the view
+  drops to `'flat-left'` (one eye, mirrored), re-registers a refused layer up to 4 times with
+  backoff, and re-weaves on `_reroute(true, wall)` when a wall comes back.
+- **The self badge is honest**: `3D` only while the view is on the woven route.
+- **`CameraView` additions**: `fallbackReason`, `weaveState()` and the `onRouteChange` option
+  (types: `CameraViewWeaveState` in `camera.d.ts`).
+- **`call.diagnostics().self`** = `{ route, woven, reason, firstWoven, layerRetries }`, so the
+  next occurrence can be diagnosed from devtools.
+- Hardening, not a root-cause fix: `firstWoven` is the SDK's hold timer, so a layer the browser
+  silently never joins still reads as woven.
+
+## 1.34.0 — 2026-10-06
+
+### `./model` — the PlayCanvas drag is a turntable again
+
+- `addModel` on PlayCanvas (the default) had inherited `addSplat`'s photo-splat drag: a tilt capped
+  at ±15° from the press that relaxes back to centre on release. On a mesh that reads as "the
+  movement is too small and it snaps back". It now uses the three path's turntable: cumulative, a
+  full drag across the tile is a half turn, and the model stays where you leave it. New option
+  **`orbitStyle: 'turntable' | 'tilt'`** (PlayCanvas only; default `'turntable'` for addModel).
+  `'tilt'` restores the photo mapping. `addSplat` is unchanged.
+
+## 1.33.1 — 2026-10-06
+
+### Fixed — woven `addModel` tiles drew nothing (1.28.0–1.32.0)
+
+- On every DisplayXR Browser, an `addModel` tile (PlayCanvas, the default) loaded its glTF and then
+  drew nothing in 3D, logging `GL_INVALID_OPERATION: glBlitFramebuffer: Invalid operation on
+  multisampled framebuffer` every frame. **Cause:** the core's scene-buffer check (1.28.0) called
+  `canvas.getContext('webgl2')` after the first stereo frame, before PlayCanvas had booted, so it
+  CREATED the tile's context with the default attributes (`antialias: true`). PlayCanvas then got
+  that context back, its own attributes ignored, and its MSAA resolve could not blit into the
+  multisampled default framebuffer. `addSplat` tiles drew, but on a context they never asked for
+  (MSAA on, `preserveDrawingBuffer` ignored).
+- New `addScene` option **`bufferClamped`**. With it the core never inspects or creates the
+  canvas's context. Every SDK renderer passes it (they clamp their own buffers). A page running an
+  engine that creates its context after `addScene` should create the context first, or pass the
+  option.
+
+## 1.33.0 — 2026-10-06
+
+Touches the **preview tier** (`./call`) only: one default value. No export is added, removed or
+renamed, and no type changes.
+
+### `./call` — the hosted signalling server is now `wss://signal.displayxr.org`
+
+- **`DXR_SIGNAL_DEFAULT` is `wss://signal.displayxr.org`** (was
+  `wss://dxr-signal.displayxr.workers.dev`), and the internal failover list `DXR_SIGNAL_ALIASES` is
+  now `[signal.displayxr.org, dxr-signal.displayxr.workers.dev]`. A `dxrSignaling()` / `<dxr-call>`
+  with no `signaling` connects to the vanity domain first and falls back to workers.dev if it
+  cannot be reached, on the first join and on every reconnect (RFC 0003 §5g step 3; the custom
+  domain went live on 2026-10-06 on the same Worker deployment, so rooms are shared and a caller
+  on either host meets one on the other).
+- **Nothing to do for existing pages.** A page that names either host explicitly
+  (`signaling="wss://dxr-signal.displayxr.workers.dev"` or `"wss://signal.displayxr.org"`) still
+  gets failover to the other. A self-hosted URL is untouched: it is tried as given, with only the
+  `aliases` the page passes. SDKs up to 1.32.0 keep defaulting to workers.dev, which stays live as
+  an alias for at least two minor releases and until its traffic is negligible; its retirement
+  will get a CHANGELOG notice first (`docs/signaling-domain.md`).
+- A page that compares a URL against `DXR_SIGNAL_DEFAULT` to detect "the hosted server" should
+  compare hosts against both names during the transition.
+
+## 1.32.0 — 2026-10-06
+
+Touches the **core** additively (one new handle method, two new exports) and the **preview tier**
+(`./splat`, PlayCanvas backend).
+
+
+### Hosted signalling server (`signaling/`, not part of the npm package)
+
+- **`welcome` is now always the first message a joined peer receives.** With a real TURN key the
+  server awaits a credential mint between reserving a peer's slot and welcoming it; another peer
+  joining or signalling in that window used to reach the first peer *before* its own welcome, and
+  that welcome's `peers` then omitted the newcomer. Messages addressed to a not-yet-welcomed peer
+  are now held and flushed behind its welcome, and the roster is read when the welcome is sent. The
+  SDK was already tolerant of the old order (its transport replays early `peer-joined`s); raw
+  `dxr-signal/1` clients were not. No protocol field changed.
+
+### Core — `handle.displayMetrics()`
+
+- **`handle.displayMetrics()`** → `{ canvasSizeM, metersPerCssPx, displaySizeM, nominalViewerM,
+  eyeSeparationM, source }`: the tile in physical units, derived from `getDisplayInfo()` (panel
+  pitch × `devicePixelRatio` × the canvas's CSS box). Never rejects. Anything the display can't
+  report comes from `DISPLAY_METRICS_DEFAULTS` and is flagged in `source`. **Eye separation is
+  always the 63 mm default**, because no browser or runtime surface reports one. Also exported as
+  the pure `displayMetricsFrom(info, rect, dpr)`.
+
+### `./splat` (PlayCanvas backend)
+
+- **`handle.setStereo({ ipdFactor, parallaxFactor })`**: live stereo strength. It re-declares the
+  rig in force on the next frame with no cut (pose, focus and framing kept). Keys merge, a `null`
+  key returns to the asset's own value, and `setStereo(null)` clears both. Sticky across
+  `setSource` / `setRig`. `handle.rig.stereoDefault` holds the asset's own values.
+  docs/playcanvas-adapter.md §setStereo.
+- **`handle.setDepthEnvelope({ maxFrontM, edgeM, bandM, stage, rects, viewerM, canvasSizeM })`**:
+  the frame envelope. Content may come out of the glass only well inside the frame and away from 2D
+  elements. Gaussians past the cap slide back along their own rays from the declared camera rig,
+  so the picture, the sort order and the stereo rule all hold. It is tile-wide and keyed on the
+  live declared rig (convergence, lens, `ipdFactor × metersToVirtual`), so every asset is covered
+  from its first frame, through crossfades and through `setStereo`, with no per-asset install.
+  Camera rigs only. docs/splat-effects.md §Depth envelope.
+- `setStereo({ ipdScale, parallaxScale })`: the same scalars RELATIVE to each asset's own
+  (`rig.stereoDefault`), re-applied to every asset `setSource` brings in. Per scalar, the absolute
+  and relative keys are exclusive; the last one given wins.
+- **`splatHandle.displayMetrics()`**: the core tile's `displayMetrics()`, on the splat handle.
+- The deferred PlayCanvas handle (what `addSplat` returns before the engine module loads) now has
+  `setStereo`, `setDepthEnvelope` and `displayMetrics`. A call right after `addSplat` was
+  `not a function`. A test now pins this.
+- `STAGE_ORDER` gains `'envelope'` (between `custom` and `cull`), so a page's custom effect runs
+  before the cap.
+
+## 1.31.0 — 2026-10-05
+
+The 1.29 `./call` option spellings stay accepted (with their warning) for one more release; they go in 1.32.
+
+Touches the **preview tier** (`./viewer`, `./splat`, `./model`: the eye cameras they draw) and adds
+one **core** option and export. Pixels move only around a tracking acquisition or loss.
+
+### Added — the tracking ease (`viewerEase`, default on)
+
+- When a viewer is acquired (the views jump from the untracked fallback viewpoint to the tracked
+  eyes) or lost, the SDK's renderers now glide the eye cameras from where they were drawn to the
+  live views over 300 ms (smoothstep) instead of snapping in one frame. Triggered by a jump of more
+  than 0.15 eye separations in one frame within 600 ms of a `trackingState` edge (the state and the
+  jump need not land on the same frame; an edge with no jump changes nothing), or, where the browser
+  reports no state, by a one-frame jump of more than half an eye separation. The eye positions for that test are read off the projections,
+  so rig changes, scene scale and canvas size do not trigger it.
+- Exact, not approximate: every DisplayXR frustum is affine in the eye position, so offsetting the
+  pose (in the view's own frame) and the projection (element-wise) by the same weight gives the
+  frustum the runtime would report for the eased eye. The rig map and the layer rig see consistent
+  views throughout.
+- Left alone: ordinary head motion, a vendor-animated ramp, view-count changes (2D<->3D mode switch),
+  buffer resizes, replayed frames, mono.
+- `createInline3D({ viewerEase })` sets the session default; `viewerEase` on `SceneViewer`,
+  `addSplat` and `addModel` overrides it. `false` (or `{ durationMs: 0 }`) restores the snap;
+  `{ durationMs, easing }` tunes it. Core exports `ViewerEase`, `resolveViewerEaseOption`,
+  `frameTrackingState`, `VIEWER_EASE_DEFAULT_MS` for pages that render their own `addScene`.
+  `handle.viewer.viewerEase.last` reports the last frame's weight and trigger.
+
+## 1.30.0 — 2026-10-05
+
+Touches the **preview tier** only (`./call`, `./call/full`, the new `./camera` and `./splat/playcanvas`). RFC 0003
+**phase C2**: the `./call` public surface is trimmed to what a page needs (one warning release
+for the old names), options are regrouped, theming gets a real API, and the stereo camera
+becomes its own subpath. The core entry points are untouched.
+
+### `./splat/playcanvas` — new preview subpath: splats without Spark/three on the page
+
+- **`addSplat` from `@displayxr/inline3d/splat/playcanvas`** is `./splat`'s `addSplat` with the
+  engine fixed to `'playcanvas'`: same options, same synchronous handle. `./splat` imports `three`
+  and `@sparkjsdev/spark` statically (Spark is its default engine and its Spark path is
+  synchronous), so a page passing `engine: 'playcanvas'` there still downloaded both, measured at
+  ~1.7 MB gzipped on displayxr.org. This entry imports neither. `playcanvas` is still loaded on
+  demand, at the first `addSplat`. Passing any other `engine` throws at the call.
+- Internal: the deferred PlayCanvas handle moved from `inline3d-splat.js` to
+  `inline3d-splat-deferred.js`, shared by both entries. `./splat` behaves exactly as before.
+- `test/splat-pc-entry.test.mjs` walks the entry's static import graph and fails on any bare
+  package import, so the property can't silently regress.
+
+### `./camera` — new preview subpath (RFC 0003 §4)
+
+- **`openCamera(opts)`** → a `StereoCamera`: device selection (`prefer: 'auto' | 'stereo' | 'mono'
+  | deviceId | MediaStream`, the `displayxrStereo` hint, the > 2.5:1 pair heuristic, the
+  busy-device skip), `calibration` / `rectify` (moved here from `./call`), `format` / `stereo`
+  (`{ rectified, baselineMm, horizontalFovDeg }`) / `stream` / `video`, `on('ended')` (revoked,
+  unplugged, taken — never fired by `close()`), `close()`. Rejects only when no camera opens, with
+  `code` `'camera-busy'` | `'permission-denied'` (new: a refused prompt / policy / insecure
+  context) | `'no-camera'`.
+- **`addCameraView(wall, canvas, cam, { mirror, autoConverge, depth, aspect })`** — the self view:
+  woven on a 3D wall, flat elsewhere, mirrored **correctly** (each half mirrored AND the halves
+  swapped — pinned by a synthetic-pair test: a subject in front stays in front; the naive per-half
+  mirror is proven pseudoscopic). `autoConverge` runs the call's disparity tracker on the face.
+- **`cam.capturePhoto({ type, quality, name })`** → `{ blob, width, height, layout, convergencePx,
+  stereo, suggestedName: '<base>_2x1.jpg', xmp }`: the RAW pair, with the stereo record written
+  INTO the JPEG as XMP (`dxr:` namespace — layout, columns×rows, convergence, baseline, FOV,
+  rectified, eye size, software). **`cam.record({ mimeType, mono, audio })`** → `stop()` →
+  `{ blob, mono?, suggestedName: '<base>_2x1.webm', monoSuggestedName?, convergencePx, tagged }`,
+  the record as `DXR_*` Matroska tags; `mono: true` adds a left-eye copy (Decision 13). Readers:
+  `readJpegStereoMeta`, `readWebmStereoMeta`, `readJpegXmp`, `parseStereoXmp`. Decision 9: the
+  metadata lives in the file, no sidecar. `suggestedName`, `isStereoCamera`, `CAMERA_SDK`.
+- The call is built on it: `CallOptions.camera` accepts a `StereoCamera` (left open when the
+  call ends), `camera: 'auto'` opens one through `openCamera()`, and the call's self view IS an
+  `addCameraView` — one implementation of capture, mirroring and convergence. A camera that ends
+  under a call (`ended`) drops it to audio-only with "Retry camera".
+- Also in the CDN bundle `dist/call.js` (~153 KB min now, was ~124). `camera.d.ts`,
+  `docs/camera.md`, `samples/camera/`.
+
+### `./call` — the public surface (RFC 0003 §2)
+
+**Renamed / regrouped options** (the 1.29 spelling still works for this release with one
+`console.warn` per key; removed in 1.31):
+
+| 1.29 | 1.30 |
+|---|---|
+| `accent` | `theme.accent` |
+| `tileAspect` | `theme.tileAspect` |
+| `inviteBase`, `updateUrl` | `invite: { base, updateUrl }` |
+| `browserUrl` | `landing: { browserUrl, allow2D }` |
+| `maxLifted` | `liftOptions.max` |
+| `calibration`, `rectify` | `openCamera({ calibration, rectify })` of `./camera`, passed as `camera` |
+| `log` | `debug: true` + `diagnostics()` |
+| `recoverSession`, `wallOptions` | removed — a call always recovers the document's session (`sharedInline3D()`) |
+| `scrollIntoView` | removed — always on with `ui: true` |
+
+**New options:** `theme` (`accent`, `ink`, `shell`, `danger`, `radius`, `font`, `tileAspect`,
+`strings`) → CSS custom properties `--dxr-accent/-ink/-shell/-danger/-radius/-font` on the host
+and the string table; `ui: 'tiles'` (badges + plates only); `layout: 'none'` (tiles carry
+`data-dxr-peer`, `call.tile(id)` returns them, the grid box steps aside); `landing.allow2D`.
+`<dxr-call>` attributes are unchanged (`accent`, `tile-aspect`, `invite-base`, `browser-url` map
+to the new groups) plus `ui="tiles"`.
+
+**Handle renames:** `cameraOff(on)` → `setCameraOff(on)` with **`cameraOff` now the boolean
+getter**; `format` → `localFormat`; `join()` resolves `void`; **new** `tile(peerId)`,
+`diagnostics()` (explicitly unstable: the wall, the transport, per-peer `hello` / `route` /
+`convergencePx` / `autoConverge` / `lift` / `quality`, the lift pool). **Removed from the public
+handle** (kept as non-enumerable getters that warn once, gone in 1.31): `wall`, `format`,
+`sendHint`, `_debug`. `CallPeer` is trimmed to `id`, `format`, `display` (`'3D' | '2D→3D' |
+'2D'`), `state`, `muted`, `cameraOff`, `speaking`; the rest is in `diagnostics()`.
+`handle.state` no longer lists `'idle'`.
+
+**Events:** `format` → **`display`** `{ id, display }` (the old event still fires for a listener
+that subscribes to it, with a warning; gone in 1.31); `session` is internal (subscribing warns);
+`left` carries `reason`. New types `CallErrorCode` (adds `'permission-denied'`), `CallWarningCode`,
+`CallDisplay`, `CallTheme`, `CallStrings`, `LiftFunction`.
+
+**Removed from the `./call` entry — 38 internal helpers**, each kept for this release as a
+`@deprecated` wrapper that `console.warn`s once on first use (a primitive constant cannot warn)
+and removed in 1.31; all stay importable by file path from `js/call/*.js` / `js/camera/*.js`:
+`normalizeCallOptions`, `newRoomId`, `isValidRoomId`, `buildInviteLink`, `normalizeHello`,
+`makeHello`, `routeFor`, `badgeFor`, `createLiveGate`, `convergenceShiftPx`, `lowPass`,
+`clampShift`, `eyeCropRect`, `mirrorSwapOps`, `mirrorSwapPixels`, `maxBitrateKbps`,
+`measureFocusDisparity`, `preferVideoCodecs`, `sortCodecCapabilities`, `VIDEO_CODEC_ORDER`,
+`MeshTransport`, `clampMaxPeers`, `qrEncode`, `roomKey`, `SIGNAL_PROTOCOL`, `WIRE_VERSION`,
+`CALL_SDK`, `PLATE_TEXT` (→ `theme.strings`), `CALL_ACCENTS` (→ `theme.accent` takes the names),
+`normalizeMono3D`, `resolveLift`, `createLiftPool`, `createFrameWatch`, `liftConvergenceFor`,
+`liftPriorityFor`, `setLiftPriority`, `defaultLiftSpecifier`, `LIFT_PRIORITY`. Types gone with
+them: `CallHello`, `CallCalibration`, `CallRoute`, `Mono3DReason`, `CallMono3DInfo`,
+`CallLiftHandle`, `CallLiftFunction` (→ `LiftFunction`), `LiftStreamPriority`, `CallLiftPool`.
+**Stays public:** `mountCall`, `addCall`, `dxrSignaling`, `DXR_SIGNAL_DEFAULT`,
+`parseInviteLink` (Decision 7), `DxrCallElement`, `defineCallElement`, `attrsToOpts`,
+`CALL_EVENT_PREFIX` — 9 value exports (from 47).
+
+Internal moves (no API): `js/call/capture.js` → `js/camera/capture.js`, `js/call/disparity.js` →
+`js/camera/disparity.js`, the SBS geometry and convergence math → `js/camera/geometry.js` /
+`js/camera/converge.js`, option normalisation → `js/call/options.js`; the old paths re-export.
+
+### Gates (RFC 0003 §7, C2)
+
+- **API snapshot:** `tools/api-surface.mjs` pins the public surface of `call.d.ts`,
+  `call-full.d.ts` and `camera.d.ts` in `test/api-snapshot/*.api.txt`; `npm test` (and CI) fail
+  when the surface changes without `node tools/api-surface.mjs --update` in the same change. The
+  deprecated set is part of the record, so 1.31's removal is a visible diff.
+- **Snippets:** `tools/check-snippets.mjs` compiles every fenced `js`/`ts`/`jsx` block of
+  `docs/call.md` + `docs/camera.md` and every call/camera sample against the public `.d.ts` only
+  (and fails on a deprecated import); run by `npm test` where `typescript` is installed and by
+  CI's typecheck job.
+- **Tests:** camera unit tests (the mirror-and-swap proof, XMP/WebM round-trips, error codes,
+  view routes), the surface tests (deprecation wrappers, legacy options, handle renames, theme /
+  strings / parts / `ui: 'tiles'` / `layout: 'none'`), and a headless Chrome e2e
+  (`npm run test:e2e:camera`: the mirrored pair's pixels on a mock woven wall, a JPEG whose XMP
+  parses, a WebM whose tags parse). Panel runs still required: the mirrored self view on glass,
+  an SBS photo opened in `/player`.
+
+### `./call` + the hosted service (RFC 0003 §5, phase C3)
+
+Also in this release: the hosted signalling service productised, with the **reference server**
+(`signaling/`). Additive for pages; `dxr-signal/1` gains optional fields and new error codes only.
+
+- **Publishable keys.** `mountCall(el, { key: 'pk_…' })` / `<dxr-call key="pk_…">` now mean
+  something: the hosted server validates the key against its origin list on connect, applies the
+  keyed tier's limits (10× anonymous), and attributes every session to the key id (billing
+  identity from day one; billing is off). Issued by hand: `tools/signal-keys.mjs`. No key = the
+  anonymous tier, as before, with tighter limits.
+- **Limits** (RFC §5b): joins per address per minute, concurrent rooms per address / per key, room
+  lifetime (2 h / 8 h → `expired`), TURN mints per address per hour. A refused join is an `error`
+  with `rate-limited` (+ `error.retryMs`) / `quota` / `bad-key` / `origin-not-allowed` / `blocked`
+  — never a silent hang; reconnects honour `retryMs`.
+- **TURN metering and the monthly cap** (RFC §5c, Decision 2): the service meters minted
+  credentials (and, when configured, Cloudflare's real per-key relay bytes) against the free
+  1000 GB + a $100 hard cap. At 70 % anonymous credentials shorten, at 90 % anonymous sessions
+  get none (`warning` **`turn-shed`**), at 100 % nobody does (`error` **`turn-cap`**) — the call
+  still joins and direct P2P keeps working. `welcome.turn` / `SignalingSession.turn` carry the
+  decision (`SignalingTurnStatus`).
+- **Domain move prepared, not cut over** (RFC §5g): the hosted server answers on every host of
+  `DXR_SIGNAL_ALIASES` (`dxr-signal.displayxr.workers.dev`, `signal.displayxr.org`) and
+  `dxrSignaling()` fails over between them on connect and reconnect. `DXR_SIGNAL_DEFAULT` is
+  unchanged; the alias list is internal (`js/call/signaling.js`, importable by path — the
+  `./call` entry keeps its 9 exports). `dxrSignaling(url, { aliases })` adds fallbacks for a
+  self-hosted URL. Options and the recommendation: `docs/signaling-domain.md`.
+- **Docs:** `docs/privacy-call.md` (what the server sees, retention, the E2E caveat),
+  `signaling/README.md` (keys, limits, budget, self-host vars, a coturn recipe, staging),
+  `docs/call.md` troubleshooting rows for the new codes.
+- **Server:** `signaling/gate.mjs` + `limits.mjs` + `keys.mjs` + `turn-budget.mjs`, shared by
+  the Worker (Durable Objects per subject + one budget, a KV namespace for keys, an hourly
+  analytics cron, `/admin/*` behind `ADMIN_TOKEN`) and the Node dev server (same admission in
+  memory). Staging twin `signaling/deploy/staging.toml`; the C3 gate
+  `test/e2e/signal-staging.e2e.mjs`.
+
+## 1.29.0 — 2026-09-30
+
+Touches the **core** (additive: `sharedInline3D()`, `handle.rewoven()`) and the **preview tier**
+(`./call` — RFC 0003 C1, the one-line path; `./player`, `./splat` `engine: 'playcanvas'`). One
+**removal** in the preview tier: `peerjsCloud`. Otherwise additive; no change for a page that does
+not call the new API.
+
+### `./call` — the one-line path (RFC 0003 §1, phase C1)
+
+- **`mountCall(el, opts?)`** — `addCall` with every argument optional: the wall is the document's
+  shared manager (`sharedInline3D()`, below), signalling defaults to the hosted server, the camera
+  to `'auto'`, the SDK chrome to on. `addCall(wall, container, opts)` stays as the explicit form.
+  A call's session recovery now re-opens through the shared manager too, so it joins a wall the
+  page re-created rather than opening a second session.
+- **`<dxr-call>`** — the same thing as markup, registered by importing `./call` (or `./call/full`,
+  or the CDN bundle): mounts on connect, `leave()`s on disconnect (a DOM move IS a teardown —
+  woven-canvas rule 2), re-dispatches every call event as a bubbling, composed `CustomEvent`
+  named `dxr-call:<event>` with the payload in `detail`, and exposes the handle as `el.call`
+  (plus a `ready` promise). Attributes are the string-typed options: `room`, `signaling` (a
+  URL), `key`, `camera`, `layout`, `accent`, `max-peers`, `no-ui`, `auto-join`, `mono3d="off"`,
+  `no-audio`, `no-self-view`, `no-auto-converge`, `tile-aspect`, `invite-base`, `browser-url`,
+  `debug`; anything else is `el.options = { … }`, set before connect (options win). Light DOM, no
+  shadow root, **no globals** (RFC 0003 Decision 11). `auto-join` joins during the mount, so the
+  element replays `joined` and one `peer` per participant already in the room once it can
+  subscribe. Exported: `DxrCallElement`, `defineCallElement`, `attrsToOpts`, `CALL_EVENT_PREFIX`.
+- **`@displayxr/inline3d/call/full`** — `./call` with `mono3D` defaulted to a **statically
+  imported** `lift`, the one shape a bundler can follow; importing it also points `<dxr-call>` at
+  that `mountCall`. `liftBundled` says whether this copy of the SDK carries the module. **Until
+  `./lift` lands on `main`, `js/lift/index.js` is a placeholder** (`lift === null`): the entry
+  builds and behaves like `./call`, and `liftBundled` is `false`.
+- **CDN bundle `dist/call.js`** — one pre-bundled ESM file (core + call + element, ~124 KB min,
+  no three/PlayCanvas), built by `npm run build:dist` (esbuild) and by `prepack` into every
+  published tarball, so jsDelivr serves it as `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1/dist/call.js`.
+  `<script type="module">` only; lift is a lazy sibling chunk (`dist/lift.js`) once the module
+  is present. `dist/` is not committed.
+- **`warning` event, code `'lift-not-bundled'`** — a 2D participant is on a 3D display, `mono3D`
+  is `'auto'`, and the lift module could not be imported from this build (a bundler that could
+  not follow the computed import, or a copy without `./lift`). Emitted once per call with one
+  `console.warn` naming the fix (`mono3D: lift` or `./call/full`); the lobby reads "2D→3D
+  unavailable in this build". Previously a silent flat tile and an info line. A display that
+  honestly cannot lift is unchanged (`handle.mono3D.reason`).
+- **`key`** — `dxrSignaling(url, { key })` / `CallOptions.key` / `<dxr-call key>`: a publishable
+  key for the hosted service (RFC 0003 §5a), sent as a query parameter on connect. Accepted and
+  forwarded now; the server ignores it until C3.
+- **Removed: `peerjsCloud`** (RFC 0003 Decision 12 — no known external user, so no warning
+  release). The demo adapter over the public PeerJS broker lives on as
+  `samples/call/peerjs-cloud.js`; the sample's `?signal=peerjs` still works. `dxrSignaling()`
+  (the hosted server) has been the default since 1.28.
+- **Types:** `mountCall`, `CallOptions.wall` / `.key`, `CallEvents.warning`, `DxrCallElement`,
+  `attrsToOpts`, `defineCallElement`, `DxrCallEventMap` (+ `HTMLElementTagNameMap` /
+  `HTMLElementEventMap` augmentations), `call-full.d.ts`.
+- **Tests:** element unit tests (attribute→option table, events, disconnect = leave); a
+  headless Chrome ↔ Chrome end-to-end run of `<dxr-call>` (source and CDN bundle) over the
+  hosted server (`npm run test:e2e`); Vite/webpack/esbuild smoke builds of `./call/full` and
+  `./call` that also run the bundles (`npm run test:bundlers`). Neither is part of `npm test`.
+
+### Core — additive
+
+- **`sharedInline3D(opts?)`** — the document's shared manager: the live `createInline3D()`
+  result if one exists, else a new one (concurrent callers share one creation; an unsupported
+  browser is never cached). Woven-canvas rule 1 as an API: a module that needs a wall it did not
+  create (`mountCall`, `<dxr-call>`) uses this and never opens a second session next to the
+  page's own; a page that made its wall first gets that same wall back here. Semver-covered.
+
+- **`./splat` `setVideo` crossfade, band and on-screen rect** (#105, RFC 0001 A5.1-A5.3,
+  `engine: 'playcanvas'`). `transition: 'crossfade'` (`durationMs` 600, `easing`
+  'easeInOutSine', the player's defaults) dissolves on the GPU from the video already on the plane:
+  its quad is frozen and drawn blended over the incoming one, the buffer opaque throughout; from the
+  splat and on `setVideo(null)` it stays a cut. `band: 2.39 | '2.39:1'` fits the picture into a
+  centred letterbox slot (`cover` fills the band and crops each eye about its centre). The result
+  gains `transition`, `band`, `rect` (the picture in CSS px, canvas-relative, clipped) and
+  `onRectChange(cb)`. `attachPlayer` now crossfades and takes `band` (controls in the bars) through
+  these instead of cutting / ignoring them. **Behaviour change for `attachPlayer(…, { skin: 'call' })`:**
+  that skin defaults `band` to 2.39, which surface mode used to ignore; the video now plays in a
+  2.39 letterbox. Pass `band: null` to keep the full tile.
+- **`handle.rewoven()`** — `firstWoven`, measured from the call, for a canvas that is already woven
+  but whose rect is about to change (fullscreen, a layout resize). Same `{ woven, confirmed,
+  reason, ms }` shape, never rejects; a change of the canvas's CSS size or devicePixelRatio while
+  pending restarts the hold (checked every frame, every window kind), and it settles anyway with
+  the new reason `'hold-capped'` four holds after the call if the size never stops changing;
+  before the first join it is `firstWoven`. Woven-canvas rule 11.
+- **Player: `fullscreenCover`** (opt-in, default false). Entering or leaving fullscreen puts an
+  opaque cover over the canvas (on top, hard cut, below the controls) until `rewoven()` settles.
+  Off by default because a blind A/B on the Leia panel showed no raw side-by-side pair without it
+  and ~1.2 s of no picture with it; the flash that did show is browser-wide (rule 11).
+- **Docs:** woven-canvas rules 9–11 (black goes under the canvas — previously only in the
+  authoring guide; no `backdrop-filter` over the weave; a resize is a fresh-canvas moment). The
+  authoring guide's short list now matches, 1–11.
+- **`attachPlayer(splat, src, opts)`** — surface mode (RFC 0001 Addendum A): the player's
+  transport, playlist and events on an existing PlayCanvas splat handle's `setVideo`, with no
+  canvas of its own. `detach()` gives the slot back (`setVideo(null)`: scene, pose, lens and rig
+  as they were); `'detached'` `{ reason: 'superseded' | 'released' }` when something else takes or
+  empties the slot. Cut transitions only for now; `fullscreen` defaults off. Panel-checked on one
+  persistent canvas: attach, next/back, detach, scene state identical after.
+- **`addPlayer` refactor:** one player core on a surface adapter. No behaviour change.
+- **`./splat`:** read-only `handle.videoElement` (the `<video>` the plane shows, or null) and
+  `handle.canvas`.
+- **Types:** `attachPlayer`, `AttachPlayerOptions`, `AttachedPlayerHandle`, `PlayerDetachedEvent`,
+  `'detached'` in `PlayerEvent`; `SplatHandle.videoElement` / `.canvas`.
+
+## 1.28.0 — 2026-09-27
+
+Touches the **preview tier** (a new subpath, `./call`; the SBS store clamp below) and two **core**
+fixes: image/video backing buffers are capped at the source's resolution, and every SBS store is
+clamped to the device's GL limits.
+
+### Fixed — core + preview: SBS backing stores clamped to the device's GL limits
+
+- A woven canvas wider than the device's WebGL limit was **silently** clamped by the browser, and
+  the SDK still laid the eyes out from `canvas.width / 2`. On an Android 3D tablet (Adreno 740,
+  DisplayXR Browser 154) `MAX_TEXTURE_SIZE` is 4096 (Chromium's
+  `webgl_or_caps_max_texture_size_limit_4096` workaround, browser-pvt#187) where Windows and Linux
+  report 16384. A full-screen SBS canvas at `renderScale` 1 asked for 5120×1348, got a 4096-wide
+  drawing buffer, and put the eye boundary at 62.5% of it while the weave split it at 50%: a large
+  double image on the panel, nothing logged.
+- Every path that sizes an SBS store now clamps the request **before** setting `canvas.width/height`,
+  so 2 × eye width and the height stay within min(`MAX_TEXTURE_SIZE`, `MAX_RENDERBUFFER_SIZE`,
+  `MAX_VIEWPORT_DIMS`). Both axes shrink by one factor, so the eye keeps its aspect and the store
+  stays 2:1 of the per-eye size. Mono (the 2D tier) is clamped with one eye across. Limits are
+  queried once per GL context and cached. One shared helper (`js/inline3d-buffer-limit.js`) serves
+  the core (`addImage` / `addVideo`, explicit `{width, height}` included), `./viewer`, `./splat` on
+  both engines and `./model` on both engines.
+- Belt and braces: if the drawing buffer still differs from `canvas.width/height` after a resize (a
+  browser clamp the query did not predict), the viewers map the layer's viewports onto the real
+  drawing buffer instead of `canvas.width / 2`, for live frames, replays and mono. An `addScene`
+  canvas is the page's to size; the core warns once if the browser clamped it.
+- One warning per handle when the clamp bites, naming the limit and the numbers, e.g.
+  `[inline3d/splat] SBS buffer 5120×1348 exceeds MAX_TEXTURE_SIZE 4096 on this device; rendering at
+  4096×1078 (renderScale 1 → 0.8)`.
+- `handle.renderScale` (`./splat`, both engines; `./model`, both engines) now reports the scale **in
+  force** (0.8 in the case above); the new `handle.renderScaleRequested` is the request as given.
+  `setRenderScale` still accepts (0, 4]. `SceneViewer` gains `effectiveRenderScale`. Nothing changes
+  on a device whose limit holds the store.
+
+### Added — call: auto-convergence on the point between the remote person's eyes
+
+- SBS tiles now converge by MEASUREMENT: the receiver finds the disparity of the point between the
+  remote person's eyes in the decoded frames and shifts each eye by half of it, so that person sits at
+  the display plane. No calibration, works for any SBS sender. Tracks a small template after the first
+  lock (~1 ms per measurement at 5 Hz). `autoConverge: false` restores the pair as sent; the depth
+  slider stays an offset on top; lifted (mono) tiles are untouched. `measureFocusDisparity` is
+  exported for pages that want to reuse it.
+
+### Fixed — core: image/video buffers capped at the source's per-eye resolution
+
+- An image or video window's backing buffer was sized box x devicePixelRatio per eye regardless of
+  the source, so a large tile over a small clip re-drew many times the clip's pixels every frame.
+  Measured on an NP02J tablet (DisplayXR Browser 1.0.6), the player sample's 90vw tile got a
+  4608x1296 buffer for a 640x360-per-eye clip: 25 fps, 47 of 97 video frames dropped. The buffer
+  is now capped at the source's per-eye size (box aspect kept, only ever shrinks), which on the same
+  page gives 1280x360, 58 fps, 0 dropped. The compositor scales the layer to the box either way, so
+  the picture is the same. An explicit `{width, height}` is never capped; `cornerRadius` / `feather`
+  keep their on-screen size; the buffer re-derives when a new title has a different size.
+
+### Docs — MP4 (H.264/AAC) plays in DisplayXR Browser 1.0.6+
+
+- The codec guidance no longer says the DisplayXR Browser cannot play H.264/AAC. From **1.0.6** it
+  plays MP4 through the operating system's decoders (Windows GPU + Media Foundation, Android
+  MediaCodec). VP9/AV1 + Opus in WebM stays the recommended first source: it also plays in 1.0.5 and
+  earlier, stock Chromium, and on machines with no hardware H.264 decode (where `canPlayType` still
+  answers "probably" for H.264). Updated in the authoring guide (media traps, hosting video), the
+  PlayCanvas adapter's `setVideo`, and `pickSource`'s doc comment and fallback log text (text only,
+  no behaviour change). WebRTC calls are unaffected: the browser still ships no H.264 for WebRTC,
+  so `./call` keeps preferring VP9.
+
+### Added — call: mono→3D through `lift()` (P2a of RFC 0002)
+
+- **Mono participants are lifted to 3D** on a 3D display: a mono peer on a woven wall is handed to
+  `lift()` (`@displayxr/inline3d/lift`) with `{ mode: 'live', wall }` — one lifted tile per peer,
+  in its own slot, lifted at once and re-created once when the weave session goes live (#172). `mono3D: 'auto'` (default) loads
+  the lift module lazily and falls back to flat, with one log line, when it is missing or there is
+  neither a native 2D→3D provider nor WebGPU; `'off'` keeps mono peers flat; a function injects your
+  own `lift`. `setMono3D(on)` switches at runtime; `liftOptions` passes `models` / `ort` /
+  `quality` through; `maxLifted` (default 4) caps concurrent lifts.
+- **One depth control**: the depth slider is lift's convergence on lifted tiles (0 = `'auto'`) and
+  the crop shift on stereo tiles.
+- **Priority**: the active speaker's lifted stream is `high`, the others `normal`, offscreen or
+  camera-off tiles `paused`, through `setLiftPriority()` — the hook for the native provider's
+  per-stream priority (a no-op on the web path).
+- **Badges** `3D` / `2D→3D` / `2D`; the lobby says what a mono participant will look like
+  (`liftCapabilities()` when available); `handle.mono3D` reports the state. On the web provider a
+  sustained frame-rate drop emits a `quality` event with `lift: { degraded, frameMs, tiles }`.
+- **Changed:** `badgeFor('lifted')` is now `'2D→3D'` (was `'3D'`); `routeFor()` takes
+  `overBudget` / `failed` and reports `mono3d: 'budget' | 'failed'`.
+
+### Added — call (`@displayxr/inline3d/call`, P1 of RFC 0002)
+
+- **`addCall(wall, container, opts)`** — a 3D video call in any page. Full-mesh WebRTC, up to 4
+  participants (`maxPeers`, enforced on the client and the server), behind an internal `Transport`
+  seam so an SFU can replace the mesh later. VP9 > VP8 > AV1 (never H.264, which the DisplayXR
+  Browser does not have); senders hold resolution (`contentHint: 'detail'`,
+  `degradationPreference: 'maintain-resolution'`) with a `maxBitrate` that falls as the mesh grows.
+  A dropped pair walks ICE restart → rebuild with backoff; a peer that leaves shows "Left the call"
+  instead of a black tile.
+- **Stereo from any side-by-side camera**: `camera: 'auto'` picks a device delivering > 2.5:1
+  frames (a raw 1280x480 stereo camera works — nothing is upscaled) and skips a camera held by an
+  eye tracker instead of failing. The pair is sent raw with `rectified: false`; `opts.rectify` is
+  the seam for a calibrated step (P2).
+- **The receiver decides** (RFC §3): an SBS peer is woven with a convergence shift
+  (`f·B/(2Z)` from `hello` + `hint`, low-passed, clamped, plus the depth slider) on the DisplayXR
+  Browser and shown as its left eye elsewhere; a mono peer is flat (the `mono3D` hook is where
+  `lift()` lands in P2). Plain Chrome/Safari/Firefox participants are first-class. Built on
+  `wall.addImage` over a module-owned canvas, so the core still owns every woven buffer; a failed
+  layer is retried and an ended session re-opened without a reload.
+- **Signalling is pluggable** (`SignalingAdapter`): `dxrSignaling(url)` speaks the new
+  `dxr-signal/1` protocol, with a reference Cloudflare Worker + Durable Object (template, not
+  deployed; mints short-lived TURN credentials server-side) and a zero-dependency Node dev server
+  in `signaling/`. `peerjsCloud()` is a demo-only zero-setup path. Rooms are 128-bit random ids
+  carried in the invite link's `#room=` fragment, which never reaches a server.
+- **SDK chrome** (`ui: true`; `ui: false` for headless): lobby with a 3D self-preview, invite link
+  + QR code (a small built-in encoder, no dependency), bottom bar (mute, camera, depth, invite,
+  leave), per-tile `3D`/`2D` badge, a "View in 3D with DisplayXR Browser" banner on other browsers,
+  `grid` or `speaker` layout (active speaker from inbound audio levels). The mirrored stereo self
+  view mirrors each half AND swaps them; the sent stream is never mirrored.
+- **Hardened after the first panel run**: woven tiles (self view included) register only once the
+  session delivers stereo frames, working around a browser bug where a tile registered before the
+  weave session is live is fed the whole side-by-side frame per eye (displayxr-browser-pvt#172). A
+  participant with no connection after ~10 s shows "Can't reach this participant — the network
+  needs a relay (TURN)" and emits `error` `unreachable` while retries continue. A camera held by
+  another app (e.g. eye tracking) gives `error` `camera-busy` and an audio-only join with
+  `retryCamera()`, and no 0x0 video track is ever sent. `peerjsCloud()` no longer counts stale
+  slots toward a full room and frees its slot on `pagehide`.
+- Sample: [`samples/call/`](samples/call/). Types: `call.d.ts`.
+
+## 1.27.0 — 2026-09-26
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only) and adds one optional field
+to the core `XRDisplayInfo` type. A page on a browser that does not report the new field sees no
+change.
+
+- **`setLayerRig`'s default `viewerDistance` now comes from the browser.** Where
+  `XRDisplayInfo.nominalViewerPosition` is reported (DisplayXR Browser patch 0221, Windows and
+  Android), the layer rig's n is its **z** — the runtime's nominal viewer distance for the panel,
+  the value its camera rig is calibrated to — instead of the fixed 0.6 m. The tile asks the frame's
+  `XRDisplayLayer.getDisplayInfo()` once, asynchronously; frames drawn before it answers use 0.6 m.
+  A page's `viewerDistance` still wins, and clearing it (`null`) falls back to the browser's value,
+  then 0.6 m. **Pixels move** on a panel whose nominal distance is not 0.6 m: display-rig objects'
+  pop-out scales by 0.6/n (that was the bug); the contact plane and the 2D picture do not move.
+- **`layerRigState().viewerDistanceSource`** — `'page'` | `'browser'` | `'default'` — says where
+  `viewerDistance` came from, and the WARN line prints it: `viewerDistance=0.45m(browser)`.
+- **Types:** `XRDisplayInfo.nominalViewerPosition?: DOMPointReadOnly` (metres, display space, +z
+  out of the glass; absent when unreported), `SplatLayerRigState.viewerDistanceSource`.
+
+## 1.26.0 — 2026-09-25
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Additive; nothing changes
+for a page that does not call it.
+
+- **`handle.setViewOffset({x, y})`** moves the 2D tier's mono EYE in its own plane, off-axis with
+  the focus plane pinned — a head-parallax analogue for a flat screen with no tracked eyes (a
+  phone's tilt). Normalised and clamped to the unit disc; |offset| = 1 swings the line of sight to
+  the focus by `orbitMaxDeg` (15°), the drag orbit's cone. It moves the eye, not the scene, so it
+  composes with the orbit instead of fighting its relax. A snap (ease it in the page); `null`
+  resets. Mono only: a no-op for the pixels in woven 3D, where the head tracker owns the eyes, and
+  ignored on `controls: 'page'`. **`handle.viewOffset`** reads it back. `pick()` and the effects'
+  eye frame follow the offset camera.
+
+## 1.25.1 — 2026-09-25
+
+Touches the **preview tier** (`./splat`, `engine: 'playcanvas'` only). Additive; nothing changes
+for a page that does not call it.
+
+- **`handle.setRenderScale(s)`** changes the per-eye buffer scale (the `renderScale` option) live,
+  in (0, 4], and resizes the backing store on the next animation frame; **`handle.renderScale`**
+  reads it back. For an app whose screens differ: full resolution where the splat is hidden and
+  only stage quads draw, a lower scale where a large splat is on screen. Replaces poking the
+  viewer's internal field.
+
+## 1.25.0 — 2026-09-25
+
+Touches the **preview tier** (a new subpath, `./player`) and the **core** (`.`, frozen tier): new
+tracking-state API and an opt-in `untrackedFallback`. No pixel change for a page that does not opt
+in, and none on a browser without the tracking-state surface.
+
+### Fixed — `./splat` (`engine: 'playcanvas'`), `setLayerRig`
+
+Reported on the panel: layers set to the display rig still looked flat, with no way to tell why. 1.23
+could fail silently; now it cannot:
+
+- **Works on both view paths.** The N-camera fallback (one camera per view) used to leave the layer
+  on the photo rig with a single warning at the call. It now gets one display camera per view, the
+  shear carried in its projection, and measures identical to the RenderView path.
+- **`layerRigState()` says what happened**: `path` ('renderviews' | 'ncamera' | 'mono'), `engaged`
+  (the display-rig views were applied on the last frame), `reason` when not (e.g. a layer drawn by
+  another camera, a layer not in the composition), `viewerDistance`, `gain`, `planeM`,
+  `photoConvergenceM`, `planeOffset`, `located`. The same line is WARNed on the first 3D frame and on
+  every change.
+- A display layer that no camera draws is now drawn by the display camera. A layer another camera
+  draws is named, not taken.
+- **`planeOffset` / `planeDistance`** choose which stage plane lands on the glass (a stage whose
+  "z = 0" is not the photo's convergence plane read as recessed). The change is exact, and the 2D
+  picture does not move. **`handle.setLayerRigOptions(opts)`** changes these options live, and
+  options now merge across calls (`null` clears a key).
+
+### Added — core
+
+- **Tracking state: `wall.trackingState` and `on('trackingstatechange', (state, ev) => …)`**, on
+  every tile handle too (`'tracking' | 'searching' | 'unknown'`), mirroring the browser's
+  `session.trackingState` (DisplayXR Browser patch 0195; browser-pvt#161). Read off the session at
+  construction and on every frame, emitted on change only, released to `'unknown'` when the
+  session ends. The unsupported shape carries `trackingState: 'unknown'`. A browser without the
+  surface (1.0.5 and earlier) reports `'unknown'`, silently. Pages use it for "step back into
+  view" hints. (API and tests from #35.)
+- **`createInline3D({ untrackedFallback: 'none' | 'mono' })`**, default `'none'`. `'mono'` eases
+  every image/video window to its left eye in both halves of its SBS buffer on `'searching'`, and
+  back on `'tracking'`, over the mode switch's duration; `'unknown'` leaves it where it is. No
+  buffer reallocation and no layer close, so there is no squeezed-pair flash. Scene windows are
+  never touched. It is for **MANUAL** eye-tracking displays, where the app handles tracking loss;
+  on **MANAGED** displays (the default, and Leia's) the vendor already goes 2D before it reports
+  `'searching'`, so leave it off. Docs: authoring guide § Knowing when nobody is tracked. RFC
+  0001 and the player header say where `untrackedFallback` lives again.
+
+### Added — player
+
+- **`addPlayer(wall, canvas, src, opts)` — a media player module (preview tier).** Built on
+  `addVideo`: creates and owns a hidden `<video>`, and for `format:'sbs'` (default) hands it
+  straight to `wall.addVideo()`, so the stereo paint, the SBS buffer contract and the
+  display-mode fallback are inherited rather than re-implemented. Adds real transport
+  (`play/pause/seek/currentTime/duration/volume/muted/setSource/remove`), an `on/off` event pair
+  (`play|pause|ended|timeupdate|ready|error`), an SDK-drawn partial-region transport bar
+  (`data-inline3d-overlay`, auto-hiding, keyboard-accessible), and a keyboard map
+  (Space/K/←/→/J/L/M) scoped to the canvas/transport. `format:'mono'` paints genuinely flat
+  content full-frame on a small paint loop of its own — see `js/inline3d-player.js`'s module doc
+  comment for why this is a different code path from the unsupported-`wall` fallback, and why
+  neither one is the RFC's `untrackedFallback`/`trackingState` mechanism, which does not exist in
+  this codebase. v1 is narrower than `docs/rfcs/0001-media-player.md`: no `'tb'`/`'auto'` format
+  detection, no `opts.group` one-active-player policy, no `opts.fit`/letterboxing. Sample:
+  `samples/player/`.
+- **`setSource()` transitions in `./splat`'s vocabulary.** `transition: 'cut' | 'crossfade'`,
+  `durationMs` (600), `easing` (the same named curves, `'easeInOutSine'`), `outgoing: 'frozen'`,
+  and `fadeMs` as the legacy alias. Per-call options override the player's own field by field.
+  The crossfade dissolves from the outgoing title's last frame through an opt-in mixer canvas (a
+  player built without one keeps the plain `addVideo` path). `./splat`'s other transitions,
+  unknown easings and `outgoing: 'live'` throw by name.
+- **Transport: title line, ±10 s skip, fullscreen.** `title` (a now-playing line in a bounded top
+  band, its own overlay, fading with the bar; `setSource(src, { title })` changes it),
+  `skipButtons` (default on, plain rewind / fast-forward glyphs, hidden under 420 px) and `fullscreen` (default on, plus `F`): the
+  canvas's container goes fullscreen so the transport comes along, and the canvas is sized to fit
+  at its own aspect — never `object-fit`, which would letterbox inside the woven rect. The sample
+  gains chapter chips (real `setSource()` crossfades) and an honest caption for the mono tile.
+- **`skin: 'dock'`** — a floating rounded dock, lit round buttons, an accent orb for play, a glowing
+  scrub fill and knob, a title pill. `'classic'` stays the default. Every glow is inside its
+  overlay's own box: a shadow outside the excluded rect would be woven with the canvas. The sample
+  uses `'dock'` (`?skin=classic` for the band) and stacks its tiles at 90% of the window.
+- **Developer customisation: `size: 's' | 'm' | 'l'` and `handle.setAppearance({ accent, size, skin })`**
+  (live re-skin). Size is CSS `zoom` on each overlay's content, so icons, fonts and hit targets
+  scale together and the centre badge stays centred (measured at all three). Round controls draw
+  their own feathered edge (a 1.6 px mask) instead of relying on the border-radius clip, which can
+  stair-step where an overlay is re-composited on its own. The sample gains a developer bar
+  (accent picker, S/M/L, skin) showing the exact `setAppearance` call.
+- **Docs: the overlay no-glow rule and three media traps** (codec: VP9/AV1 + Opus WebM only, no
+  H.264/AAC; non-square-pixel sources play squashed, rewrap with square pixels; black picture with
+  working sound = an opaque page background over the woven canvas), and a note that `addPlayer`
+  shares `./splat` `setVideo`'s option names (`format`, later `fit`).
+- **`group`: one decoding player at a time.** Players sharing a group take turns: a `play` pauses
+  every other member, so a shelf of muted, looping previews decodes one video at a time. Leaving
+  on `remove()`.
+- **Controls inside the black bars, and skins `'bars'` / `'call'`** (the Show Spatial team's
+  layouts). With a `band`, when the bottom bar is at least 44 CSS px (times `size`), every skin
+  puts its controls in it and the title in the top bar; the centre button and key pip stand down,
+  so nothing sits over the picture; a thinner bar falls back to the overlay. Re-measured on
+  resize. `'bars'`: back / play / elapsed / scrub / remaining in one row (a solid bottom strip
+  without a band). `'call'`: name + timer bar on top, controls at the bottom, band 2.39 by default.
+- **Playlist API** (RFC 0001 Addendum A4, for the Show Spatial team's voice commands): `titles`
+  (`[{ id, src, title?, poster? }]`, bare sources accepted), `loopList`, `autoAdvance`; on the
+  handle `titles`, `current`, `setTitles()`, `play(id)`, `toggle()`, `next()`, `back()` (restart
+  past 3 s, else the previous title), and a `'titlechange'` event. Switches go through
+  `setSource`, so transitions, the title line and posters follow. `normalizeTitles`,
+  `nextIndex` and `backTarget` are pure and tested.
+- **For the Show Spatial team** (quick wins from their list): `format: 'tb'` (top/bottom, repacked
+  into the woven pair; `setVideo`'s vocabulary); `band` — a letterbox slot of a target aspect
+  (`2.39`, `'2.39:1'`) the picture is fitted into; `posterFormat: 'sbs' | 'tb'` — stereo poster
+  stills painted eye by eye; `on('ended')` also fires once if the clip had already ended when the
+  listener was attached; `src` / `setSource` take candidates best first and `pickSource()` plays
+  the first the browser supports by full `canPlayType` string. Docs: woven-canvas rule 9 (nothing
+  with a background above the woven canvas) and a Hosting video section (codec, range requests,
+  cache headers, CORS, square pixels).
+- **`fit: 'contain' | 'cover'`** — `./splat` `setVideo`'s names and meaning: contain letterboxes each
+  eye (transparent bars), cover fills the tile and crops. Unset keeps the stretch-to-tile pixels.
+  On the woven path a small per-eye fit canvas sits after the crossfade mixer (one extra draw per
+  frame, only when set); the flat paths fit directly. `fitRect()` is exported and tested.
+- **Named accents** — `accent: 'azure' | 'violet' | 'magenta' | 'sunset' | 'amber' | 'lime' | 'mint' |
+  'ice'` (or any CSS colour), exported as `PLAYER_ACCENTS`. Each is light enough for the dock's dark
+  play glyph. The sample shows them as swatches.
 
 ## 1.24.0 — 2026-09-25
 

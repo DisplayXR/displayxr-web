@@ -31,10 +31,38 @@
 // three entry points are re-exported below so a page has a single import site.
 import { undock, undockAvailable, undockUrl, tileScreenRect, setUndockLayerResolver } from './inline3d-undock.js';
 export { undock, undockAvailable, undockUrl, tileScreenRect };
+import { setSessionViewerEase } from './inline3d-viewer-ease.js';
+import { createFrameClock } from './inline3d-frame-clock.js';
+// The tracking-acquisition ease, for pages that render their own addScene from the views.
+export { ViewerEase, resolveViewerEaseOption, frameTrackingState, VIEWER_EASE_DEFAULT_MS } from './inline3d-viewer-ease.js';
+export { DISPLAY_METRICS_DEFAULTS, displayMetricsFrom } from './inline3d-display-metrics.js';
+import { displayMetricsFrom } from './inline3d-display-metrics.js';
+// The depth budget: pure measurements (how deep is this scene, in % of the tile width) and the
+// one-time rig warnings. Never a behaviour change — see ./inline3d-depth-budget.js.
+export {
+  DEPTH_EYE_SEPARATION_M,
+  DEPTH_DEFAULT_VIEWER_M,
+  disparityPct,
+  cameraRigDisparityPct,
+  depthBudgetFromBounds,
+  comfortZone,
+  comfortDepthFactor,
+  backdropPlacement,
+  cameraRigComfortFactor,
+  withheldReasonHint,
+} from './inline3d-depth-budget.js';
+import { warnViewRigOnce, withheldReasonHint } from './inline3d-depth-budget.js';
+import { noteCameraRigOrbit } from './inline3d-rig-hint.js';
 
 // The eased 2D<->3D transition. A pure state machine (no DOM, no WebXR) ported from the native
 // `dxr::ModeSwitch`, so the browser eases the disparity around a mode switch the same way — and in
 // the same ORDER — as the native apps and the demos. See _requestRenderingModeEased.
+// The device-limit clamp on a backing store (MAX_TEXTURE_SIZE & co.), shared with ./viewer,
+// ./splat and ./model. Dependency-free.
+import { probeBufferLimits, clampEyeBuffer, clampWarning, bufferScale, mismatchWarning } from './inline3d-buffer-limit.js';
+// The same sizing, for an addScene page's own canvas.
+export { sceneBufferSize } from './inline3d-buffer-limit.js';
+
 import {
   ModeSwitch,
   MODE_SWITCH_DEFAULT_DURATION_MS,
@@ -99,7 +127,22 @@ const hasViewRig = () => {
     return false; // a prototype that refuses to be probed is not a capability
   }
 };
-// Display modes — the display's own capabilities, and the one thing a page can ask it to
+// Viewer-independent content (runtime XR_DXR_display_info v25, `XrViewLocateFixedViewerDXR`). A
+// window whose picture is the same wherever the viewer stands — a stereo photo, a side-by-side
+// video — DECLARES so with `XRDisplayLayer.setViewerIndependent(true)` (or the init member). The
+// browser then locates for the display's nominal viewer while everything its foreground tab shows
+// is viewer-independent, so a viewer-tracking provider (a webcam tracker on a display that does
+// not track by itself) is never started just to play a movie. Advisory: it changes no pixel the
+// SDK paints, and a 3D scene stays head-tracked. Probed as a METHOD for the setViewRig reason.
+const hasViewerIndependent = () => {
+  if (!hasLayer()) return false;
+  try {
+    return 'setViewerIndependent' in window.XRDisplayLayer.prototype;
+  } catch {
+    return false;
+  }
+};
+// Display modes —the display's own capabilities, and the one thing a page can ask it to
 // change. Three methods, all on XRDisplayLayer, all promise-returning:
 //
 //   getDisplayInfo()          the panel: physical size, pixel size, the view scale it
@@ -126,10 +169,39 @@ const hasViewRig = () => {
 // required — a browser with a partial set is a browser mid-implementation, and treating it as
 // supported would hand a page a `requestRenderingMode is not a function` at the worst moment.
 const DISPLAY_MODE_METHODS = ['getDisplayInfo', 'getRenderingModes', 'requestRenderingMode'];
+
 // The two display events, fired on the XRSession rather than the layer — so a page hears about a
 // mode or hardware-state change even while its tile's layer is closed (lazy mode), and one
 // subscription covers every window in the document.
 const DISPLAY_EVENTS = ['renderingmodechange', 'hardwaredisplaystatechange'];
+// TRACKING STATE — is anyone in the display's 3D zone right now?
+//
+// `session.trackingState` is a DOMString ('tracking' | 'searching' | 'unknown', filled in on every
+// frame) and `trackingstatechange` is a PLAIN Event with no payload, so the state is always READ
+// off the session and never parsed out of the event. It comes from the DisplayXR runtime, which
+// may hand the decision to the vendor plug-in (DisplayXR Browser patch 0195).
+//
+// 'searching' means the runtime's derived isTracking went false: nobody is in the display's
+// supported 3D zone, or the display is in an untracked / 2D mode. It does NOT necessarily mean the
+// tracker lost a face that is still there, and a page must not word its UI as if it did.
+//
+// An older browser has NEITHER the attribute NOR the event. That is not warning-worthy — it is
+// every release up to and including 1.0.5 — so the SDK reports 'unknown', silently, and every
+// consumer of this surface treats 'unknown' as "no opinion".
+const TRACKING_EVENT = 'trackingstatechange';
+const TRACKING_STATES = ['unknown', 'tracking', 'searching'];
+// Everything on()/off() accept. `onDisplayModeChange` deliberately still fans out over
+// DISPLAY_EVENTS alone: pages pass it one callback shaped for a mode event.
+const MANAGER_EVENTS = [...DISPLAY_EVENTS, TRACKING_EVENT];
+/** This session's tracking state, or null when the browser does not expose one at all. */
+function readTrackingState(session) {
+  try {
+    const v = session ? session.trackingState : undefined;
+    return TRACKING_STATES.includes(v) ? v : null;
+  } catch {
+    return null; // an attribute that refuses to be read is not a capability
+  }
+}
 const hasDisplayModes = () => {
   if (!hasLayer()) return false;
   try {
@@ -297,6 +369,20 @@ export function inline3dViewRigSupported() {
 }
 
 /**
+ * True when this browser takes the VIEWER-INDEPENDENT declaration — `addImage` / `addVideo` /
+ * `addScene`'s `viewerIndependent` option and `handle.setViewerIndependent()` reach the browser,
+ * which then asks the runtime for fixed (nominal-viewer) views instead of tracked ones while
+ * everything on screen is viewer-independent. Sync + cheap; implies {@link inline3DAvailable}.
+ *
+ * Reads a capability (the presence of `XRDisplayLayer.prototype.setViewerIndependent`). A page
+ * never needs to branch on it: the declaration is advisory, stored either way, and on an older
+ * browser simply not sent — the window weaves exactly as before.
+ */
+export function inline3dViewerIndependentSupported() {
+  return inline3DAvailable() && hasViewerIndependent();
+}
+
+/**
  * True when this browser exposes the DISPLAY-MODE API — `getDisplayInfo()`,
  * `getRenderingModes()` and `requestRenderingMode()` on the tile handle, i.e. the page can read
  * what the panel is and ask it to change. Sync + cheap; implies {@link inline3DAvailable}.
@@ -383,6 +469,70 @@ function nowMs() {
 // landed (docs/proposals/layer-joined-signal.md), so `handle.firstWoven` is this timer, not a
 // report. Per-window override: `firstWovenHoldMs` on any add*() call.
 const FIRST_WOVEN_HOLD_MS = 1200;
+
+// The browser's own join report (DisplayXR Browser PR #258, Windows, behind a feature flag):
+// `XRDisplayLayer.wovenState` — 'pending' (no presented frame has reported this layer yet: from
+// construction, again after close(), and whenever the reply does not list it), 'woven' (the
+// latest swapped frame put this layer's rect into the weave) or 'withheld' (with a why-token in
+// `withheldReason`: no-quad / no-identity / no-join / cross-pass:mono / cross-pass:mono(cover,2:1)
+// / resolve-dropped). It is a per-frame LEVEL, nothing latched, read off the GetLatestViews reply,
+// and the layer is not an EventTarget — so polling it once per session frame is the whole API.
+//
+// Where it exists, firstWoven/rewoven settle on it (`confirmed: true`) instead of on the hold.
+// Where it does not (mac, Linux, Android, and every Windows build without the patch: the
+// attribute is deliberately absent there, so `in` on the prototype is an honest feature test)
+// the hold below is used exactly as before.
+const WOVEN_STATES = new Set(['pending', 'woven', 'withheld']);
+// The report trails the join by 1-3 renderer frames. After a rect change that never reads
+// anything but 'woven' (a move the browser rejoins without a gap), a 'woven' read only means the
+// NEW rect once this many session frames have passed since the change was seen; before that it
+// can still be the old rect's.
+const WOVEN_STATE_LAG_FRAMES = 3;
+
+// The display calls that wait for a layer's first frame (see Inline3D._layerCall). All three
+// answer from the browser's weave session, which only exists once a layer has delivered a frame:
+// before that getDisplayInfo() is null, getRenderingModes() is [] and requestRenderingMode() is
+// `false` ("not forwarded").
+const LAYER_CALLS_AFTER_FIRST_FRAME = new Set(['getDisplayInfo', 'getRenderingModes', 'requestRenderingMode']);
+// The two READS among them. A read that comes back null / empty before the cap is not an answer
+// yet (the weave session can lag the release signal by a few frames): it is asked again on the
+// next release signal. requestRenderingMode resolves void, so it is forwarded once, not retried.
+const LAYER_READS_RETRIED_WHEN_EMPTY = new Set(['getDisplayInfo', 'getRenderingModes']);
+
+/** A display read's "nothing yet" shape: null / undefined, or an empty list. */
+function isEmptyLayerAnswer(r) {
+  return r === null || r === undefined || (Array.isArray(r) && r.length === 0);
+}
+
+/** Does this browser build report `XRDisplayLayer.wovenState`? Feature-tested on the prototype. */
+function hasWovenState() {
+  try {
+    const L = typeof XRDisplayLayer === 'function' ? XRDisplayLayer : null;
+    return !!(L && L.prototype && 'wovenState' in L.prototype);
+  } catch {
+    return false;
+  }
+}
+
+/** This layer's woven state, or null when the read fails or returns something not in the contract. */
+function readWovenState(layer) {
+  try {
+    const s = layer ? layer.wovenState : null;
+    return WOVEN_STATES.has(s) ? s : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The why-token while 'withheld', else null. */
+function readWithheldReason(layer) {
+  try {
+    const r = layer ? layer.withheldReason : null;
+    return typeof r === 'string' && r ? r : null;
+  } catch {
+    return null;
+  }
+}
 
 // The easing option, validated here rather than in the state machine: the sequencer falls back
 // silently (it has no opinion about a caller's config), but a typo in `createInline3D` is worth
@@ -514,7 +664,28 @@ function noteRigWinsOverHeight() {
  *        keeps the eye set coherent either way — and a mode change the page did NOT request
  *        (another tab, the shell, a panel opening flat) always snaps, because there is nothing
  *        to ramp from. Read the live state on `wall.modeSwitch`.
- * @returns {Promise<Inline3D | {supported:false, error?:Error}>} the manager, which also carries
+ * @param {'none'|'mono'} [opts.untrackedFallback='none']  What the SDK does to the image and video
+ *        windows it owns the pixels of while NOBODY IS TRACKED (`wall.trackingState ===
+ *        'searching'`). WHOSE JOB THIS IS depends on the display's eye-tracking mode (runtime
+ *        spec docs/specs/vendor/eye-tracking-modes.md). MANAGED — the default, and Leia's — the
+ *        vendor owns tracking loss: it eases the eyes together and only reports 'searching' once
+ *        the display is already 2D, so leave this at `'none'` (a flatten here would be a second
+ *        transition). MANUAL — the vendor does nothing and the app handles it: set `'mono'`.
+ *        `'none'` (default) changes nothing. `'mono'` eases each image/video window to its LEFT
+ *        EYE IN BOTH HALVES of its side-by-side buffer on 'searching' (still a valid pair for the
+ *        layer; no buffer reallocation) and back on 'tracking', over the mode switch's duration;
+ *        'unknown' leaves it where it is. Scene windows are never touched: the page owns those
+ *        pixels — listen for `trackingstatechange` and do the same for a scene.
+ * @param {boolean|{enabled?:boolean,durationMs?:number,easing?:string}} [opts.viewerEase]  The
+ *        default, for every SDK renderer drawing through this session (`./viewer`'s SceneViewer,
+ *        `./splat`, `./model`, both engines), of the TRACKING EASE: when a viewer is acquired
+ *        (the views jump from the runtime's nominal viewer to the tracked eyes) or lost, the eye
+ *        views glide from where they were drawn to the new ones over `durationMs` (300) on
+ *        `easing` ('smoothstep' | 'linear' | 'easeOutCubic') instead of snapping in one frame.
+ *        On by default; `false` restores the snap. A renderer's own `viewerEase` option
+ *        overrides this. A page rendering its own addScene uses the exported `ViewerEase`.
+ * @returns {Promise<Inline3D | {supported:false, trackingState:'unknown', error?:Error}>} the
+ *        manager, which also carries
  *        the display API (`getDisplayInfo` / `getRenderingModes` / `requestRenderingMode` /
  *        `setStereoEnabled`, `on`/`off`) and `undock` — `{model, splat}` on a browser with
  *        `XRDisplayLayer.undock`, `null` on one without.
@@ -526,23 +697,61 @@ export async function createInline3D(opts = {}) {
     rootMargin = '50% 0px',
     autoChrome = true,
     modeSwitch = null,
+    untrackedFallback = 'none',
+    viewerEase,
   } = opts;
-  if (!inline3DAvailable()) return { supported: false };
+  // The unsupported shapes carry `trackingState` too, so a page can read it without branching on
+  // `supported` first. There is no on() here to pair with it: nothing would ever fire.
+  if (!inline3DAvailable()) return { supported: false, trackingState: 'unknown' };
   let session;
   try {
     // requestSession is Blink-local and resolves immediately when the feature is present —
     // the correct detection path (see inline3DAvailable's note on isSessionSupported).
     session = await navigator.xr.requestSession('inline-3d');
   } catch (e) {
-    return { supported: false, error: e };
+    return { supported: false, trackingState: 'unknown', error: e };
   }
+  if (viewerEase !== undefined) setSessionViewerEase(session, viewerEase);
   let refSpace = null;
   try {
     refSpace = await session.requestReferenceSpace(referenceSpace);
   } catch {
     /* rAF still fires without a ref space; views are just null (fine for image/video). */
   }
-  return new Inline3D(session, refSpace, { lazy, rootMargin, autoChrome, modeSwitch });
+  return new Inline3D(session, refSpace, { lazy, rootMargin, autoChrome, modeSwitch, untrackedFallback });
+}
+
+// The one shared creation in flight, so two callers racing before the first session resolves
+// (a <dxr-call> and a player both mounting on load) share ONE createInline3D() rather than
+// opening two sessions. Cleared once it settles: from then on `liveManager` is the answer.
+let sharedPending = null;
+
+/**
+ * The document's shared manager: the live `createInline3D()` result if one exists, else a new one
+ * (registered as the shared one by construction, since every manager is). Woven-canvas rule 1 —
+ * one inline-3D session per document — is what this exists for: a module that needs a wall it
+ * did not create (`mountCall`, `<dxr-call>`) must not open a second session next to the page's
+ * own, and a page that made its wall first and then adds such a module gets that same wall back.
+ *
+ * `opts` are `createInline3D`'s and apply only when this call creates the manager; a manager
+ * that already exists is returned as it was configured. An unsupported browser resolves to the
+ * same `{ supported: false }` shape as `createInline3D`, and it is NOT cached: nothing was
+ * created, and a later call re-probes (the weave service can bind after page load).
+ *
+ * Closing: whoever `close()`s the shared manager ends the document's session for everyone using
+ * it; the next `sharedInline3D()` opens a fresh one. Modules that borrow the wall must not close
+ * it (the call module never does; it only closes a wall it created — which it no longer does).
+ *
+ * @param {object} [opts]  see {@link createInline3D}
+ * @returns {Promise<Inline3D | {supported:false, trackingState:'unknown', error?:Error}>}
+ */
+export function sharedInline3D(opts = {}) {
+  if (liveManager && liveManager._running) return Promise.resolve(liveManager);
+  if (sharedPending) return sharedPending;
+  sharedPending = createInline3D(opts).finally(() => {
+    sharedPending = null;
+  });
+  return sharedPending;
 }
 
 /**
@@ -593,12 +802,186 @@ function chromeTextPlates(root) {
   return plates;
 }
 
+/** A pending rewoven() settles anyway ('hold-capped') after this many holds from the call. */
+const REWOVEN_MAX_HOLDS = 4;
+
+/**
+ * Does one woven eye tile (`vw` x `vh` store px, as getViewport() reports it) have the canvas
+ * box's aspect (`bw` x `bh` CSS px)? Each eye's image spans the whole box, so it must. A store
+ * sized 1:1 to the box while woven fails by a factor of two: each eye gets half the scene.
+ * The tolerance absorbs rounding only (an integer CSS box, a rounded store): 4 px or 2 %.
+ */
+function storeShapeOk(vw, vh, bw, bh) {
+  if (!(vw > 0 && vh > 0 && bw > 0 && bh > 0)) return true; // nothing to judge
+  const want = (vh * bw) / bh;
+  return Math.abs(vw - want) <= Math.max(4, 0.02 * want);
+}
+
+// The last display info this origin read (`wall.displayInfo` before this document has read its
+// own): the six numbers sceneBufferSize and displayMetrics use, nothing else.
+const DISPLAY_INFO_KEY = 'dxr-inline3d:displayInfo';
+const DISPLAY_INFO_FIELDS = [
+  'displayWidthMeters',
+  'displayHeightMeters',
+  'displayPixelWidth',
+  'displayPixelHeight',
+  'recommendedViewScaleX',
+  'recommendedViewScaleY',
+];
+
+/** The stored display info, frozen and marked `cached: true`; null when absent or unreadable. */
+function readCachedDisplayInfo() {
+  try {
+    const ls = typeof localStorage !== 'undefined' ? localStorage : null;
+    const raw = ls ? ls.getItem(DISPLAY_INFO_KEY) : null;
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    const out = { cached: true };
+    for (const k of DISPLAY_INFO_FIELDS) {
+      if (!Number.isFinite(o[k])) return null;
+      out[k] = o[k];
+    }
+    return Object.freeze(out);
+  } catch {
+    return null;
+  }
+}
+
+/** Store the numeric fields of a live answer (read one by one: browser objects have getters). */
+function writeCachedDisplayInfo(info) {
+  try {
+    const ls = typeof localStorage !== 'undefined' ? localStorage : null;
+    if (!ls) return;
+    const o = {};
+    for (const k of DISPLAY_INFO_FIELDS) {
+      if (!Number.isFinite(info[k])) return;
+      o[k] = info[k];
+    }
+    ls.setItem(DISPLAY_INFO_KEY, JSON.stringify(o));
+  } catch {
+    /* private mode / blocked storage: the live value still serves this document */
+  }
+}
+
+/**
+ * The CSS size + dpr + PAGE position of a window's canvas: what a pending rewoven() restarts on,
+ * and what a rect cover goes up on.
+ *
+ * Position joined the key in 1.38: a canvas moved to another place on the page, at the same size,
+ * goes through the same identity gap as a resized one (a kiosk demo moving ONE woven canvas between
+ * screens measured 0.4-1.2 s of black at the new rect). It is measured in PAGE coordinates
+ * (viewport rect + document scroll) so that scrolling the document is not a move: a scrolled
+ * canvas keeps its identity (rule 11). Rounded to whole CSS px so sub-pixel layout jitter is not
+ * a move either. A scroll inside a nested scroller still reads as one; that is the price of one
+ * getBoundingClientRect per frame instead of walking the scroll ancestors.
+ */
+function boxKeyOf(canvas) {
+  const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+  let pos = '';
+  if (typeof canvas.getBoundingClientRect === 'function') {
+    const r = canvas.getBoundingClientRect() || {};
+    const sx = (typeof window !== 'undefined' && window.scrollX) || 0;
+    const sy = (typeof window !== 'undefined' && window.scrollY) || 0;
+    pos = `+${Math.round((r.left ?? r.x ?? 0) + sx)},${Math.round((r.top ?? r.y ?? 0) + sy)}`;
+  }
+  return `${canvas.clientWidth}x${canvas.clientHeight}@${dpr}${pos}`;
+}
+
+/** A scene canvas's CSS box and dpr, as addScene's `onResize` receives it. */
+/** The inline styles _register promotes a window's canvas with (restored by _restoreCanvasStyle). */
+const PROMOTE_WILL_CHANGE = 'transform';
+const PROMOTE_TRANSFORM = 'translateZ(0)';
+
+function sceneBoxOf(canvas) {
+  const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+  return { width: canvas.clientWidth || 0, height: canvas.clientHeight || 0, dpr };
+}
+
+/**
+ * The `rectCover` option of every add*(): null (off) or `{ color, snapshot, live }`. Off by default
+ * in the core (frozen defaults); `./splat` and `./model` pass 'auto'. A bad value throws at the
+ * call: a typo here would otherwise silently leave a page without the cover it asked for.
+ *
+ * `live` (1.52, default true with a snapshot): while the cover is up, its picture follows the
+ * canvas, so a window DRAG shows the moving content in 2D instead of a still frame for the whole
+ * drag (each box change restarts the wait, up to REWOVEN_MAX_HOLDS holds).
+ */
+function resolveRectCover(v) {
+  if (v === undefined || v === null || v === false || v === 'off') return null;
+  // color null: the page named none, so each raise fills with what is behind the canvas (coverFillBehind).
+  if (v === 'auto' || v === true) return { color: null, snapshot: true, live: true };
+  if (typeof v === 'object') {
+    if (v.color !== undefined && typeof v.color !== 'string') {
+      throw new TypeError('[inline3d] rectCover.color must be a CSS color string.');
+    }
+    const snapshot = v.snapshot !== false;
+    return { color: v.color || null, snapshot, live: snapshot && v.live !== false };
+  }
+  throw new TypeError(`[inline3d] rectCover: expected 'auto', 'off' or { color?, snapshot?, live? }; got ${JSON.stringify(v)}.`);
+}
+
+/**
+ * The cover's fill when the page named no color: the background behind the canvas, so a cover
+ * that shows for a frame or two (a tile that drops out of the weave mid-drag) reads as the page's
+ * own 2D, not as a black box. The fill has to be OPAQUE, because it hides the canvas's own raster
+ * under the cover (black, or the squeezed pair); its being black never mattered. So: the first
+ * background color from the canvas up, if that color is opaque; the document's own canvas color
+ * (CSS `Canvas`, which follows color-scheme) when nothing from the canvas up paints one; black when
+ * the backdrop is not one opaque color (a translucent color, an image or gradient) or cannot be read.
+ * Read at each raise, so a theme switch between two raises is followed.
+ */
+function coverFillBehind(canvas) {
+  if (typeof getComputedStyle !== 'function') return '#000';
+  try {
+    for (let el = canvas; el; el = el.parentElement) {
+      const cs = getComputedStyle(el);
+      if (!cs) return '#000';
+      if (cs.backgroundImage && cs.backgroundImage !== 'none') return '#000';
+      const a = cssColorAlpha(cs.backgroundColor);
+      if (a === 0) continue;
+      return a === 1 ? cs.backgroundColor : '#000';
+    }
+    return 'Canvas';
+  } catch {
+    return '#000';
+  }
+}
+
+/** Alpha of a computed CSS color (`rgb()` / `rgba()` / `transparent`), or null when it is not one of those. */
+function cssColorAlpha(c) {
+  if (typeof c !== 'string') return null;
+  const s = c.trim();
+  if (s === 'transparent') return 0;
+  const m = /^rgba?\(([^)]*)\)$/i.exec(s);
+  if (!m) return null;
+  const parts = m[1].split(/[\s,/]+/).filter(Boolean);
+  if (parts.length < 4) return 1;
+  const a = parts[3].endsWith('%') ? parseFloat(parts[3]) / 100 : parseFloat(parts[3]);
+  return Number.isFinite(a) ? Math.min(1, Math.max(0, a)) : null;
+}
+
+/**
+ * A live cover frame is only taken once the page has redrawn FOR the new box: the left eye's
+ * aspect (half the side-by-side buffer) within this of the box's. Until then the last picture stays,
+ * so a page that resizes its buffer a frame late never flashes a stretched or cleared frame.
+ */
+const RECT_COVER_LIVE_ASPECT_TOL = 0.03;
+
 class Inline3D {
-  constructor(session, refSpace, { lazy, rootMargin, autoChrome = true, modeSwitch = null }) {
+  constructor(
+    session,
+    refSpace,
+    { lazy, rootMargin, autoChrome = true, modeSwitch = null, untrackedFallback = 'none' }
+  ) {
     this.supported = true;
     this.session = session;
     this.refSpace = refSpace;
     this._windows = new Map(); // canvas -> window record
+    // Double-attach detection. `_claims`: canvases a scene subpath entry (addSplat / addModel) has
+    // taken before its core window exists (canvas -> { token, method }); `_doubleWarned`:
+    // canvases already warned about, so a page calling add*() per render warns once.
+    this._claims = new Map();
+    this._doubleWarned = new WeakSet();
     this._globalOverlays = new Set(); // page-global overlays excluded from EVERY window
     // el -> Set(window) currently excluding it. Isolation (will-change) is a GLOBAL
     // property of the element while exclusion is PER-WINDOW, so the promotion has to
@@ -633,6 +1016,9 @@ class Inline3D {
     // `viewRig` always holds what the page asked for, untouched).
     this._stereoCollapsed = false;
     this._displayListeners = new Map(); // event type -> Set(callback), for on()/off()
+    // wall.displayInfo: the last getDisplayInfo() answer this document read (any window, any
+    // caller), else the last one this origin stored, else null. See _noteDisplayInfo.
+    this._displayInfo = readCachedDisplayInfo();
     this._primedDisplayState = false;
     // ── the eased 2D<->3D transition (opts.modeSwitch) ───────────────────────────────
     // The collapse above is a LATCH; what actually reaches each layer is that latch turned into a
@@ -651,6 +1037,25 @@ class Inline3D {
     this._msArmedUp = false; // a ->3D request went out; the up-ramp waits for the panel to say 3D
     this._msLastMs = null; // wall clock of the previous advance (null = the ramp has not ticked)
     this._msTick = null; // the frames-stopped fallback timer; see _armModeSwitchTick
+    // ── tracking state (see TRACKING_EVENT) ───────────────────────────────────────────
+    // Read once here so `wall.trackingState` is honest before any event arrives. A page can open
+    // with nobody in front of the display, and that is a starting value, not a CHANGE, so nothing
+    // is emitted for it. A browser without the attribute reads null and stays 'unknown'.
+    this._trackingSupported = readTrackingState(session) !== null;
+    this._trackingState = this._trackingSupported ? readTrackingState(session) : 'unknown';
+    // What to do to image/video windows while nobody is tracked. 'none' is the default so every
+    // page that predates the option renders bit-identically (and MANAGED displays need nothing).
+    this._untrackedFallback = untrackedFallback === 'mono' ? 'mono' : 'none';
+    // ── untrackedFallback:'mono' — baked stereo eased to flat (see _trackBakedStereo) ───────
+    // An image/video tile's stereo is in its source pixels, so neither the rig collapse above nor
+    // the runtime's own easing of the views can reach it. 0..1 = how much of that baked disparity
+    // to show, eased toward the target the tracking state sets, over the mode switch's duration.
+    this._bakedStereo = 1;
+    this._bakedTarget = 1;
+    this._bakedAt = null; // frame time (ms) of the last ease step
+    this._bakedEaseS =
+      (Number.isFinite(msOpts.durationMs) ? Math.max(0, msOpts.durationMs) : MODE_SWITCH_DEFAULT_DURATION_MS) / 1000;
+    this._applyUntrackedTarget(); // a page that opens with nobody tracked starts heading flat
     // Undock capabilities, refreshed off the first live layer (see _refreshUndock). Null is the
     // load-bearing value: it means this browser has no XRDisplayLayer.undock at all.
     this.undock = hasUndock() ? { model: false, splat: false } : null;
@@ -680,10 +1085,27 @@ class Inline3D {
     liveManager = this;
     session.addEventListener('end', () => this._teardown());
     this._bindDisplayEvents();
+    this._bindTrackingEvents();
     this._scanChrome(); // page chrome usually exists before the session does
     this._bindLifecycle();
     this._armDprWatch();
     this._requestFrame();
+  }
+
+  /**
+   * The panel, SYNCHRONOUSLY: the last getDisplayInfo() answer this document read, else the one
+   * the last page on this origin read (frozen, `cached: true`), else null. For sizing the first
+   * woven frames: sceneBufferSize(canvas, { viewScale: wall.displayInfo }) in the same task as
+   * addScene. The SDK reads it on the first live layer, so it is current within a few frames.
+   */
+  get displayInfo() {
+    return this._displayInfo;
+  }
+
+  _noteDisplayInfo(r) {
+    if (!r || typeof r !== 'object') return;
+    this._displayInfo = r;
+    writeCachedDisplayInfo(r);
   }
 
   /** Number of windows whose weave layer is currently live (on-screen in lazy mode). */
@@ -816,15 +1238,25 @@ class Inline3D {
    * @param {number} [opts.cornerRadius=0]  round each eye's corners in buffer px (CSS
    *        border-radius can't: it would round the packed SBS square's outer corners and
    *        come out lopsided after the eye-split).
+   * @param {'auto'|'off'|{color?:string, snapshot?:boolean}} [opts.rectCover='off']  (every add*())
+   *        cover the canvas across a later move/resize until rewoven() settles (where the browser
+   *        reports wovenState: only while the tile is out of the weave); see _rectCoverCheck.
    * @param {number} [opts.feather=0]  fade each eye's outer edges to transparent over this
    *        many buffer px, so the 3D window dissolves into the page instead of ending at a
    *        hard rectangle. Same reason CSS can't do it: a mask/filter on the canvas applies
    *        across the packed SBS pair, so each eye would get an inner fade along the split
    *        line and only half its outer edge.
+   * @param {boolean} [opts.viewerIndependent=true]  (every add*()) declare that this window's
+   *        picture is the same wherever the viewer stands, so the browser may locate it for the
+   *        display's nominal viewer and no viewer tracker (webcam) starts for it. Default `true`
+   *        for `addImage`/`addVideo`, `false` for `addScene`. Advisory; see
+   *        `handle.setViewerIndependent()`.
    * @returns {{remove():void}}
    */
   addImage(canvas, source, opts = {}) {
+    this._warnDoubleAttach(canvas, 'addImage', opts._dxrClaim);
     const win = this._register(canvas, 'image', opts);
+    win.method = 'addImage';
     win.ready = loadImage(source).then((img) => {
       win.img = img;
       win.repaint();
@@ -840,7 +1272,9 @@ class Inline3D {
    * @returns {{remove():void}}
    */
   addVideo(canvas, video, opts = {}) {
+    this._warnDoubleAttach(canvas, 'addVideo', opts._dxrClaim);
     const win = this._register(canvas, 'video', opts);
+    win.method = 'addVideo';
     win.video = video;
     return this._handle(canvas, win);
   }
@@ -869,6 +1303,14 @@ class Inline3D {
    *        falls back to `virtualDisplayHeight` if one was given (that pair is the one reason
    *        to pass both) — either way the window still weaves.
    * @param {Element} [opts.observe=canvas]  element whose visibility gates lazy create/close.
+   * @param {boolean} [opts.viewerIndependent=false]  declare that this scene's picture does NOT
+   *        depend on where the viewer stands (rare for a scene: e.g. a canvas that only plays a
+   *        pre-rendered stereo pair). See `handle.setViewerIndependent()`. `addImage`/`addVideo`
+   *        default to `true`.
+   * @param {(box:{width:number, height:number, dpr:number}) => void} [opts.onResize]  called
+   *        inside the ResizeObserver callback when the canvas's CSS box or dpr changes, i.e.
+   *        before the paint: resize your backing store and draw one frame here and the old store
+   *        is never shown stretched onto the new box. Only on a real change; errors are caught.
    * @param {() => void} [opts.onLayerLost]  called once when this window's weave layer goes away
    *        for good — the session ended, or the layer could not be created. YOU own a scene
    *        canvas's pixels, so this is the SDK's only way to tell you that the side-by-side pair
@@ -881,11 +1323,89 @@ class Inline3D {
     // The rig and the height describe the same one slot in the layer init, so warn where a
     // caller has said it twice — silently dropping one of two things the page explicitly asked
     // for is how a scene ends up framed at a scale nobody chose.
+    this._warnDoubleAttach(canvas, 'addScene', opts._dxrClaim);
     if (opts.viewRig && opts.virtualDisplayHeight !== undefined) noteRigWinsOverHeight();
     const win = this._register(canvas, 'scene', { virtualDisplayHeight: 0.24, ...opts });
+    win.method = 'addScene';
     win.onFrame = onFrame;
     win.ownsBuffer = false; // the app sizes a scene canvas; we never touch canvas.width/height
+    // The SDK's own renderers (./viewer, ./splat, ./model) clamp their buffers before sizing and
+    // say so, so the core never inspects (or creates!) their GL context — see _checkSceneBuffer.
+    if (opts.bufferClamped === true) win.warnedBufMismatch = true;
+    // The page-owned store's SHAPE is checked every stereo frame (_checkSceneStore); the SDK's
+    // renderers size their own and are left alone.
+    win.storeCheck = opts.bufferClamped !== true;
     return this._handle(canvas, win);
+  }
+
+  // ── double-attach detection ───────────────────────────────────────────────────────────
+  //
+  // A second add*() on a canvas that is still registered closes its layer and builds a new one: a
+  // fresh identity gap (rule 2), and for ./splat and ./model a second renderer on the same
+  // context. A kiosk demo attached its stage twice per screen visit this way without noticing.
+  // The SDK says so, once per canvas, and then does exactly what it always did: a WARNING, so no
+  // page changes behavior (a page that re-adds to swap pictures keeps working).
+
+  /** The live registration on `canvas` other than the one `token` belongs to: its method, or null. */
+  _liveRegistration(canvas, token) {
+    const claim = this._claims.get(canvas);
+    if (claim && claim.token !== token) return claim.method;
+    const win = this._windows.get(canvas);
+    return win ? win.method || 'add*' : null;
+  }
+
+  _warnDoubleAttach(canvas, method, token) {
+    const live = this._liveRegistration(canvas, token);
+    if (!live || this._doubleWarned.has(canvas)) return;
+    this._doubleWarned.add(canvas);
+    console.warn(
+      `[inline3d] ${method}() on a canvas that is already registered on this inline-3D session ` +
+        `(by ${live}(), not yet removed). This call is rebuilding the canvas's layer (a fresh ` +
+        '0.4-1.2 s identity gap) or putting a second renderer on its context. Change what is IN ' +
+        'the canvas instead (setSource, your onFrame, a redrawn source canvas), or call ' +
+        'handle.remove() on the first registration first. (Warned once per canvas.)',
+      canvas
+    );
+  }
+
+  /**
+   * For the scene subpath entries (via guardedAttach in ./inline3d-splat-shared.js), which build
+   * their renderer BEFORE the core window exists, so the core's own check would come too late.
+   * Warns on a live registration, then claims the canvas for this call either way: returns
+   * `{ opts, own }` — attach with `opts` (it carries the claim token down to this entry's own
+   * addScene, which then does not warn a second time), then `own(handle)`. A nested entry
+   * (./model's engine:'three' route calls ./model/three's addModel) inherits the claim.
+   */
+  _attachGuard(canvas, method, opts = {}) {
+    const claim = this._claims.get(canvas);
+    if (opts && opts._dxrClaim && claim && claim.token === opts._dxrClaim) return { opts, own: () => {} };
+    this._warnDoubleAttach(canvas, method, null);
+    const token = {};
+    return { opts: { ...opts, _dxrClaim: token }, own: (out) => this._claim(canvas, method, out, token) };
+  }
+
+  /**
+   * Remember that a subpath handle holds `canvas` until that handle's remove() (the latest call
+   * wins). The adapters REASSIGN `out.remove` when their module loads, so the release rides an
+   * accessor that wraps whatever is assigned.
+   */
+  _claim(canvas, method, out, token) {
+    if (!this._running || !out || typeof out !== 'object') return;
+    const claim = { token, method };
+    this._claims.set(canvas, claim);
+    let impl = out.remove;
+    const remove = (...args) => {
+      if (this._claims.get(canvas) === claim) this._claims.delete(canvas);
+      return typeof impl === 'function' ? impl.apply(out, args) : undefined;
+    };
+    Object.defineProperty(out, 'remove', {
+      configurable: true,
+      enumerable: true,
+      get: () => remove,
+      set: (fn) => {
+        impl = fn;
+      },
+    });
   }
 
   /**
@@ -901,6 +1421,7 @@ class Inline3D {
    * 3D per-pixel, so exclude()/unexclude() are stored-and-ignored (see _applyExclusion).
    */
   _handle(canvas, win) {
+    const mgr = this; // for the getters below: an object-literal getter's `this` is the handle
     return {
       remove: () => this._remove(canvas),
       exclude: (el) => {
@@ -940,9 +1461,79 @@ class Inline3D {
        * asked for. During the eased 2D<->3D transition the same applies with a FRACTION in place
        * of the 0: what leaves for the layer is your rig scaled by `wall.modeSwitch.factor`.
        */
+      /** The manager's `trackingState`, on the tile handle too ('tracking' | 'searching' | 'unknown'). */
+      get trackingState() {
+        return mgr._trackingState;
+      },
       setViewRig: (rig) => {
         win.viewRig = rig || null;
+        // One-time console warnings for a rig that looks like a mistake (convergence at infinity,
+        // factors > 1, a FOV in degrees). Read only: the rig goes out exactly as given.
+        if (rig) warnViewRigOnce(win.rigWarned, rig);
+        // One-time console.info when a camera rig orbits a fixed point (a subject viewer that
+        // would sit better on a display rig). Read only, like the warnings above.
+        if (rig) noteCameraRigOrbit(win.orbitHint, rig);
         return this._pushViewRig(win);
+      },
+      /** Whether this window is declared viewer-independent (see setViewerIndependent). */
+      get viewerIndependent() {
+        return win.viewerIndependent;
+      },
+      /**
+       * Declare whether this window's picture depends on where the viewer stands (runtime
+       * XR_DXR_display_info v25). `true` for content rendered from a fixed image pair (a stereo
+       * photo or video, a flat UI); `false` for a live 3D scene. While everything the foreground
+       * tab shows is viewer-independent the browser locates for the display's nominal viewer, so
+       * no viewer tracker (a webcam) starts for it. Advisory only — nothing the SDK paints changes.
+       * Returns whether a LIVE layer took it; the value is stored either way and builds the next
+       * layer, and a browser without the capability just never receives it.
+       */
+      setViewerIndependent: (flag) => {
+        win.viewerIndependent = flag === true;
+        const layer = win.layer;
+        if (!layer || typeof layer.setViewerIndependent !== 'function') return false;
+        try {
+          layer.setViewerIndependent(win.viewerIndependent);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      /**
+       * Runtime ADR-046 Amendment 4: the depth under the pointer for THIS window, forwarded to its
+       * live layer's `setCursorDepth` — `{ disparityPx, u, v }` (device px between the outermost
+       * views, < 0 in front, RAW content disparity; u/v element-normalised, v down; no
+       * `disparityPx` = nothing 3D there), or nothing / null to withdraw. Returns whether a live
+       * layer took it. The depth cursors call this for you under `cursor: 'depth'`.
+       */
+      setCursorDepth: (depth) => {
+        const layer = win.layer;
+        if (!layer || typeof layer.setCursorDepth !== 'function') return false;
+        try {
+          if (depth) layer.setCursorDepth(depth);
+          else layer.setCursorDepth();
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      /**
+       * "runtime" when the browser AND the runtime draw this window's cursor (the page then supplies
+       * only the depth, setCursorDepth); "none" otherwise — including no live layer yet, so ask
+       * again later. Never rejects.
+       * @returns {Promise<'runtime'|'none'>}
+       */
+      getCursorDepthSupport: () => {
+        const layer = win.layer;
+        if (!layer || typeof layer.getCursorDepthSupport !== 'function') return Promise.resolve('none');
+        try {
+          return Promise.resolve(layer.getCursorDepthSupport()).then(
+            (s) => (s === 'runtime' ? 'runtime' : 'none'),
+            () => 'none',
+          );
+        } catch {
+          return Promise.resolve('none');
+        }
       },
       /**
        * The panel this window is weaving on: physical size in metres, pixel size, and the view
@@ -956,6 +1547,24 @@ class Inline3D {
        * @returns {Promise<object|null>}
        */
       getDisplayInfo: () => this._layerCall(win, 'getDisplayInfo', 'getDisplayInfo()'),
+      /**
+       * This window in PHYSICAL units: the canvas's size in metres, metres per CSS px, the panel,
+       * the nominal viewer distance and the eye separation — from getDisplayInfo(), with every
+       * value that could not be measured filled from a stated default (see `source`). Never
+       * rejects: no display API, no live layer, no glasses-free display all resolve the defaults.
+       * The canvas size is re-read at each call (call it again after a resize).
+       *
+       * @returns {Promise<object>}
+       */
+      displayMetrics: async () => {
+        let info = null;
+        try {
+          info = await this._layerCall(win, 'getDisplayInfo', 'getDisplayInfo()');
+        } catch {
+          /* no display API / no live layer: the defaults */
+        }
+        return displayMetricsFrom(info, canvas.getBoundingClientRect(), globalThis.devicePixelRatio || 1);
+      },
       /**
        * Every rendering mode the runtime can put this display in, as reported by the runtime:
        * `{modeIndex, modeName, viewCount, viewScaleX, viewScaleY, tileColumns, tileRows,
@@ -1063,16 +1672,39 @@ class Inline3D {
       onDisplayModeChange: (cb) => this._onDisplayModeChange(cb),
       // Read-only counters, for pages that want to see the load-induced mono fallback rather
       // than wait for a bug report about "blinking". Scene windows only; 0/0 elsewhere.
-      stats: () => ({ frames: win.frames, monoFrames: win.monoFrames }),
+      // Plus (web#278) the scene's frame clock — interval and callback-time percentiles, the
+      // display rate when the session reports one, and the `paced` hint. Never changes behaviour.
+      stats: () => this._sceneStats(win),
+      /**
+       * The browser's own report for this window's layer, read live: 'pending' | 'woven' |
+       * 'withheld', or null on a browser that does not report it (the attribute is absent: mac,
+       * Linux, Android, Windows builds without it). 'pending' too while the window has no live
+       * layer (lazy, scrolled away), matching what the browser says of a closed layer. For
+       * diagnostics and pages; firstWoven/rewoven already settle on it.
+       */
+      get wovenState() {
+        if (!hasWovenState()) return null;
+        if (!win.layer) return 'pending';
+        return readWovenState(win.layer);
+      },
+      /** The browser's why-token while `wovenState` is 'withheld' (e.g. 'no-identity'), else null. */
+      get withheldReason() {
+        if (!hasWovenState() || !win.layer) return null;
+        return readWovenState(win.layer) === 'withheld' ? readWithheldReason(win.layer) : null;
+      },
       /**
        * Resolves ONCE, never rejects: `{ woven, confirmed, reason, ms }`.
        *
        * `woven: true` — the window has drawn a stereo frame on a layer that has existed for
        * `firstWovenHoldMs` (default 1200). That is the moment to drop a poster covering the
-       * canvas. `confirmed` is `false` today, always: no browser reports when its compositor
-       * actually joined a canvas, so this is the browser's worst case, measured by the SDK so
-       * pages stop measuring it themselves. It becomes a reported fact (`confirmed: true`, no
-       * hold) when a browser can say so, with no change to the page.
+       * canvas. On a browser without `XRDisplayLayer.wovenState` this is the browser's worst
+       * case, measured by the SDK (`confirmed: false`, reason 'hold-elapsed'). On one that has it,
+       * it is the browser's report: `confirmed: true`, reason 'woven', on the first 'woven' read
+       * once a stereo frame is drawn, with no hold. Same page code on both.
+       *
+       * On the report, a layer that stays 'withheld' still settles after a cap (four holds, at
+       * least 4.8 s): `woven: false, confirmed: true, reason: <withheldReason>` (or 'pending').
+       * That is a level, not a loss: the canvas is NOT taken flat, and `rewoven()` keeps working.
        *
        * `woven: false` — this window will not weave: `reason` is `'layer-failed'`,
        * `'session-ended'` or `'removed'`. The SDK has already taken an image/video canvas flat,
@@ -1102,6 +1734,27 @@ class Inline3D {
           live = false;
         };
       },
+      /**
+       * {@link firstWoven}, measured from NOW: resolves once this canvas, as it is at the call,
+       * has drawn a stereo frame and then held for `firstWovenHoldMs`. For a canvas that is
+       * already woven but whose rect is about to change (fullscreen, a layout resize): the
+       * browser re-registers the moved rect and the same identity gap as a fresh canvas
+       * applies, so cover the canvas across the change and release on this. A change of the
+       * canvas's CSS size, devicePixelRatio or page position (since 1.38: a moved canvas goes
+       * through the same gap; document scroll is not a move) while it is pending restarts the
+       * hold (checked every frame, for every window kind), and it settles
+       * anyway with `reason: 'hold-capped'` four holds after the call, so a size that never stops
+       * animating cannot keep a cover up. Calling it again while pending returns the same
+       * promise, restarted. Before the first join it IS `firstWoven`; on a window that will not
+       * weave it resolves that `woven: false` result. Same shape, never rejects.
+       *
+       * On a browser with `XRDisplayLayer.wovenState` it settles on the report (`confirmed: true`,
+       * reason 'woven'): on a 'woven' read that follows a 'withheld'/'pending' read seen after the
+       * call, or three session frames after the last box change, so a stale 'woven' from the old
+       * rect never settles it. The cap stays: a layer that never leaves 'withheld' settles `woven:
+       * false, confirmed: true, reason: <withheldReason>` four holds after the call.
+       */
+      rewoven: () => this._rewoven(win),
     };
   }
 
@@ -1136,6 +1789,22 @@ class Inline3D {
    * The hardware display state as last REPORTED by `hardwaredisplaystatechange` — `'2d'`,
    * `'3d'`, or `null` when the browser has not said yet. Never what was last requested.
    */
+  /**
+   * Is anyone being tracked in front of this display right now?
+   *
+   *   `'tracking'`   a viewer is in the display's 3D zone.
+   *   `'searching'`  the runtime's derived isTracking is FALSE — nobody is in the zone, or the
+   *                  display is in an untracked / 2D mode. NOT "the tracker glitched".
+   *   `'unknown'`    this browser has no tracking-state surface, or the session has ended.
+   *
+   * Mirrors `session.trackingState` as last read. Changes arrive as
+   * `on('trackingstatechange', (state, ev) => …)`. Pages use it for "step back into view" hints;
+   * `untrackedFallback: 'mono'` uses it to flatten image/video windows.
+   */
+  get trackingState() {
+    return this._trackingState;
+  }
+
   get hardwareDisplayState() {
     return this._hardwareDisplayState;
   }
@@ -1276,6 +1945,29 @@ class Inline3D {
    * rejected promise is what a page can actually handle.
    */
   _layerCall(win, method, label, args = []) {
+    if (method === 'getDisplayInfo') {
+      // One read in flight per layer: the SDK's own first-layer read (wall.displayInfo) and a
+      // page's call made at the same time share it rather than asking the browser twice.
+      const layer = win && win.layer;
+      if (layer && win.diPending && win.diPending.layer === layer) return win.diPending.p;
+      const p = this._layerCallRaw(win, method, label, args).then(
+        (r) => {
+          if (win && win.diPending && win.diPending.p === p) win.diPending = null;
+          this._noteDisplayInfo(r);
+          return r;
+        },
+        (e) => {
+          if (win && win.diPending && win.diPending.p === p) win.diPending = null;
+          throw e;
+        },
+      );
+      if (layer) win.diPending = { layer, p };
+      return p;
+    }
+    return this._layerCallRaw(win, method, label, args);
+  }
+
+  _layerCallRaw(win, method, label, args = []) {
     if (!hasDisplayModes()) {
       return Promise.reject(
         new Error(
@@ -1296,12 +1988,103 @@ class Inline3D {
         )
       );
     }
+    // A layer that has not delivered a frame yet answers getDisplayInfo() with null and
+    // getRenderingModes() with an empty list, and null is documented as "no glasses-free
+    // display". A page that asks right after add*() (the natural place) would be told there is
+    // no display. So wait for this layer's release signal (see _tickLayerFramed) and ask then.
+    // Capped at the first-woven cap, so a layer that never frames still answers (null/empty, as
+    // a real absence). Re-entered after the wait: the layer may have closed (-> the rejection
+    // above) or been rebuilt (-> wait for the new one) meanwhile.
+    const deferred = LAYER_CALLS_AFTER_FIRST_FRAME.has(method);
+    if (deferred && !win.layerFramed && this._layerReadPending(win)) {
+      return this._whenLayerFramed(win).then(() => this._layerCallRaw(win, method, label, args));
+    }
     // Wrapped so a SYNCHRONOUS throw from the browser (requestRenderingMode raises TypeError
     // that way for a non-2-view mode) arrives as a rejection like every other failure.
+    let p;
     try {
-      return Promise.resolve(win.layer[method](...args));
+      p = Promise.resolve(win.layer[method](...args));
     } catch (e) {
       return Promise.reject(e);
+    }
+    if (!LAYER_READS_RETRIED_WHEN_EMPTY.has(method) || !this._layerReadPending(win)) return p;
+    // Released, but not answered for real yet on this layer. The weave session can trail the
+    // release signal, so a null / empty answer before the cap is "not ready", never returned:
+    // wait for the next release signal (the next 'woven' read, or the next stereo frame) and ask
+    // again. The first real answer marks the layer answered, and later calls go straight through.
+    const layer = win.layer;
+    return p.then((r) => {
+      if (win.layer !== layer) return r; // that layer's own answer; the window moved on
+      if (!isEmptyLayerAnswer(r)) {
+        win.lfAnswered = true;
+        return r;
+      }
+      if (!this._layerReadPending(win)) return r; // at the cap: null / [] is a real absence
+      return this._whenLayerFramed(win).then(() => this._layerCallRaw(win, method, label, args));
+    });
+  }
+
+  /** The first-frame wait cap: the first-woven cap (four holds, never under four default holds). */
+  _layerFramedCap(win) {
+    return REWOVEN_MAX_HOLDS * Math.max(win.fwHoldMs, FIRST_WOVEN_HOLD_MS);
+  }
+
+  /**
+   * Is a display read on `win` still owed a real answer by its current layer — not yet answered
+   * non-empty, and the cap not passed? (Whether it waits for the FIRST release is `layerFramed`.)
+   */
+  _layerReadPending(win) {
+    if (!win.layer || win.lfAnswered || win.lfCapped) return false;
+    if (nowMs() - win.lfAt >= this._layerFramedCap(win)) {
+      win.lfCapped = true;
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Resolves once `win`'s current layer has delivered its first frame, when the layer goes away
+   * or is rebuilt, or at the cap (measured from the layer's construction, as firstWoven's is).
+   * Never rejects. The cap is checked per session frame on the same clock as firstWoven, and
+   * backed by a real timer for a session whose frames have stopped altogether.
+   */
+  _whenLayerFramed(win) {
+    return new Promise((resolve) => {
+      const layer = win.layer;
+      const waiter = { resolve, timer: null };
+      const left = Math.max(0, this._layerFramedCap(win) - (nowMs() - win.lfAt));
+      waiter.timer = setTimeout(() => {
+        const i = win.framedWaiters.indexOf(waiter);
+        if (i >= 0) win.framedWaiters.splice(i, 1);
+        if (win.layer === layer) win.lfCapped = true;
+        resolve();
+      }, left);
+      if (waiter.timer && typeof waiter.timer.unref === 'function') waiter.timer.unref();
+      win.framedWaiters.push(waiter);
+    });
+  }
+
+  /**
+   * Per session frame, after the draw, until the current layer has framed and while reads wait.
+   * The release signal: where the browser reports `wovenState`, a 'woven' read (a 'withheld'
+   * read right after construction comes before the weave session can answer, so it does not
+   * count); elsewhere, a frame once this layer has carried a stereo frame (the firstWoven signal,
+   * with no hold). Every such frame releases the waiting reads, so a read that came back empty
+   * is asked again on the next one. Capped at _layerFramedCap from the layer's construction.
+   */
+  _tickLayerFramed(win) {
+    const ws = win.wsLive ? readWovenState(win.layer) : null;
+    if (ws ? ws === 'woven' : win.lfStereo) this._noteLayerFramed(win, true);
+    else if (win.framedWaiters.length && !this._layerReadPending(win)) this._noteLayerFramed(win, false);
+  }
+
+  /** The layer framed (mark = true), or went away / capped (false): release every waiting read. */
+  _noteLayerFramed(win, mark = true) {
+    if (mark) win.layerFramed = true;
+    const ws = win.framedWaiters.splice(0);
+    for (const w of ws) {
+      clearTimeout(w.timer);
+      w.resolve();
     }
   }
 
@@ -1711,13 +2494,20 @@ class Inline3D {
     });
   }
 
-  /** Deliver one normalised display event to every listener. A throwing page handler is contained. */
-  _emitDisplay(ev) {
+  /**
+   * Deliver one normalised event to every listener. A throwing page handler is contained.
+   *
+   * `args` overrides what the callback is CALLED with (the event object still selects the listener
+   * set): `trackingstatechange` leads with the state string, because a page listening to it wants
+   * the one value and not a wrapper.
+   */
+  _emitDisplay(ev, args) {
     const set = this._displayListeners.get(ev.type);
     if (!set) return;
+    const argv = args || [ev];
     for (const cb of [...set]) {
       try {
-        cb(ev);
+        cb(...argv);
       } catch (err) {
         console.error(`[inline3d] ${ev.type} listener threw`, err);
       }
@@ -1725,14 +2515,18 @@ class Inline3D {
   }
 
   /**
-   * Listen for `renderingmodechange` / `hardwaredisplaystatechange` on this manager. See the
-   * handle's `on()` doc for the payload shapes. Returns an unsubscribe function.
+   * Listen for `renderingmodechange` / `hardwaredisplaystatechange` / `trackingstatechange` on
+   * this manager. See the handle's `on()` doc for the payload shapes — the tracking callback is
+   * handed the STATE STRING first: `(state, { type, state })`. Returns an unsubscribe function.
+   *
+   * Subscribing to `trackingstatechange` on a browser with no tracking state is legal and silent:
+   * the listener is kept, nothing fires it, and `trackingState` stays 'unknown'.
    */
   on(type, cb) {
     if (typeof cb !== 'function') throw new TypeError('[inline3d] on() takes (type, function).');
-    if (!DISPLAY_EVENTS.includes(type)) {
+    if (!MANAGER_EVENTS.includes(type)) {
       throw new TypeError(
-        `[inline3d] on() knows ${DISPLAY_EVENTS.join(' / ')}, got ${JSON.stringify(type)}.`
+        `[inline3d] on() knows ${MANAGER_EVENTS.join(' / ')}, got ${JSON.stringify(type)}.`
       );
     }
     let set = this._displayListeners.get(type);
@@ -1789,11 +2583,14 @@ class Inline3D {
   _register(canvas, kind, opts) {
     if (this._windows.has(canvas)) this._remove(canvas);
     // Own compositing layer: makes the canvas a distinct quad the weave can track. Harmless
-    // when the compositor would have promoted it anyway.
-    canvas.style.willChange = 'transform';
-    canvas.style.transform = 'translateZ(0)';
+    // when the compositor would have promoted it anyway. The page's own inline values are kept
+    // on the window and put back when it is removed or the session ends (_restoreCanvasStyle).
+    const priorStyle = { willChange: canvas.style.willChange || '', transform: canvas.style.transform || '' };
+    canvas.style.willChange = PROMOTE_WILL_CHANGE;
+    canvas.style.transform = PROMOTE_TRANSFORM;
     const win = {
       canvas,
+      priorStyle,
       kind,
       layer: null,
       img: null,
@@ -1805,6 +2602,12 @@ class Inline3D {
       // therefore already fail to build its layer) inside this call.
       onLayerLost: typeof opts.onLayerLost === 'function' ? opts.onLayerLost : null,
       layerLostSent: false,
+      // Scene windows only (addScene's `onResize`): called inside the ResizeObserver callback, so
+      // a page-drawn window can resize its store and draw before the paint. Read here for the same
+      // reason as onLayerLost: a non-lazy window starts its size watch inside this call.
+      onResize: kind === 'scene' && typeof opts.onResize === 'function' ? opts.onResize : null,
+      resizeBox: null,
+      inResize: false,
       ready: null,
       ownsBuffer: kind !== 'scene',
       cornerRadius: opts.cornerRadius || 0,
@@ -1817,6 +2620,22 @@ class Inline3D {
       // and rebuilds layers behind the page's back: a tile that scrolls away and back would
       // otherwise silently revert to the default display rig mid-scene.
       viewRig: opts.viewRig || null,
+      // Does this window's picture depend on where the viewer stands? A still or video stereo
+      // pair does not (default true for 'image'/'video'); a live scene does (default false — look-
+      // around is the point). Declared to the browser, never enforced: the SDK paints the same
+      // pixels either way. Kept on the window, like viewRig, so a lazily rebuilt layer gets it.
+      // One exception to the image/video default: under `untrackedFallback: 'mono'` the page has
+      // asked to follow the viewer's tracking state, and a viewer-independent page locates for no
+      // viewer, so its tracking state would never move. An explicit option still wins.
+      viewerIndependent:
+        opts.viewerIndependent === undefined
+          ? kind !== 'scene' && this._untrackedFallback !== 'mono'
+          : opts.viewerIndependent === true,
+      // Which one-time rig warnings this window has given (setViewRig / opts.viewRig), and
+      // whether its 'withheld' reason has been logged. Diagnostics only.
+      rigWarned: new Set(),
+      orbitHint: {},
+      warnedWithheld: false,
       // The automatic 1-view collapse (the latch itself is manager-wide — the mode is the
       // display's, not this window's). `stereoSaved` records the factors in force when the panel
       // went flat, for diagnostics; the restore just re-pushes `viewRig`, which the flattening
@@ -1840,6 +2659,8 @@ class Inline3D {
       // onFrame deliveries; monoFrames counts the ones that carried fewer than two views.
       frames: 0,
       monoFrames: 0,
+      // web#278: interval/callback-time rings for stats(); allocated once, written per delivery.
+      clock: kind === 'scene' ? createFrameClock() : null,
       // handle.firstWoven (web#36 follow-up). One-shot per window: `fwResult` is the settled
       // value, null while pending. `fwLayerAt` is when the CURRENT layer was built (null = none);
       // `fwStereo` whether that layer has since carried a real stereo frame. _activate resets both
@@ -1853,10 +2674,61 @@ class Inline3D {
       fwRegAt: nowMs(),
       fwLayerAt: null,
       fwStereo: false,
+      // The scene store's shape (_checkSceneStore): wrong now, stereo frames drawn wrong (ever),
+      // and when / at which session frame it last became right after being wrong (null = never
+      // wrong on this layer). firstWoven waits while it is wrong and holds from storeOkAt.
+      storeCheck: false,
+      storeWrong: false,
+      storeBadFrames: 0,
+      storeOkAt: null,
+      storeOkFrame: null,
+      // handle.rewoven(): null, or the pending { promise, resolve, calledAt, at, stereo, box } —
+      // firstWoven's two halves again, counted from the call (and from each later box change).
+      rw: null,
+      rwGone: null, // the reason this window will never weave again, once one arrived
+      // Whether the CURRENT layer is on a browser that reports `wovenState` (set per layer in
+      // _activate). False keeps firstWoven/rewoven on the hold, exactly as before the report.
+      wsLive: false,
+      // The rect cover (opts.rectCover; see _rectCoverCheck), or null when off.
+      rc: null,
+      // Display reads wait for the current layer's first frame (see _layerCall). `layerFramed`:
+      // its release signal has been seen; `lfAnswered`: a read got a real (non-empty) answer from
+      // it; `lfStereo`: it has carried a stereo frame; `lfAt`: when it was built; `lfCapped`: the
+      // wait cap ran out for it; `framedWaiters`: reads queued meanwhile.
+      layerFramed: false,
+      lfAnswered: false,
+      lfStereo: false,
+      lfAt: 0,
+      lfCapped: false,
+      framedWaiters: [],
     };
+    const rcCfg = resolveRectCover(opts.rectCover);
+    if (rcCfg) {
+      // box: the last key seen (null = not looked yet); el: the cover element, made on first use;
+      // up: showing; snapped/snapWanted: this cycle's one snapshot; waiting: the rewoven promise
+      // that takes it down; w/h: the CSS box at the last look (the snapshot's source aspect).
+      // armed/armedAt/changeFrame: the report path's episode (see _rectCoverFollowReport) — open
+      // from a change until a 'woven' read is about the new rect, when it started, and the session
+      // frame of its last change.
+      win.rc = {
+        cfg: rcCfg,
+        box: null,
+        el: null,
+        up: false,
+        snapped: false,
+        snapWanted: false,
+        waiting: null,
+        w: 0,
+        h: 0,
+        armed: false,
+        armedAt: 0,
+        changeFrame: null,
+      };
+    }
     win.fwPromise = new Promise((resolve) => {
       win.fwResolve = resolve;
     });
+    if (win.viewRig) warnViewRigOnce(win.rigWarned, win.viewRig); // as handle.setViewRig: read only
     this._windows.set(canvas, win);
     if (this._lazy && this._observer) {
       this._observer.observe(win.observeEl);
@@ -1873,6 +2745,24 @@ class Inline3D {
     this._deactivate(win);
     this._windows.delete(canvas);
     this._settleFirstWoven(win, false, 'removed');
+    this._dropCover(win);
+    this._restoreCanvasStyle(win);
+  }
+
+  /**
+   * Undo _register's compositing promotion on a window's canvas, restoring the inline
+   * `will-change` / `transform` the page had (which may be none), the way _unpromote does for an
+   * isolated element. A property the page has rewritten since is the page's and is left alone.
+   * One-shot per registration.
+   */
+  _restoreCanvasStyle(win) {
+    const prior = win.priorStyle;
+    if (!prior) return;
+    win.priorStyle = null;
+    const style = win.canvas && win.canvas.style;
+    if (!style) return;
+    if (style.willChange === PROMOTE_WILL_CHANGE) style.willChange = prior.willChange;
+    if (style.transform === PROMOTE_TRANSFORM) style.transform = prior.transform;
   }
 
   _onIntersect(entries) {
@@ -1919,6 +2809,10 @@ class Inline3D {
         : win.virtualDisplayHeight > 0
           ? { virtualDisplayHeight: win.virtualDisplayHeight }
           : {};
+      // Only offered to a browser that knows the member (same reasoning as the rig): an older
+      // one ignores an unknown dictionary member anyway, but keeping the init byte-identical
+      // there keeps what an older browser sees exactly what it saw before.
+      if (hasViewerIndependent()) init.viewerIndependent = win.viewerIndependent;
       win.layer = new XRDisplayLayer(this.session, win.canvas, init);
     } catch (err) {
       win.layer = null;
@@ -1946,7 +2840,19 @@ class Inline3D {
     if (!win.fwResult) {
       win.fwLayerAt = nowMs();
       win.fwStereo = false;
+      win.storeWrong = false;
+      win.storeOkAt = null;
+      win.storeOkFrame = null;
     }
+    win.wsLive = hasWovenState();
+    // A new layer has delivered nothing yet (see _layerCall). Reads queued on the previous one
+    // were released by _deactivate and re-enter against this one.
+    win.layerFramed = false;
+    win.lfAnswered = false;
+    win.lfStereo = false;
+    win.lfCapped = false;
+    win.lfAt = nowMs();
+    this._restartRewoven(win);
     win.layerLostSent = false; // a live layer again: a future loss is worth reporting again
     // Nothing about the hardware state is re-asserted here, and that is the point: the panel's
     // mode is the DISPLAY's, it survives a tile scrolling away, and this SDK never requests it
@@ -1958,6 +2864,13 @@ class Inline3D {
     // with the panel already flat, and the rig has to be collapsed for that too — and (b) what
     // this build can undock. Both best-effort and unawaited: they run inside the scroll-driven
     // activation path and must never break it.
+    // (c) The panel's view scale, for wall.displayInfo — so a page sizing its next store has it.
+    if (!this._primedDisplayInfo && hasDisplayModes()) {
+      this._primedDisplayInfo = true;
+      this._layerCall(win, 'getDisplayInfo', 'getDisplayInfo()').catch(() => {
+        this._primedDisplayInfo = false;
+      });
+    }
     if (!this._primedDisplayState && hasDisplayModes()) {
       this._primedDisplayState = true; // one attempt per manager, not one per activation
       this._getRenderingModes(win).catch(() => {
@@ -1987,6 +2900,7 @@ class Inline3D {
   }
 
   _deactivate(win) {
+    this._noteLayerFramed(win, false); // queued display reads re-check and fail as before
     this._stopOverlayScan(win);
     this._stopSizeWatch(win);
     if (win.layer) {
@@ -2240,17 +3154,168 @@ class Inline3D {
     win.autoExcluded.clear();
   }
 
-  /** The per-eye buffer size this window should have right now (explicit, or box × dpr). */
-  _eyeSize(win) {
+  /**
+   * The per-eye buffer size this window should have right now: explicit, or box × dpr — capped
+   * at the SOURCE's own per-eye resolution for image and video windows.
+   *
+   * WHY THE CAP (measured, NP02J tablet, DisplayXR Browser 1.0.6): the player sample's 90vw
+   * tile at dpr 2 asked for a 4608×1296 backing store for a 640×360-per-eye clip — 13× the
+   * source's pixels, re-drawn every frame. The page fell to 25 fps and dropped 47 of 97 video
+   * frames; the same clip in a 45vw tile (2304×648) ran at 57 fps with 0 dropped. Drawing a
+   * source into a buffer larger than itself adds no detail: the compositor scales the layer to
+   * the box either way, so upscaling here only spends GPU fill-rate. The cap keeps the BOX
+   * aspect (the eyes stay correctly shaped) and only shrinks, never grows past box × dpr.
+   * An explicit {width, height} is the page's call and is never capped by the source.
+   *
+   * THEN THE DEVICE LIMIT, on every window including an explicit size: the whole store (2 × eye
+   * wide in SBS) must fit min(MAX_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE, MAX_VIEWPORT_DIMS), or
+   * the weave cannot take it as one texture. An Android 3D tablet (Adreno 740) reports 4096 where
+   * desktops report 16384. Both axes shrink by one factor (./inline3d-buffer-limit.js), warned
+   * once per window. `win.bufScale` records the total shrink so buffer-px decoration
+   * (cornerRadius, feather) keeps its on-screen size.
+   */
+  _eyeSize(win, sbs = true) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    return {
-      w: win.reqW || Math.round((win.canvas.clientWidth || 256) * dpr),
-      h: win.reqH || Math.round((win.canvas.clientHeight || 256) * dpr),
-    };
+    let w = win.reqW || Math.round((win.canvas.clientWidth || 256) * dpr);
+    let h = win.reqH || Math.round((win.canvas.clientHeight || 256) * dpr);
+    let scale = 1;
+    const eye = !win.reqW && !win.reqH && this._sourceEyeSize(win);
+    if (eye) {
+      // The smallest buffer that still holds every source pixel along the axis that fills the box.
+      const s = Math.max(eye.w / w, eye.h / h);
+      if (s < 1) {
+        scale = s;
+        w = Math.max(1, Math.round(w * s));
+        h = Math.max(1, Math.round(h * s));
+      }
+    }
+    const c = clampEyeBuffer(w, h, probeBufferLimits(), { cols: sbs ? 2 : 1 });
+    if (c.clamped) {
+      scale *= c.scale;
+      w = c.eyeW;
+      h = c.eyeH;
+      if (!win.warnedBufClamp) {
+        win.warnedBufClamp = true;
+        console.warn(clampWarning('[inline3d]', c));
+      }
+    }
+    win.bufScale = scale;
+    return { w, h };
+  }
+
+  /** One eye of an image/video window's source (an SBS pair: left eye = left half), or null. */
+  _sourceEyeSize(win) {
+    if (win.kind !== 'video' && win.kind !== 'image') return null;
+    const src = win.kind === 'video' ? win.video : win.img;
+    if (!src) return null;
+    const sw = src.videoWidth || src.naturalWidth || src.width;
+    const sh = src.videoHeight || src.naturalHeight || src.height;
+    if (!(sw > 1) || !(sh > 0)) return null;
+    return { w: sw / 2, h: sh };
+  }
+
+  /**
+   * A scene canvas is the app's to size, so the core cannot clamp it — but it can SEE the browser
+   * clamp it. Where the store exceeds the device's MAX_TEXTURE_SIZE (4096 on an Adreno 740 tablet)
+   * the drawing buffer silently comes out smaller than canvas.width, while getViewport() keeps
+   * splitting canvas.width: the eye boundary lands off-centre and the panel shows a double image.
+   * Say so once. ./viewer, ./splat and ./model clamp before sizing and never trip this.
+   *
+   * Only called after the app's onFrame has run a stereo frame. For a page that draws there, the
+   * canvas already HAS its context: getContext() of the same type returns it, of another type
+   * returns null. NOT for an engine that boots asynchronously (PlayCanvas: the onFrame runs, draws
+   * nothing, the device is created later). There getContext() here CREATES the context — with the
+   * default attributes, antialias:true among them — and the engine's own getContext() then gets
+   * that one back, its attributes ignored: a multisampled default framebuffer the engine never
+   * asked for, which its MSAA resolve cannot blit into (GL_INVALID_OPERATION, nothing drawn —
+   * every addModel tile, 1.28.0–1.32.0). The SDK's renderers opt out (`bufferClamped`); a page
+   * with an async engine should create its context before addScene.
+   */
+  _checkSceneBuffer(win) {
+    const c = win.canvas;
+    if (!c || typeof c.getContext !== 'function') return;
+    if (win.sceneGl === undefined) {
+      let gl = null;
+      try {
+        gl = c.getContext('webgl2') || c.getContext('webgl');
+      } catch {
+        gl = null;
+      }
+      win.sceneGl = gl && typeof gl.drawingBufferWidth === 'number' ? gl : null;
+    }
+    if (!win.sceneGl) return;
+    const b = bufferScale(c, win.sceneGl);
+    if (b.mismatch) {
+      win.warnedBufMismatch = true;
+      console.warn(
+        mismatchWarning(
+          '[inline3d]',
+          c,
+          b,
+          'getViewport() splits canvas.width, so the eyes are off-centre in the woven buffer. This ' +
+            'scene canvas is sized by the page: keep 2 × eye width and the height within ' +
+            'MAX_TEXTURE_SIZE / MAX_RENDERBUFFER_SIZE / MAX_VIEWPORT_DIMS, or map getViewport() onto ' +
+            'gl.drawingBufferWidth/Height.',
+        ),
+      );
+    }
+  }
+
+  /**
+   * The SHAPE of a woven, page-sized scene store, every stereo frame: each eye tile must have the
+   * canvas box's aspect. The usual failure is a store still sized for flat (1:1 to the box) on
+   * the first woven frames, because the page resized it after an await or in a later rAF: each
+   * eye then shows half the scene, which reads as broken 3D until the resize lands.
+   *
+   * A warning and a count, nothing else — the store is the page's, and it is never resized here.
+   * firstWoven waits while it is wrong (see _tickFirstWoven), so a page that reveals on it hides
+   * those frames.
+   */
+  _checkSceneStore(win, views) {
+    const c = win.canvas;
+    const bw = c.clientWidth || 0;
+    const bh = c.clientHeight || 0;
+    if (!(bw > 0 && bh > 0 && c.width > 0 && c.height > 0) || !views || !views.length) return;
+    let vp = null;
+    try {
+      vp = win.layer.getViewport(views[0]);
+    } catch {
+      vp = null;
+    }
+    if (!vp || !(vp.width > 0 && vp.height > 0)) return;
+    if (!storeShapeOk(vp.width, vp.height, bw, bh)) {
+      win.storeBadFrames++;
+      win.storeWrong = true;
+      if (!win.warnedStoreShape) {
+        win.warnedStoreShape = true;
+        const mono = storeShapeOk(c.width, c.height, bw, bh);
+        console.warn(
+          `[inline3d] this woven scene canvas's store is ${c.width}×${c.height}, so each eye tile is ` +
+            `${vp.width}×${vp.height}, but the canvas box is ${bw}×${bh}: ` +
+            (mono
+              ? 'the store is still shaped for FLAT, so each eye shows half the scene. '
+              : 'the eye tiles do not have the box aspect, so each eye is stretched. ') +
+            'Size it for side-by-side before the first woven frame, in the same task as addScene ' +
+            '(sceneBufferSize(canvas, { sbs: true, viewScale: wall.displayInfo })), never after an ' +
+            'await or in a later rAF. firstWoven waits until it is right.',
+          c,
+        );
+      }
+    } else if (win.storeWrong) {
+      win.storeWrong = false;
+      win.storeOkAt = nowMs();
+      win.storeOkFrame = this._frameCount;
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug(
+          `[inline3d] scene store now ${c.width}×${c.height}, eye tiles match the box; ` +
+            `${win.storeBadFrames} stereo frame(s) so far were drawn into a wrong-shaped store.`,
+        );
+      }
+    }
   }
 
   _sizeBuffer(win, sbs) {
-    const { w: boxW, h: boxH } = this._eyeSize(win);
+    const { w: boxW, h: boxH } = this._eyeSize(win, sbs);
     win.eyeW = boxW;
     win.eyeH = boxH;
     win.canvas.width = sbs ? boxW * 2 : boxW; // SBS = two eye tiles wide
@@ -2270,11 +3335,46 @@ class Inline3D {
   _startSizeWatch(win) {
     if (typeof ResizeObserver !== 'function') return;
     if (win.sizeObserver) return;
+    if (win.kind === 'scene') {
+      // The SDK never sizes a scene canvas; it only hands the page the moment to (opts.onResize).
+      if (!win.onResize) return;
+      win.resizeBox = sceneBoxOf(win.canvas);
+      win.sizeObserver = new ResizeObserver(() => this._onSceneResize(win));
+      win.sizeObserver.observe(win.canvas);
+      return;
+    }
     // Scene canvases are the app's (ownsBuffer false) — never touch their width/height.
     // An explicit {width, height} is box-independent by definition, so nothing to watch.
     if (!win.ownsBuffer || (win.reqW && win.reqH)) return;
     win.sizeObserver = new ResizeObserver(() => this._onBoxChange(win));
     win.sizeObserver.observe(win.canvas);
+  }
+
+  /**
+   * addScene's `onResize(box)`, run INSIDE the ResizeObserver callback. That callback runs after
+   * the frame's animation callbacks and before its paint, so a page that resizes its store and
+   * draws here never shows the old backing store stretched onto the new box for a frame — which
+   * is what deferring to the next animation frame shows. Only on a real change of the CSS box or
+   * dpr (an observer fires on plenty that moves neither), never re-entrantly, and a throw is
+   * contained and warned about once: this is a browser callback and must not take the page down.
+   */
+  _onSceneResize(win) {
+    if (!win.layer || !win.onResize || win.inResize) return;
+    const box = sceneBoxOf(win.canvas);
+    const last = win.resizeBox;
+    if (last && last.width === box.width && last.height === box.height && last.dpr === box.dpr) return;
+    win.resizeBox = box;
+    win.inResize = true;
+    try {
+      win.onResize(box);
+    } catch (err) {
+      if (!win.resizeThrewWarned) {
+        win.resizeThrewWarned = true;
+        console.warn("[inline3d] a scene window's onResize threw; further throws from it are silent.", err);
+      }
+    } finally {
+      win.inResize = false;
+    }
   }
 
   _stopSizeWatch(win) {
@@ -2297,8 +3397,12 @@ class Inline3D {
       if (!win.resizePending) return;
       win.resizePending = false;
       if (!win.layer || !win.ownsBuffer) return;
+      // The on-screen box and the buffer are separate questions since the source cap (#88): a
+      // box that moves (fullscreen) re-joins the weave at a new rect even when a capped buffer
+      // stays the same size, so a pending rewoven() restarts on the BOX, not on the buffer.
+      this._noteRewovenBox(win);
       const { w, h } = this._eyeSize(win);
-      if (w === win.eyeW && h === win.eyeH) return; // observer fired, geometry didn't move
+      if (w === win.eyeW && h === win.eyeH) return; // observer fired, the buffer didn't move
       this._sizeBuffer(win, /*sbs*/ true);
       this._paint(win, null); // repaint NOW: setting canvas.width cleared the buffer
     };
@@ -2310,7 +3414,8 @@ class Inline3D {
    * devicePixelRatio is invisible to ResizeObserver — a browser zoom or a move to a
    * different-scale monitor leaves the CSS box the same number of CSS px while the buffer
    * that box deserves changes. A `(resolution: Ndppx)` query flips exactly when dpr leaves
-   * its current value, so arm one, and re-arm it on the new value each time.
+   * its current value, so arm one, and re-arm it on the new value each time. Buffer-owning
+   * windows re-derive their buffer; scene windows get their onResize(box) (it compares dpr).
    */
   _armDprWatch() {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
@@ -2324,7 +3429,13 @@ class Inline3D {
     const onChange = () => {
       if (!this._running) return;
       this._armDprWatch(); // this query is stale the moment it fires
-      for (const win of this._windows.values()) if (win.layer) this._onBoxChange(win);
+      // A scene window's buffer is the page's (ownsBuffer false, so _onBoxChange ignores it):
+      // its onResize(box) is the only way the page hears of a dpr-only change (web#267).
+      for (const win of this._windows.values()) {
+        if (!win.layer) continue;
+        if (win.kind === 'scene') this._onSceneResize(win);
+        else this._onBoxChange(win);
+      }
     };
     try {
       q.addEventListener('change', onChange);
@@ -2373,22 +3484,110 @@ class Inline3D {
     const srcW = src.videoWidth || src.naturalWidth || src.width;
     const srcH = src.videoHeight || src.naturalHeight || src.height;
     if (!srcW || !srcH) return;
+    // The buffer is capped at the source's per-eye resolution (_eyeSize), and a source's size is
+    // only known once it has decoded — or changes on a new title. Re-derive on a change; the
+    // resize clears the buffer, and the paint right below refills it.
+    const srcKey = srcW + 'x' + srcH;
+    if (win.srcKey !== srcKey) {
+      win.srcKey = srcKey;
+      if (win.ownsBuffer && !(win.reqW && win.reqH)) {
+        const { w, h } = this._eyeSize(win, win.sbs);
+        if (w !== win.eyeW || h !== win.eyeH) this._sizeBuffer(win, win.sbs);
+      }
+    }
+    // cornerRadius / feather are buffer px at the UNCAPPED size; keep their on-screen size.
+    const k = win.bufScale || 1;
+    const radius = win.cornerRadius * k;
+    const feather = win.feather * k;
     ctx.clearRect(0, 0, c.width, c.height);
     if (!win.sbs) {
       // Flat fallback: left eye only, stretched to the square buffer.
-      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, c.width, c.height, win.cornerRadius, win.feather);
+      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, c.width, c.height, radius, feather);
       return;
     }
     const halfDst = c.width / 2;
+    // How much of the source's baked disparity to show: the eased 2D<->3D ramp (the mode) and
+    // the runtime's tracking state (_trackBakedStereo), whichever is flatter. Below 1 the RIGHT half becomes
+    // the left eye with the right eye blended over it, so 0 is the left eye in both halves —
+    // flat, and still a valid SBS pair for the live layer (a 1:1 mono buffer here would be woven
+    // as a squeezed pair). See _trackBakedStereo.
+    const stereo = Math.min(this._stereoFactor, this._bakedStereo);
+    if (stereo < 1) {
+      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, halfDst, c.height, radius, feather); // L
+      drawEyeBlend(ctx, src, srcW / 2, srcH, halfDst, c.height, stereo, radius, feather); // L+R
+      return;
+    }
     // A single stretched draw maps SBS source → SBS buffer (left→left, right→right); the
     // per-eye path is only needed to bake decoration (rounded corners / edge feather), which
     // MUST be applied to each eye separately — see drawEye/featherEye.
-    if (win.cornerRadius > 0 || win.feather > 0) {
-      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, halfDst, c.height, win.cornerRadius, win.feather); // L
-      drawEye(ctx, src, srcW / 2, 0, srcW / 2, srcH, halfDst, 0, halfDst, c.height, win.cornerRadius, win.feather); // R
+    if (radius > 0 || feather > 0) {
+      drawEye(ctx, src, 0, 0, srcW / 2, srcH, 0, 0, halfDst, c.height, radius, feather); // L
+      drawEye(ctx, src, srcW / 2, 0, srcW / 2, srcH, halfDst, 0, halfDst, c.height, radius, feather); // R
     } else {
       ctx.drawImage(src, 0, 0, srcW, srcH, 0, 0, c.width, c.height);
     }
+  }
+
+  /**
+   * Subscribe to `trackingstatechange`, once per manager, and only where the ATTRIBUTE exists: the
+   * event is payload-free, so a browser that fired it without `session.trackingState` would leave
+   * nothing to read. Independent of `_bindDisplayEvents` — a browser may ship them in either order.
+   */
+  _bindTrackingEvents() {
+    const session = this.session;
+    if (!session || typeof session.addEventListener !== 'function') return;
+    if (!this._trackingSupported) return;
+    session.addEventListener(TRACKING_EVENT, () => {
+      this._setTrackingState(readTrackingState(session) || 'unknown'); // READ, never parse
+    });
+  }
+
+  /**
+   * Adopt a new tracking state: act on it first (the fallback target, so a listener sees the state
+   * it is told about already in effect), then tell the page. On CHANGE only — a repeated state is
+   * not an event, and the value read at construction is a starting value, not a change.
+   */
+  _setTrackingState(state) {
+    const next = TRACKING_STATES.includes(state) ? state : 'unknown';
+    if (next === this._trackingState) return;
+    this._trackingState = next;
+    this._applyUntrackedTarget();
+    const ev = { type: TRACKING_EVENT, state: next };
+    this._emitDisplay(ev, [next, ev]);
+  }
+
+  /**
+   * Where baked stereo is heading under `untrackedFallback`. `'none'`: always the full pair.
+   * `'mono'`: `'searching'` heads to flat, `'tracking'` back; `'unknown'` (no display yet, the
+   * first frame, a session that ended) leaves it where it is — never read as flat.
+   */
+  _applyUntrackedTarget() {
+    if (this._untrackedFallback !== 'mono') {
+      this._bakedTarget = 1;
+      return;
+    }
+    if (this._trackingState === 'searching') this._bakedTarget = 0;
+    else if (this._trackingState === 'tracking') this._bakedTarget = 1;
+  }
+
+  /**
+   * One frame of the baked-stereo ease (untrackedFallback:'mono'): toward the target the tracking
+   * state set, at a rate that
+   * crosses 0..1 in the mode switch's duration, so an untracked flatten looks like a page-requested
+   * 2D switch. Scene tiles are not involved — they render from the views, which the runtime
+   * eases itself.
+   */
+  _trackBakedStereo(t) {
+    // `trackingState` is filled in on every frame; reading it here as well as on the event keeps
+    // the state right even if an event was coalesced away. Emits only on a real change.
+    if (this._trackingSupported) this._setTrackingState(readTrackingState(this.session) || 'unknown');
+    const dt = this._bakedAt === null || !Number.isFinite(t) ? 0 : Math.max(0, (t - this._bakedAt) / 1000);
+    this._bakedAt = Number.isFinite(t) ? t : this._bakedAt;
+    const cur = this._bakedStereo;
+    const tgt = this._bakedTarget;
+    if (cur === tgt) return;
+    const step = this._bakedEaseS > 0 ? dt / this._bakedEaseS : 1;
+    this._bakedStereo = tgt > cur ? Math.min(tgt, cur + step) : Math.max(tgt, cur - step);
   }
 
   /**
@@ -2438,6 +3637,26 @@ class Inline3D {
     }
   }
 
+  /**
+   * handle.stats() for any window (web#12 counters + the web#278 frame clock). Image/video windows
+   * have no clock and report nulls. `displayHz` comes only from the session (XRSession.frameRate):
+   * a cadence estimate cannot tell a 30 Hz panel from a 60 Hz one delivering every second vsync,
+   * which is exactly the case this exists for, so the SDK does not guess.
+   */
+  _sceneStats(win) {
+    let hz = null;
+    try {
+      const r = this.session && this.session.frameRate;
+      if (Number.isFinite(r) && r > 0) hz = r;
+    } catch {
+      /* a session that throws on the read: unknown */
+    }
+    const c = win.clock
+      ? win.clock.read(hz)
+      : { frameIntervalMs: null, cbMs: null, frameClockSamples: 0, displayHz: hz, displayHzSource: hz === null ? null : 'session', paced: null };
+    return { frames: win.frames, monoFrames: win.monoFrames, ...c };
+  }
+
   _frame(t, f) {
     if (!this._running) return;
     this._requestFrame();
@@ -2447,8 +3666,11 @@ class Inline3D {
     this._advanceModeSwitch();
     const pose = this.refSpace ? f.getViewerPose(this.refSpace) : null;
     const views = pose ? pose.views : null;
+    this._trackBakedStereo(t);
     for (const win of this._windows.values()) {
       if (!win.layer) continue;
+      // Before the draw: a moved/resized canvas is covered before anything else happens to it.
+      if (win.rc) this._rectCoverCheck(win);
       if (win.kind === 'scene') {
         if (views && win.onFrame) {
           // Count the SHORT view lists and hand them over unchanged. Under GPU load the session
@@ -2461,6 +3683,7 @@ class Inline3D {
           // (a mono preview, say) must be allowed to. What the core owes you is VISIBILITY —
           // this is otherwise invisible from the page, since nothing throws and nothing logs.
           win.frames++;
+          if (win.clock) win.clock.tick(t, this._frameCount);
           if (views.length < 2) {
             win.monoFrames++;
             // 1-in-300 so a sustained rate is reported without the log itself becoming the load;
@@ -2478,11 +3701,19 @@ class Inline3D {
           // decoder that gives up) used to abort this loop body for every window AFTER it in the
           // map — and an un-redrawn canvas can have its layer dropped from the aggregated frame
           // (see the note below), so one broken tile took its neighbours' weave with it (web#28).
+          const cbAt = win.clock ? performance.now() : 0;
           try {
             win.onFrame(views, win.layer, f);
+            if (win.clock) win.clock.cb(performance.now() - cbAt);
             // A stereo frame the page drew without throwing. A short view list is the load
             // fallback (a mono frame), which is not what a poster is waiting for.
-            if (views.length >= 2) win.fwStereo = true;
+            if (views.length >= 2) {
+              win.fwStereo = true;
+              win.lfStereo = true;
+              if (!win.warnedBufMismatch) this._checkSceneBuffer(win);
+              if (win.storeCheck) this._checkSceneStore(win, views);
+              if (win.rw) win.rw.stereo = true;
+            }
           } catch (err) {
             if (!win.frameThrewWarned) {
               win.frameThrewWarned = true;
@@ -2503,10 +3734,21 @@ class Inline3D {
         this._paint(win, views);
         // An SBS paint with a real source behind it. Before the image has loaded (or while a
         // video has never had a frame) the tile holds nothing worth revealing yet.
-        if (win.sbs && (win.kind === 'video' ? ((win.video && win.video.readyState) || 0) >= 2 : !!win.img)) {
+        // A canvas source counts once it has pixels: an empty (0x0) buffer is a page that has not
+        // drawn its first frame yet (a camera view before the camera's first frame), and settling
+        // firstWoven on it reported a tile woven that had never shown anything.
+        if (win.sbs && (win.kind === 'video' ? ((win.video && win.video.readyState) || 0) >= 2 : sourceHasPixels(win.img))) {
           win.fwStereo = true;
+          win.lfStereo = true;
+          if (win.rw) win.rw.stereo = true;
         }
       }
+      // After the draw: the one snapshot of this cover cycle reads the frame just committed to
+      // the backing store, in the same task, which is the one moment a WebGL drawing buffer is
+      // guaranteed readable without preserveDrawingBuffer.
+      if (win.rc && win.rc.snapWanted) this._rectCoverSnap(win);
+      else if (win.rc && win.rc.up && win.rc.snapped && win.rc.cfg.live) this._rectCoverLive(win);
+      if (!win.layerFramed || win.framedWaiters.length) this._tickLayerFramed(win);
       this._tickFirstWoven(win);
     }
   }
@@ -2522,17 +3764,448 @@ class Inline3D {
    * which knows nothing about whether the compositor has matched this canvas yet.
    */
   _tickFirstWoven(win) {
+    // The browser's report, where it has one. An unreadable or out-of-contract value falls back
+    // to the hold for this frame rather than guessing.
+    const ws = win.wsLive && win.layer ? readWovenState(win.layer) : null;
+    if (ws) {
+      this._tickWovenState(win, ws);
+      return;
+    }
+    if (win.rw) {
+      // Every frame, for every window kind: the ResizeObserver only watches SDK-sized buffers, and
+      // no observer sees a dpr-only change.
+      this._noteRewovenBox(win);
+      const rw = win.rw;
+      const t = nowMs();
+      if (rw.stereo && t - rw.at >= win.fwHoldMs) this._settleRewoven(win, true, 'hold-elapsed');
+      // A box that never stops changing (a long CSS transition on width) would restart the hold
+      // forever and leave a cover up for good: once it has restarted, give up waiting
+      // REWOVEN_MAX_HOLDS holds after the call.
+      else if (rw.at > rw.calledAt && t - rw.calledAt >= REWOVEN_MAX_HOLDS * win.fwHoldMs) {
+        this._settleRewoven(win, true, 'hold-capped');
+      }
+    }
     if (win.fwResult || !win.fwStereo || win.fwLayerAt === null) return;
-    if (nowMs() - win.fwLayerAt < win.fwHoldMs) return;
+    const t = nowMs();
+    // A wrong-shaped store (see _checkSceneStore) is not "safe to reveal": wait for it, then run
+    // the whole hold from when it became right. Capped like every other wait, so a page that
+    // never fixes its store does not keep its cover up for good.
+    if (win.storeWrong) {
+      if (t - win.fwLayerAt >= this._layerFramedCap(win)) this._settleFirstWoven(win, true, 'store-capped');
+      return;
+    }
+    const from = win.storeOkAt !== null && win.storeOkAt > win.fwLayerAt ? win.storeOkAt : win.fwLayerAt;
+    if (t - from < win.fwHoldMs) return;
     this._settleFirstWoven(win, true, 'hold-elapsed');
   }
 
-  /** One-shot: the first call wins, later ones are ignored. */
-  _settleFirstWoven(win, woven, reason) {
+  /**
+   * firstWoven / rewoven on the browser's report (`wovenState`, see WOVEN_STATES). Per session
+   * frame, per live window, one attribute read.
+   *
+   * firstWoven: the first 'woven' read once the layer has carried a stereo frame — no hold.
+   *
+   * rewoven(): a 'woven' read is only trusted as the NEW rect's once it follows a 'withheld' or
+   * 'pending' read seen after the call (the rect left the weave and came back), or once
+   * WOVEN_STATE_LAG_FRAMES frames have passed since the last box change seen after the call (a
+   * move rejoined without a gap). A call that sees no box change and no gap settles on a 'woven'
+   * read WOVEN_STATE_LAG_FRAMES session frames after the call: the report is a live per-frame
+   * level trailing the join by at most that many frames, so such a read reflects the rect as it
+   * was at the call (the usual case: the page moved the canvas, THEN called rewoven()). Never on
+   * the frame of the call itself. Either way it needs a stereo frame since the last restart, as
+   * on the hold path.
+   *
+   * The cap stays, as a safety: the report is a level, and a layer that never leaves 'withheld'
+   * (a CSS effect on an ancestor, rule 7) must not hold a cover up for good. Four holds (never
+   * fewer than four default holds, so `firstWovenHoldMs: 0` does not mean "give up at once")
+   * after the call, it settles anyway: `woven: false` with the browser's reason while withheld,
+   * or `'hold-capped'` if the last read was 'woven' but never qualified.
+   */
+  _tickWovenState(win, state) {
+    const t = nowMs();
+    const cap = REWOVEN_MAX_HOLDS * Math.max(win.fwHoldMs, FIRST_WOVEN_HOLD_MS);
+    if (win.rw) {
+      this._noteRewovenBox(win); // first, so a change seen this frame is not credited to this read
+      const rw = win.rw;
+      if (state !== 'woven') rw.gap = true;
+      else if (
+        rw.stereo &&
+        (rw.gap ||
+          (rw.boxFrame !== null && this._frameCount - rw.boxFrame >= WOVEN_STATE_LAG_FRAMES) ||
+          (rw.boxFrame === null && this._frameCount - rw.callFrame >= WOVEN_STATE_LAG_FRAMES))
+      ) {
+        this._settleRewoven(win, true, 'woven', true);
+      }
+      if (win.rw && t - rw.calledAt >= cap) {
+        if (state === 'woven') this._settleRewoven(win, true, 'hold-capped', true);
+        else this._settleRewoven(win, false, readWithheldReason(win.layer) || state, true);
+      }
+    }
+    if (win.fwResult || win.fwLayerAt === null) return;
+    // The report trails the frame by a few frames, so a store that just became right is trusted
+    // only WOVEN_STATE_LAG_FRAMES later (an earlier 'woven' read can be of the wrong store).
+    const storeReady =
+      !win.storeWrong && (win.storeOkFrame === null || this._frameCount - win.storeOkFrame >= WOVEN_STATE_LAG_FRAMES);
+    if (win.fwStereo && state === 'woven' && storeReady) this._settleFirstWoven(win, true, 'woven', true);
+    else if (t - win.fwLayerAt >= cap) {
+      if (state === 'woven') this._settleFirstWoven(win, true, win.storeWrong ? 'store-capped' : 'hold-capped', true);
+      else this._settleFirstWoven(win, false, readWithheldReason(win.layer) || state, true);
+    }
+  }
+
+  /**
+   * One-shot: the first call wins, later ones are ignored. `confirmed` marks a result read off
+   * the browser's report; a confirmed `woven: false` is a capped 'withheld' level, which can still
+   * recover, so it is NOT a terminal "will not weave" and leaves rewoven() usable.
+   */
+  /**
+   * The browser REPORTED this layer withheld long enough to settle a firstWoven / rewoven on it:
+   * say why, once per window (the reason is otherwise only in the settled result). A console line,
+   * nothing else — the window keeps doing exactly what it did.
+   */
+  _noteWithheld(win, woven, reason, confirmed) {
+    if (woven || !confirmed || win.warnedWithheld || !reason || reason === 'pending' || reason === 'hold-capped') return;
+    win.warnedWithheld = true;
+    console.warn(`[inline3d] the browser withheld this canvas from the weave (${reason}): ${withheldReasonHint(reason)}.`, win.canvas);
+  }
+
+  _settleFirstWoven(win, woven, reason, confirmed = false) {
+    this._noteWithheld(win, woven, reason, confirmed);
+    // Every "will not weave" path lands here, so a pending rewoven() is released with it, and a
+    // later one answers at once (firstWoven may have settled woven:true long before).
+    if (!woven && !confirmed) {
+      if (!win.rwGone) win.rwGone = reason;
+      this._settleRewoven(win, false, reason);
+    }
     if (win.fwResult) return;
-    win.fwResult = Object.freeze({ woven, confirmed: false, reason, ms: Math.round(nowMs() - win.fwRegAt) });
+    win.fwResult = Object.freeze({ woven, confirmed, reason, ms: Math.round(nowMs() - win.fwRegAt) });
     win.fwResolve(win.fwResult);
     win.fwResolve = null;
+  }
+
+  /** handle.rewoven(): see the handle's doc comment. */
+  _rewoven(win) {
+    if (!win.fwResult) return win.fwPromise; // still on the first join: the same question
+    // A terminal no-weave answers at once. A CONFIRMED woven:false (the first join capped while
+    // the browser reported 'withheld') is a level that can recover, so it is measured again.
+    if (!win.fwResult.woven && !win.fwResult.confirmed) return Promise.resolve(win.fwResult);
+    if (win.rwGone) return Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: win.rwGone, ms: 0 }));
+    if (win.rw) {
+      this._restartRewoven(win);
+      return win.rw.promise;
+    }
+    let resolve;
+    const promise = new Promise((r) => {
+      resolve = r;
+    });
+    const t = nowMs();
+    // `gap` / `boxFrame` / `callFrame` are the wovenState path's (see _tickWovenState): a
+    // 'withheld'/'pending' read since the last restart, the session frame of the last box change
+    // (null = none), and the session frame the call was made in.
+    win.rw = {
+      promise,
+      resolve,
+      calledAt: t,
+      at: t,
+      stereo: false,
+      box: boxKeyOf(win.canvas),
+      gap: false,
+      boxFrame: null,
+      callFrame: this._frameCount,
+    };
+    return promise;
+  }
+
+  /** A pending rewoven() restarts when the canvas's CSS size or dpr differs from the last look. */
+  _noteRewovenBox(win) {
+    const rw = win.rw;
+    if (!rw) return;
+    const box = boxKeyOf(win.canvas);
+    if (box === rw.box) return;
+    rw.box = box;
+    this._restartRewoven(win);
+  }
+
+  /** The canvas moved again (a box change, a new layer): the hold starts over from here. */
+  _restartRewoven(win) {
+    if (!win.rw) return;
+    win.rw.at = nowMs();
+    win.rw.stereo = false;
+    win.rw.gap = false;
+    win.rw.boxFrame = this._frameCount;
+  }
+
+  _settleRewoven(win, woven, reason, confirmed = false) {
+    const rw = win.rw;
+    if (!rw) return;
+    this._noteWithheld(win, woven, reason, confirmed);
+    win.rw = null;
+    rw.resolve(Object.freeze({ woven, confirmed, reason, ms: Math.round(nowMs() - rw.calledAt) }));
+  }
+
+  // ── rect cover (opts.rectCover) ──────────────────────────────────────────────────────
+  //
+  // A canvas that is already woven and then moves or resizes goes back through the identity gap
+  // (rule 11): until the browser rejoins it at the new rect, the screen shows the page's own
+  // raster of it — black, or the squeezed pair. A kiosk demo that moves ONE woven canvas between
+  // screens measured 0.4-1.2 s of that, and every page that hit it hand-rolled the same cover.
+  // This is that cover, owned by the SDK: a sibling element over the canvas (never a second woven
+  // canvas: two 2:1 candidates in one region are refused as ambiguous, rule 6), raised on the
+  // frame the change is seen and cut when rewoven() settles.
+
+  /**
+   * Per frame, before the draw: has the box (size, dpr, page position) changed since the last look?
+   *
+   * Where the browser reports `wovenState`, the cover follows that report instead of the hold
+   * (_rectCoverFollowReport): a cover is only useful over a tile that is NOT in the weave. Over a
+   * tile the browser is still weaving it is worse than nothing, because it is part of the picture
+   * that gets woven: a 2D left eye, read as a side-by-side pair, puts each half of it, stretched
+   * twice as wide, into one eye (browser-pvt#364, a corner-drag resize on Windows, where the tile
+   * stays 'woven' through every step of the drag).
+   */
+  _rectCoverCheck(win) {
+    const rc = win.rc;
+    const ws = win.wsLive && win.layer ? readWovenState(win.layer) : null;
+    const key = boxKeyOf(win.canvas);
+    if (key !== rc.box) this._rectCoverChanged(win, key, ws);
+    if (ws && rc.armed) this._rectCoverFollowReport(win, ws);
+  }
+
+  /** The box changed this frame (@p ws: the browser's report this frame, or null where it has none). */
+  _rectCoverChanged(win, key, ws) {
+    const rc = win.rc;
+    const first = rc.box === null;
+    const prevW = rc.w;
+    const prevH = rc.h;
+    rc.box = key;
+    rc.w = win.canvas.clientWidth || 0;
+    rc.h = win.canvas.clientHeight || 0;
+    if (first) return; // the first look is the baseline, not a change
+    if (rc.up) this._placeCover(win); // already up: follow the canvas
+    // Before the first join the page's own poster covers the canvas (rule 5), and a window that
+    // will not weave has nothing to wait for. A confirmed withheld first result still covers.
+    const fw = win.fwResult;
+    if (!fw || win.rwGone || !(fw.woven || fw.confirmed)) return;
+    if (ws) {
+      // The report path: nothing is raised on the change itself. The episode stays open until a
+      // 'woven' read is about the new rect; a 'pending' / 'withheld' read inside it raises the cover.
+      if (!rc.armed) {
+        rc.armed = true;
+        rc.armedAt = nowMs();
+      }
+      rc.changeFrame = this._frameCount;
+      return;
+    }
+    if (!rc.up) {
+      if (!rc.snapped) rc.aspect = prevH > 0 ? prevW / prevH : 0; // what the eye looked like on screen
+      this._raiseCover(win);
+    }
+    if (rc.cfg.snapshot && !rc.snapped && rc.w > 0 && rc.h > 0) rc.snapWanted = true;
+    let p;
+    if (win.rw) {
+      this._noteRewovenBox(win); // a second change while pending restarts it
+      p = win.rw.promise;
+    } else {
+      p = this._rewoven(win);
+      if (win.rw) win.rw.boxFrame = this._frameCount; // the change was seen THIS frame
+    }
+    if (rc.waiting !== p) {
+      rc.waiting = p;
+      p.then(() => {
+        if (rc.waiting !== p) return;
+        rc.waiting = null;
+        this._lowerCover(win);
+      });
+    }
+  }
+
+  /**
+   * The report path, once per session frame while an episode is open (a change seen, no 'woven'
+   * read about the new rect yet):
+   *
+   * - 'woven': the tile is in the weave, so the cover comes down on this frame if it is up. The
+   *   report trails the weave by 1-3 frames (WOVEN_STATE_LAG_FRAMES), so a cover raised over a
+   *   rejoin shows woven for at most that long. The episode closes once the read is that many
+   *   frames past the last change: it is about the new rect.
+   * - 'pending' / 'withheld': the tile left the weave, and the page's own raster of it (black, or
+   *   the squeezed pair) is what is on screen. The cover goes up over it, as plain 2D.
+   *
+   * A layer that never comes back (a CSS effect on an ancestor, rule 7) must not keep a cover up
+   * for good: the same cap as rewoven()'s, from the start of the episode, lowers it and closes it.
+   */
+  _rectCoverFollowReport(win, ws) {
+    const rc = win.rc;
+    if (ws === 'woven') {
+      if (rc.up) this._lowerCover(win);
+      if (this._frameCount - rc.changeFrame >= WOVEN_STATE_LAG_FRAMES) rc.armed = false;
+      return;
+    }
+    const cap = REWOVEN_MAX_HOLDS * Math.max(win.fwHoldMs, FIRST_WOVEN_HOLD_MS);
+    if (nowMs() - rc.armedAt >= cap) {
+      if (rc.up) this._lowerCover(win);
+      rc.armed = false;
+      return;
+    }
+    if (rc.up) return;
+    // Raised a frame or more after the change, so the page has usually drawn at the new size by
+    // now: the snapshot crops from the buffer's own eye aspect rather than the old box's.
+    rc.aspect = 0;
+    this._raiseCover(win);
+    if (rc.cfg.snapshot && rc.w > 0 && rc.h > 0) rc.snapWanted = true;
+  }
+
+  _raiseCover(win) {
+    const rc = win.rc;
+    if (!rc.el) {
+      if (typeof document === 'undefined' || !document || typeof document.createElement !== 'function') return;
+      if (!win.canvas.parentElement) return;
+      const el = document.createElement('canvas');
+      el.setAttribute?.('aria-hidden', 'true');
+      if (el.dataset) el.dataset.inline3dCover = '';
+      const st = el.style;
+      st.position = 'absolute';
+      st.pointerEvents = 'none'; // the canvas under it keeps its input (orbit, clicks)
+      st.margin = '0';
+      st.border = '0';
+      st.padding = '0';
+      st.display = 'none';
+      // Stack with the canvas, not under it: a canvas the page raised gets the same z-index.
+      try {
+        const z = typeof getComputedStyle === 'function' ? getComputedStyle(win.canvas).zIndex : 'auto';
+        if (z && z !== 'auto') st.zIndex = z;
+      } catch {
+        /* no computed style: DOM order alone puts it on top */
+      }
+      rc.el = el;
+    }
+    this._placeCover(win);
+    rc.el.style.background = rc.cfg.color || coverFillBehind(win.canvas);
+    rc.el.style.display = 'block';
+    rc.up = true;
+    // Declared through the existing exclusion path. On a draw-order browser that is a no-op and
+    // the cover is crisp 2D anyway (it sits over the tile in draw order). On an older one the
+    // full-tile guard refuses it, on purpose: a congruent plate would stage the CANVAS as the
+    // overlay. Pre-marked as warned so the SDK's own cover does not trip the page-facing warning.
+    this._fullTileWarned.add(rc.el);
+    this._applyExclusion(win, rc.el);
+  }
+
+  /** Put the cover exactly over the canvas, as its next sibling (the canvas may have been re-parented). */
+  _placeCover(win) {
+    const rc = win.rc;
+    const el = rc.el;
+    const c = win.canvas;
+    if (!el) return;
+    const parent = c.parentElement;
+    if (parent && (el.parentElement !== parent || el.previousSibling !== c)) {
+      parent.insertBefore(el, c.nextSibling);
+    }
+    const st = el.style;
+    if (c.offsetParent) {
+      // Same containing block as the canvas (its offsetParent), so offsets are directly usable.
+      st.position = 'absolute';
+      st.left = `${c.offsetLeft}px`;
+      st.top = `${c.offsetTop}px`;
+      st.width = `${c.offsetWidth}px`;
+      st.height = `${c.offsetHeight}px`;
+    } else {
+      // A fixed canvas (no offsetParent): cover its viewport rect.
+      const r = c.getBoundingClientRect();
+      st.position = 'fixed';
+      st.left = `${r.left ?? r.x ?? 0}px`;
+      st.top = `${r.top ?? r.y ?? 0}px`;
+      st.width = `${r.width}px`;
+      st.height = `${r.height}px`;
+    }
+  }
+
+  /**
+   * The last frame, once per cover cycle: the LEFT eye of the side-by-side buffer, cover-fit into a
+   * 2D canvas the size of the new CSS box (CSS px, not device px: it is on screen for about a second
+   * and must not cost a full-resolution copy). The eye's on-screen aspect was the OLD box's (each
+   * eye is stretched to the box by the weave), so the crop is computed from that aspect, not from
+   * the buffer's. Never toDataURL: one drawImage, at this moment only. Any failure (a lost
+   * context, a tainted source) leaves the solid color.
+   */
+  _rectCoverSnap(win) {
+    const rc = win.rc;
+    rc.snapWanted = false;
+    const el = rc.el;
+    const src = win.canvas;
+    if (!el || !rc.up || !(src.width > 1) || !(src.height > 0)) return;
+    const bw = Math.max(1, Math.round(rc.w));
+    const bh = Math.max(1, Math.round(rc.h));
+    const target = bw / bh;
+    // A canvas that was hidden (0x0) before the change has no old box to read: the eye half of the
+    // buffer, still at its old size at this point, has the same aspect.
+    const aspect = rc.aspect > 0 ? rc.aspect : src.width / 2 / src.height;
+    let fw = 1;
+    let fh = 1;
+    if (target > aspect) fh = aspect / target; // wider box: keep the width, crop height
+    else fw = target / aspect; // taller box: keep the height, crop width
+    const sw = (src.width / 2) * fw;
+    const sh = src.height * fh;
+    const sx = (src.width / 2 - sw) / 2;
+    const sy = (src.height - sh) / 2;
+    try {
+      el.width = bw;
+      el.height = bh;
+      const ctx = el.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(src, sx, sy, sw, sh, 0, 0, bw, bh);
+      rc.snapped = true;
+    } catch {
+      /* the solid color stays */
+    }
+  }
+
+  /**
+   * A live cover (rectCover.live): after each draw while the cover is up, the left eye of the frame
+   * just committed, drawn into the cover at the CURRENT box. One drawImage at CSS px per frame, for
+   * the second or so the cover is up. The frame is rendered for the box it was drawn at, so it is
+   * drawn whole (no crop) — but only once the buffer matches the box (RECT_COVER_LIVE_ASPECT_TOL);
+   * before that the previous picture stays.
+   */
+  _rectCoverLive(win) {
+    const rc = win.rc;
+    const el = rc.el;
+    const src = win.canvas;
+    if (!el || !(src.width > 1) || !(src.height > 0) || !(rc.w > 0) || !(rc.h > 0)) return;
+    const eye = src.width / 2 / src.height;
+    const box = rc.w / rc.h;
+    if (Math.abs(eye / box - 1) > RECT_COVER_LIVE_ASPECT_TOL) return;
+    const bw = Math.max(1, Math.round(rc.w));
+    const bh = Math.max(1, Math.round(rc.h));
+    try {
+      if (el.width !== bw) el.width = bw;
+      if (el.height !== bh) el.height = bh;
+      const ctx = el.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(src, 0, 0, src.width / 2, src.height, 0, 0, bw, bh);
+    } catch {
+      /* the last picture stays */
+    }
+  }
+
+  _lowerCover(win) {
+    const rc = win.rc;
+    if (!rc) return;
+    rc.up = false;
+    rc.snapped = false; // the next cycle takes its own snapshot
+    rc.snapWanted = false;
+    if (!rc.el) return;
+    rc.el.style.display = 'none';
+    this._dropExclusion(win, rc.el);
+  }
+
+  /** remove() / session end: the cover leaves the DOM with its window. */
+  _dropCover(win) {
+    const rc = win.rc;
+    if (!rc) return;
+    rc.waiting = null;
+    this._lowerCover(win);
+    if (rc.el && rc.el.parentElement) rc.el.parentElement.removeChild(rc.el);
+    rc.el = null;
   }
 
   // ── page lifecycle: bfcache, freeze, restore (browser#87) ───────────────────────────
@@ -2667,8 +4340,16 @@ class Inline3D {
       this._paintMono(win);
       this._notifyLayerLost(win);
       this._settleFirstWoven(win, false, 'session-ended');
+      this._dropCover(win);
+      this._noteLayerFramed(win, false);
+      this._restoreCanvasStyle(win);
     }
     this._windows.clear();
+    this._claims.clear();
+    // Nobody is tracked through a session that has ended: say so ONCE, before the listeners are
+    // dropped, so a page that gated its UI on 'tracking' is released rather than left latched. A
+    // browser that never reported one is already 'unknown' and this is silent.
+    this._setTrackingState('unknown');
     // Page listeners go with the session that fed them: a manager whose session has ended will
     // never emit again, and holding the callbacks would keep the page's closures alive.
     this._displayListeners.clear();
@@ -2680,6 +4361,18 @@ class Inline3D {
 /** `firstWovenHoldMs`, validated: a finite number >= 0, else the default. */
 function firstWovenHold(v) {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : FIRST_WOVEN_HOLD_MS;
+}
+
+/**
+ * True when an image source has something to draw: a loaded image, a sized canvas or bitmap. A
+ * source that reports no size at all (a test double) keeps the old rule: present = drawable.
+ */
+function sourceHasPixels(src) {
+  if (!src) return false;
+  const w = src.naturalWidth ?? src.videoWidth ?? src.width;
+  const h = src.naturalHeight ?? src.videoHeight ?? src.height;
+  if (w === undefined && h === undefined) return true;
+  return w > 0 && h > 0;
 }
 
 function loadImage(source) {
@@ -2709,6 +4402,24 @@ function drawEye(ctx, src, sx, sy, sw, sh, dx, dy, dw, dh, radius, feather) {
   if (feather > 0) {
     featherEye(ctx, dx, dy, dw, dh, feather);
   }
+}
+
+// The right half of a partly flattened SBS paint: the LEFT eye, with the right eye over it at
+// `amount` (0 = left only). Clipped and feathered once, as one eye, for the same reason drawEye is.
+function drawEyeBlend(ctx, src, halfSrc, srcH, dx, dh, amount, radius, feather) {
+  ctx.save();
+  if (radius > 0 && ctx.roundRect) {
+    ctx.beginPath();
+    ctx.roundRect(dx, 0, dx, dh, radius);
+    ctx.clip();
+  }
+  ctx.drawImage(src, 0, 0, halfSrc, srcH, dx, 0, dx, dh);
+  if (amount > 0) {
+    ctx.globalAlpha = amount;
+    ctx.drawImage(src, halfSrc, 0, halfSrc, srcH, dx, 0, dx, dh);
+  }
+  ctx.restore();
+  if (feather > 0) featherEye(ctx, dx, 0, dx, dh, feather);
 }
 
 // Fade this EYE's outer edges to transparent, so the 3D window dissolves into the page

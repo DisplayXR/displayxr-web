@@ -1,0 +1,21 @@
+<!doctype html>
+<!-- TEST PAGE — an ordinary 2D page: 2,000 elements, no canvas, no engine, no timers, and no window
+     globals of its own (everything inside one IIFE). The sentinel-cost case loads it in product mode
+     and checks that the sentinel leaves nothing behind but its documented surface. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>plain 2000 (test)</title>
+<style>body{margin:0;font:12px sans-serif}.cell{display:inline-block;width:60px;height:14px;overflow:hidden}</style>
+</head><body>
+<main id="root"></main>
+<script>
+(() => {
+  const root = document.getElementById('root');
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < 1999; i++) {
+    const d = document.createElement(i % 3 ? 'div' : 'span');
+    d.id = 'e' + i; d.className = 'cell'; d.textContent = 'cell ' + i;
+    frag.appendChild(d);
+  }
+  root.appendChild(frag);
+})();
+</script>
+</body></html>

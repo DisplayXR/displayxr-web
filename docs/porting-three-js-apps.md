@@ -65,7 +65,7 @@ column as the shopping list.
 | `requestReferenceSpace('local-floor' \| 'local' \| 'bounded-floor')` | None. There is one space and you never ask for it | The canvas plane is world `z = 0` and the viewer is a few tens of cm in front of it. There is no room, no floor and no origin to negotiate. |
 | Locomotion by `getOffsetReferenceSpace(new XRRigidTransform(...).inverse)` — teleport, snap-turn, smooth locomotion | Move your camera | This is the single biggest simplification. Offset reference spaces exist because in a headset you cannot move the user's head, so you move the world under it. Here the "user" is a viewer sitting at a desk: the app camera is the viewpoint, you move it the way you did before WebXR, and you tell the runtime where it went with a **view rig**. Delete the rig object, the offset space, and the inverse-transform bookkeeping. |
 | `renderer.xr.getCamera()` → an `ArrayCamera` of two sub-cameras | Two `EyeCamera`s from `@displayxr/inline3d/three` | Same idea, explicit. `EyeCamera` has `matrixAutoUpdate` off and takes `projectionMatrix` + `transform.matrix` straight off the `XRView` — `setFromView` for a world pose, `setLocalFromView` for the [attach pattern](#the-attach-pattern-and-the-frame-of-lag). |
-| Controllers, hands, `XRInputSource`, `squeeze`/`select` events, gesture detection, haptics | None. Keyboard, mouse, touch, pointer events — exactly as on the flat page | An inline-3D session is **sensorless** apart from the eye tracking that drives the weave. There are no input sources to enumerate and no `inputsourceschange` to listen for. Everything that was gated on a controller needs a DOM-input equivalent, and everything you already had on the flat page still works because the canvas is still a normal element receiving normal events. |
+| Controllers, hands, `XRInputSource`, `squeeze`/`select` events, gesture detection, haptics | **Hands: the standard WebXR Hand Input, where the display has a hand tracker.** Controllers, `select`/`squeeze`, haptics: none — keyboard, mouse, touch, pointer events, exactly as on the flat page | From DisplayXR Browser 1.8.0 (Windows) an inline-3D session with a hand provider (an Ultraleap tracker today) exposes one `XRInputSource` per tracked hand — `handedness`, `targetRayMode: 'tracked-pointer'`, `profiles: ['generic-hand']`, a 25-joint `.hand` — fires `inputsourceschange` as hands appear and vanish, and answers `frame.fillPoses()` / `getJointPose()` against any reference space you requested; the joints arrive in the **same rig frame as the eye views**, so a joint drawn where the API puts it sits on the real hand. Three.js's `XRHandModelFactory` works on `session.inputSources` as-is; what does **not** exist is a primary action — no `selectstart`/`select`/`selectend` on a hand source, so pinch is computed from the joints (`@displayxr/inline3d/hands` does it: `watchHands`, `HandGestureController`, and `hands: true` on `addModel`/`addSplat` for pinch-to-orbit). Hands are gated per frame: `session.handInputWithheldReason` is `null` when they can be delivered, else why not (`'camera-rig'`, `'not-fullscreen'`, `'scaled-rig'`, …) — a camera-rig page gets none. Every other browser, and a DisplayXR Browser with no tracker, reports zero input sources, so the code path is the same as before: nothing to enumerate. Everything you gated on a controller still needs a DOM-input equivalent. |
 | `session.updateRenderState({ depthNear, depthFar })` | The same call, on `wall.session` | Unchanged, and still worth making: `XRView.projectionMatrix` is built with the session's near/far, so leaving them at the defaults while your app camera uses `0.05 / 100` gives every eye a different depth range than the one your scene was tuned for. Set them from your camera once the session is up, and again if you change them. |
 | Foveation, `framebufferScaleFactor` | Scale the **backing store** yourself | See [§4](#resize-and-quality-scaling). There is no runtime-owned framebuffer to ask for a scale factor; there is your canvas, and you choose how many device pixels it holds. |
 
@@ -192,20 +192,26 @@ camera's transform twice. Flip them together, in one function, or you will flip 
 The runtime's own rule:
 
 ```
-ipdFactor × metersToVirtual × convergenceDiopters × N ≤ 1        (N ≈ 0.5 m, nominal viewing distance)
+ipdFactor × metersToVirtual × convergenceDiopters × N ≤ 1        (N = the display's nominal viewing distance, 0.6 m on desktop panels)
 ```
 
 At `1` the viewer's eyes are parallel on infinitely distant content; **past 1 they diverge**, and
 nobody can fuse that. With a camera rig's defaults (`ipdFactor` 1, `metersToVirtual` 1) it reduces
-to *keep convergence past about 0.5 world units*.
+to *keep convergence past about N world units* (0.6 on a desktop panel).
 
 Which is why **the units your scene is authored in are now load-bearing**. On a camera rig
 `ipdFactor` and `metersToVirtual` are **absolute**, in your world units — a scene built in
 centimetres, or in "1 unit = 1 tile", sails past the comfort limit at every plausible convergence
-and there is no clue in the code that anything is wrong. Either author at metre scale, or set
-`metersToVirtual` to your units-per-metre and leave it there. Nothing in the SDK enforces the rule
-(the runtime clamps its own inputs, once, with a warning); `samples/camera-rig/` prints it live, and
-is the fastest way to develop an intuition for it.
+and there is no clue in the code that anything is wrong. Never rescale the world; set
+`metersToVirtual`: your units-per-metre when the world has a true scale, else `convergence / 2`
+(the subject declared 2 m away). Nothing enforces the rule (neither the SDK nor the runtime clamps
+a rig the page declares); `samples/camera-rig/` prints it live.
+
+That is a **ceiling**. The floor matters as much: **too little depth is a failure too**, and a
+ported world kept far inside the ceiling comes out flat. Converge on the subject, set
+`metersToVirtual` as above, then `ipdFactor` ≈ 1 for an open scene or most of
+`cameraRigComfortFactor(...)` for a bounded one —
+[authoring — Aim for real depth](authoring-inline-3d.md#aim-for-real-depth).
 
 ### Capability gate and fallback
 
@@ -293,7 +299,10 @@ function onFrame(views, layer) {
 }
 
 function replayLastGood() {
-  if (!haveGood) return;             // before the first good frame do NOTHING — not even clear
+  if (!haveGood) {                   // before the first good frame: still PRESENT a frame — an
+    renderer.clear();                // undrawn canvas can drop out of the weave. A cleared frame
+    return;                          // counts (the SDK's viewers draw the mono camera flat here).
+  }
   renderer.clear();
   renderer.setScissorTest(true);
   for (let i = 0; i < 2; i++) {
@@ -377,19 +386,48 @@ Two ordering rules around the swap:
 
 ### Resize and quality scaling
 
+Size the store with **`sceneBufferSize`** (core, 1.58.0+), not by hand. Pass it the display info
+once you have it, so each eye gets what a native DisplayXR app renders: **window device px ×
+the runtime's recommended view scale**.
+
 ```js
+import { sceneBufferSize } from '@displayxr/inline3d';
+
+let viewInfo = wall.displayInfo; // 1.59.0+: the last read on this origin, or null (fine)
 function sizeSBS() {
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.round(canvas.clientWidth * dpr * renderScale);
-  const h = Math.round(canvas.clientHeight * dpr * renderScale);
-  const bufW = woven ? w * 2 : w;                       // DOUBLE-WIDTH while woven, 1:1 in mono
+  const s = sceneBufferSize(canvas, { sbs: woven, viewScale: viewInfo, renderScale });
   const el = renderer.domElement;
-  if (el.width === bufW && el.height === h) return;     // observer fired, geometry didn't move
-  renderer.setSize(bufW, h, false);
-  appCam.aspect = w / h; appCam.updateProjectionMatrix();
-  replayLastGood();                                     // repaint NOW, not next frame
+  if (el.width === s.width && el.height === s.height) return; // observer fired, nothing moved
+  renderer.setSize(s.width, s.height, false);
+  appCam.aspect = s.eyeWidth / s.eyeHeight; appCam.updateProjectionMatrix();
+  replayLastGood();                                           // repaint NOW, not next frame
 }
+woven = true; sizeSBS();               // same task as addScene(), BEFORE its first frame
+const handle = wall.addScene(canvas, onXRFrame, { onResize: sizeSBS /* … */ });
+handle.getDisplayInfo().then((info) => { viewInfo = info; sizeSBS(); }).catch(() => {});
 ```
+
+**Size before the first woven frame.** The store must already be side-by-side when the layer
+delivers its first frame: size it in the same task as `addScene`, never after an `await` or in a
+later `requestAnimationFrame`. A store that is still shaped for flat (1:1 to the box) on those
+frames gives each eye half the scene, which reads as a broken 3D effect for the first moments of
+the app. The SDK checks the shape every stereo frame (1.59.0+): it warns once (`[inline3d] this
+woven scene canvas's store is …`), says in one `console.debug` line how many frames were wrong
+once it is right, and holds `firstWoven` until it is right, so a cover released on `firstWoven`
+hides those frames (capped: `reason: 'store-capped'` four holds in). It never resizes your store.
+A later step from the cached to the live view scale changes resolution only, never the image.
+
+**Why not `clientWidth × devicePixelRatio × 2`.** It is what a tablet forgives and a big panel
+does not. Measured on an 8K panel at 300% scaling (dpr 3, DisplayXR Browser 1.10.6): a full-screen
+canvas sized that way asked for **15360×4320** (66 Mpx). The browser silently shrank the drawing
+buffer to 10861×3054: Chromium caps a WebGL drawing buffer at 5760² px on every platform (no GL limit was hit: MAX_TEXTURE_SIZE was 16384), while
+`canvas.width` still said 15360. `getViewport()` splits `canvas.width`, so each eye was drawn
+off-centre and the panel showed both images in one eye. A native app on the same panel renders
+3840×2160 per view (window × view scale 0.5), a quarter of that: the weave cannot show more.
+`sceneBufferSize` gives exactly that with `viewScale`, and without it caps devicePixelRatio at 2
+and fits the store inside both the GL limits and the browser's area cap (warning once if it had
+to shrink). The SDK's `[inline3d] the browser clamped this canvas's drawing buffer…` console
+warning is this failure: treat it as a bug, not noise.
 
 Two rules, both learned the same way:
 
@@ -522,9 +560,10 @@ know:
   *there* and still measured — and it must be `display:none` **before** you register the tile. A
   start screen that fades out on `opacity` and a start screen that is `display:none` are the same
   picture and different weaves.
-- **No `backdrop-filter`** on anything that overlaps a tile, on either generation. It is by
-  definition a function of what is behind it, and what is behind it is the lens-interleaved buffer.
-  A near-solid background (`rgba(16,17,22,.92)`) reads much like a frosted panel.
+- **`backdrop-filter` over a tile only on DisplayXR Browser 0.1.16+**, and never over a whole
+  visible tile. It is by definition a function of what is behind it, and what is behind it is the
+  lens-interleaved buffer; from 0.1.16 the compositor draws the tile mono inside the frost rect.
+  On older browsers a near-solid background (`rgba(16,17,22,.92)`) reads much like a frosted panel.
 - **Never animate the canvas's own transform or size.** Not `transform: scale()`, not a width
   transition, not a CSS `filter`. A woven tile's rect reaches the compositor once per frame and the
   weave is computed for *that* rect; animate the element and the two disagree for the length of the
@@ -582,8 +621,12 @@ Browser, verify:
 6. **No raw-SBS drop when an overlay fades.** Trigger every full-bleed element you have — start
    screen, pause menu, modal — and watch the tile as it appears *and* as it goes. Two squished
    halves for a moment means the element is `opacity:0` rather than `display:none`.
-7. **Resize repaints.** Drag the window, zoom the browser, rotate the display, drag to a
-   different-DPI monitor. Any black flash is the no-op-resize clear from §4.
+7. **Resize repaints, and depth survives it.** Drag the window, zoom the browser, rotate the
+   display, drag to a different-DPI monitor. Any black flash is the no-op-resize clear from §4.
+   Then widen and narrow the window across every layout breakpoint and enter full screen: the
+   subject must stay on the glass, not sink or pop. A scene that recedes after a resize is a camera
+   rig's convergence lagging the camera; an orbit viewer belongs on a display rig posed at the
+   target ([which rig](authoring-inline-3d.md#which-rig--decide-by-what-the-user-moves-not-by-whether-you-hold-a-camera)).
 8. **No raw pair when the canvas first appears.** Navigate into the screen, several times, with
    the asset already cached (the fast case is the bad one). Two squeezed halves for up to a second
    means the canvas was revealed before the browser joined it. Keep a cover over it until
@@ -629,15 +672,19 @@ Consolidated, in the order they tend to bite:
 12. **A rig set this frame drives NEXT frame's views.** Use the attach pattern; never predict the
     camera forward.
 13. **Absolute rig units on a camera rig.** `ipdFactor` and `metersToVirtual` are in *your* world
-    units — `metersToVirtual` is the unit conversion for a scene not authored in metres, not a
-    depth dial. Keep `ipd × m2v × diopters × 0.5` ≤ 1 or the background diverges.
+    units — `metersToVirtual` is world units per real metre: the true conversion, or
+    `convergence / 2` for a world with no true scale. Keep `ipd × m2v × diopters × N` ≤ 1 or the
+    background diverges, and use most of the comfort zone or the scene reads flat
+    ([Aim for real depth](authoring-inline-3d.md#aim-for-real-depth)).
 14. **Reading comfort as a depth meter.** It is not one. Comfort bounds where the depth budget
     *sits* (the background against divergence); the budget itself is
     `(baseline / tan(vFov/2)) × (1/z_near − 1/z_far)`, which convergence cancels out of exactly.
     A scene that weaves but looks **flat** is a budget problem — a 63 mm baseline framing a large
     subject from far away — and comfort will happily report a healthy number while it happens.
-    Do not paper over it by scaling the baseline: a camera rig that needs a scale correction is a
-    scene that wanted a **display rig**, which is scale-invariant by construction.
+    If the content is a subject the user turns, it wanted a **display rig**, which is
+    scale-invariant by construction. If it is a world, apply the camera-rig depth rule
+    ([Aim for real depth](authoring-inline-3d.md#aim-for-real-depth)): it is the scale correction,
+    done on the rig, never by rescaling the world.
 15. **Convergence left at 0.** That is infinity — the entire scene in front of the glass. And in
     first person, convergence to the orbit target is ~0, which is the same mistake from the other
     end.
@@ -656,8 +703,9 @@ Consolidated, in the order they tend to bite:
 20. **A full-bleed overlay sharing the canvas rect.** Hide it with `display:none`, never
     `opacity:0`, and hide it *before* registering the tile — which means activating after the
     splash's fade has actually completed, not when you started it.
-21. **`backdrop-filter` anywhere over a tile.** No z-order model fixes it. Near-solid backgrounds
-    instead.
+21. **`backdrop-filter` over a tile before DisplayXR Browser 0.1.16, or over a whole tile.** No
+    z-order model fixes the old case; 0.1.16+ draws the tile mono inside a partial frost rect.
+    Near-solid backgrounds on older browsers.
 22. **Animating the canvas element itself.** Its rect and its weave disagree for the length of the
     animation. Animate a wrapper or the buffer's contents.
 23. **Picking against an eye camera.** One cursor, one screen, one camera: `appCam`.

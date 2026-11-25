@@ -112,6 +112,10 @@ const status = await startInline3D(canvas, {
     views.forEach((v, i) => drawEye(layer.getViewport(v), step, i));
     tick(step); logFrame(step);
   },
+}).catch((err) => {
+  // a rejection must not leave a blank page: log it and take the 2D path below
+  console.warn('inline 3D unavailable, showing 2D', err);
+  return /** @type {import('@displayxr/inline3d').Inline3DUnsupported} */ ({ supported: false, trackingState: 'unknown', error: err });
 });
 
 window.__beacon('startInline3D returned supported=' + (status && status.supported));

@@ -44,6 +44,11 @@ what was measured, and what throws. The splat side of the same engine is
   fetch — and `instantiateRenderEntity()` goes under the content root. `handle.model` is that
   entity, `handle.container` the resource (animations, materials, textures). No animation plays,
   as on three; a page animates through `handle.engine` (the `Anim` system is registered).
+- **Lifecycle.** `remove()` destroys the tile's app: every entity, asset, program, shader and
+  texture goes with it (measured: 0 live programs after each of 10 remove / re-add cycles). Content
+  a page adds under `handle.engine.root` and swaps out is the page's to release, with
+  `handle.releaseEntity(entity, { asset })`, which also destroys the programs its materials linked
+  (the engine never does). [Content lifecycle rules](content-lifecycle-rules.md).
 - **Framing** is the union of the render mesh instances' AABBs. It equals three's `Box3` to float
   precision on every asset tried, skinned ones included (Fox 25.185 × 79.029 × 154.720 on both), so
   the fit scale matches three's to 1e-9.

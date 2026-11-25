@@ -9,7 +9,9 @@ import { addSplat, measureSplatBounds } from '@displayxr/inline3d/splat';
 // Khronos DamagedHelmet (glTF-Sample-Assets, pinned commit; credit on the page and in
 // THIRD_PARTY_NOTICES.md), the same file the DisplayXR model-viewer demo bundles. Served from
 // jsDelivr with CORS, so it is fetched cross-origin exactly as a catalogue CDN asset would be.
-const GLB = 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets@c6a6bd13ab2b3c685c7903d03561b8a9392f38b8/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb';
+const DEFAULT_GLB = 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets@c6a6bd13ab2b3c685c7903d03561b8a9392f38b8/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb';
+// ?glb=<url> swaps tile A's model — e.g. a heavy one to check the depth cursor's cost (?cursor=depth&cursorDebug).
+const GLB = new URLSearchParams(location.search).get('glb') || DEFAULT_GLB;
 // The splat sample's butterfly (World Labs, used with permission; see samples/splat/).
 const SPLAT = new URL('../splat/assets/butterfly.sog', import.meta.url).href;
 const DRACO_GLTF = './assets/glTF-Draco/Duck.gltf';
@@ -27,6 +29,13 @@ const pageParams = new URLSearchParams(location.search);
 const ENGINE = pageParams.get('engine') || undefined;
 const onThree = ENGINE === 'three' || ENGINE === 'spark';
 const engineOpt = onThree ? { engine: 'three' } : ENGINE ? { engine: ENGINE } : {};
+// ?cursor=depth — the depth-aware cursor on every tile (opt-in; see docs/authoring-inline-3d.md).
+// Tune it from the URL to compare: &anchor=hybrid|screen|world &margin=0.003 &scope=window
+// &cursorDebug (cost stats in the console) &cursorDebug=both (+ the OS cursor beside the sprite)
+const cursorOpt = pageParams.get('cursor') === 'depth' ? { cursor: sampleCursorOptions(pageParams) } : {};
+// ?hands — tracked-hand controls (./hands): one pinch dragged turns a tile, two pinches zoom it.
+// Inert without a hand tracker; the pointer orbit keeps working alongside.
+const handsOpt = pageParams.has('hands') ? { hands: true } : {};
 
 // ── A. the mesh on its own ──────────────────────────────────────────────────────────────────
 const a = addModel(wall, document.getElementById('tileA'), GLB, {
@@ -35,13 +44,28 @@ const a = addModel(wall, document.getElementById('tileA'), GLB, {
   feather: 24,
   renderScale: 0.6,
   ...engineOpt,
+  ...cursorOpt,
+  ...handsOpt,
 });
 a.exclude(document.getElementById('plateA')); // crisp 2D price plate over the woven 3D
 
-report(a.ready, 'noteA', () => {
+const noteA = () => {
   const [w, h, d] = a.frame.extent.map((n) => n.toFixed(2));
-  return `glTF loaded · bounds ${w} x ${h} x ${d} · framed on the display plane · ${a.backend}`;
-});
+  // The gate opens a few frames after the session (no-canvas → available) and the hand count
+  // moves every frame, so the note is refreshed live below rather than captured once.
+  const hands = a.hands ? ` · hands: ${a.hands.state.gate} (${a.hands.state.hands} tracked)` : '';
+  return `glTF loaded · bounds ${w} x ${h} x ${d} · framed on the display plane · ${a.backend}${hands}`;
+};
+report(a.ready, 'noteA', noteA);
+if (handsOpt.hands) {
+  a.ready.then(() => {
+    const el = document.getElementById('noteA');
+    const tick = setInterval(() => {
+      if (!a.hands?.running) return clearInterval(tick);
+      el.textContent = noteA() + (woven ? '' : ' — open in the DisplayXR Browser for 3D');
+    }, 250);
+  }).catch(() => {});
+}
 
 // ── B. a mesh and a splat in ONE scene ────────────────────────────────────────────────────
 // Two ways to build it, one per splat engine:
@@ -60,7 +84,7 @@ const mixedEngine = onThree ? 'spark' : 'playcanvas';
 // vH, so a different value does not change how big anything looks — but it does change the
 // world scale the runtime's eye poses are expressed in, and having the two tiles differ makes
 // them impossible to compare by eye. Keep the only difference between these tiles the CONTENT.
-const TILE_OPTS = { virtualDisplayHeight: 0.16, idleSpin: 12, feather: 24, renderScale: 0.6 };
+const TILE_OPTS = { virtualDisplayHeight: 0.16, idleSpin: 12, feather: 24, renderScale: 0.6, ...cursorOpt, ...handsOpt };
 // Layout of the pair, the same on both paths: the splat stands SPLAT_H of the mesh's height,
 // to the mesh's right, GAP of the mesh's width apart, bases level. The gap has to cover the
 // turntable: both subjects turn about the union's centre, so a box's corners swing wider than
@@ -99,7 +123,7 @@ function mixedPlayCanvas() {
     // The splat framed itself. The helmet is sized RELATIVE TO IT (SPLAT_H, as on the Spark
     // path) and stands to its left. The two assets are in
     // unrelated unit systems, so both sizes come from measured bounds, never from a guess.
-    const asset = new pc.Asset('helmet', 'container', { url: new URL(GLB, import.meta.url).href });
+    const asset = new pc.Asset('helmet', 'container', { url: new URL(DEFAULT_GLB, import.meta.url).href });
     app.assets.add(asset);
     await new Promise((resolve, reject) => {
       asset.ready(resolve);
@@ -155,7 +179,7 @@ function mixedPlayCanvas() {
 }
 
 function mixedSpark() {
-  const h = addModel(wall, tileB, GLB, { ...TILE_OPTS, engine: 'three' }); // reaches into h.viewer.scene
+  const h = addModel(wall, tileB, DEFAULT_GLB, { ...TILE_OPTS, engine: 'three' }); // reaches into h.viewer.scene
   // addModel/addSplat each own a viewer, but the viewer's `scene` and `content` are public on
   // purpose: composing beyond what the two wrappers do is meant to be a few lines, not a fork.
   const ready = h.ready.then(async () => {
@@ -211,6 +235,8 @@ const c = addModel(wall, document.getElementById('tileC'), DRACO_GLTF, {
   idleSpin: 12,
   feather: 24,
   renderScale: 0.6,
+  ...cursorOpt,
+  ...handsOpt,
   decoderPath: DECODER_PATH,
   ...engineOpt,
 });
@@ -321,3 +347,19 @@ document.getElementById('reset').addEventListener('click', () => {
 Promise.allSettled([a.ready, mixed]).then(applyFit);
 
 Object.assign(window, { __model: a, __mixed: b, __mixedEngine: mixedEngine, __THREE: THREE }); // debug hooks, as in other samples
+
+/**
+ * ?cursor=depth plus optional &anchor= &margin= &scope= &soften= &shape= &cursorDebug → addModel/addSplat's `cursor`
+ * option. &soften=both|off|alpha|blur A/Bs the crosstalk softening; &shape= fixes the sprite (default: the page's CSS cursor). &cursorDebug logs the cursor's per-frame cost once a second (three.js engine);
+ * &cursorDebug=both also keeps the OS cursor visible beside the sprite, to film the lag between them.
+ */
+function sampleCursorOptions(p) {
+  const o = {};
+  if (p.get('anchor')) o.anchor = p.get('anchor');
+  if (p.get('margin')) o.margin = Number(p.get('margin'));
+  if (p.get('scope')) o.pointerScope = p.get('scope');
+  if (p.has('cursorDebug')) o.debug = p.get('cursorDebug') === 'both' ? 'both' : true;
+  if (p.get('soften')) o.soften = p.get('soften'); // both | off | alpha | blur (crosstalk softening A/B)
+  if (p.get('shape')) o.shape = p.get('shape'); // auto (mirror the page's CSS cursor) | arrow | pointer | grab | grabbing | move
+  return Object.keys(o).length ? o : 'depth';
+}

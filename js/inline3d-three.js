@@ -52,6 +52,41 @@
 // descriptor and nothing else: no Kooima, no off-axis math, no scale, here or anywhere in this
 // SDK. That stays in the runtime, which is the point of the extension.
 
+import {
+  CursorDepthPlacer,
+  CursorPointer,
+  CursorRuntimeLink,
+  cursorArrowFootprint,
+  cursorDefaultHeight,
+  cursorModelMatrix,
+  cursorPlacementSoften,
+  cursorArrowMesh,
+  cursorSoftArrowBox,
+  cursorSoftArrowGLSL,
+  CursorShapeSelector,
+  cursorShapeTexture,
+  cursorSpriteBox,
+  cursorSpriteGLSL,
+  cursorSpriteRect,
+  cursorViewRay,
+  resolveCursorSoften,
+  CURSOR_DEFAULT_TUNING,
+  CURSOR_OUTLINE_COLOR,
+} from './inline3d-cursor-depth.js';
+import { CursorAmortisedPick, CursorDebugStats, cursorDebugMode } from './inline3d-cursor-perf.js';
+import { noteBuiltCameraRig } from './inline3d-depth-budget.js';
+// The depth-budget helpers, for a page that renders its own scene with these rigs: what disparity
+// a camera rig or a display-rig depth gives, as % of the tile width. Pure; see the module.
+export {
+  disparityPct,
+  cameraRigDisparityPct,
+  depthBudgetFromBounds,
+  comfortZone,
+  comfortDepthFactor,
+  backdropPlacement,
+  cameraRigComfortFactor,
+} from './inline3d-depth-budget.js';
+
 /**
  * A reusable three.js camera driven directly by an XRView's matrices. Construct once with
  * your THREE namespace and reuse across frames/windows.
@@ -179,14 +214,19 @@ function scratch(THREE) {
  * glass; everything nearer pops out, everything further recedes. Point it at whatever the viewer
  * is meant to be looking at (the subject's centre, a hit-tested surface) — with a moving camera
  * that is usually just the distance to it. Left at 0 it means infinity, which puts the entire
- * scene in front of the display and is comfortable for almost nothing.
+ * scene in front of the display and is comfortable for almost nothing — so a 0 / unset
+ * convergence logs one console warning per page (the descriptor is still built as asked).
  *
- * COMFORT. The runtime's rule is `ipdFactor × metersToVirtual × convergenceDiopters × N <= 1`
- * (N = nominal viewing distance, ~0.5 m): at 1 the viewer's eyes are parallel on infinitely far
- * content, and past it they diverge, which no one can fuse. With the defaults (factors 1,
- * metersToVirtual 1) that is `convergence >= ~0.5` world units. Nothing here enforces it — the
- * runtime clamps out-of-range values itself, once, with a warning — but a scene authored in
- * centimetres with a 0.1-unit convergence is the shape of the mistake.
+ * COMFORT. The rule is `ipdFactor × metersToVirtual × convergenceDiopters × N <= 1` (N = the
+ * nominal viewer distance the display reports — 0.6 m on a desktop panel): at 1 the viewer's
+ * eyes are parallel on infinitely far content, and past it they diverge, which no one can fuse.
+ * With the defaults (factors 1, metersToVirtual 1) that is `convergence >= ~0.6` world units.
+ * NOTHING ENFORCES IT for a rig the app declares: the runtime takes the gain
+ * `metersToVirtual × convergenceDiopters × N` as given (XR_DXR_view_rig §3 — only a legacy
+ * camera profile is comfort-clamped) and clamps only values outside a field's sanity range
+ * (e.g. convergenceDiopters to [0, 20], verticalFov to [0.01, 3.13] rad), once, with a warning.
+ * A scene authored in centimetres with a 0.1-unit convergence is the shape of the mistake;
+ * `cameraRigDisparityPct` measures what a rig gives.
  *
  * COMFORT IS NOT A DEPTH METER. It bounds where the depth budget SITS (it guards the background
  * against divergence), not how big the budget is. The budget is
@@ -199,7 +239,9 @@ function scratch(THREE) {
  * display rig.
  *
  * @param {object} THREE  your imported three.js module namespace.
- * @param {object} camera  a THREE.PerspectiveCamera (`.fov` in degrees, `.matrixWorld` current).
+ * @param {object} camera  a THREE.PerspectiveCamera (`.fov` in degrees, `.matrixWorld` current;
+ *        `.zoom` is honoured through `getEffectiveFOV()`). A camera without a perspective FOV
+ *        (an OrthographicCamera) warns once and gets a 50° stand-in.
  * @param {object} [opts]
  * @param {number} [opts.convergence=0]  zero-disparity distance in WORLD units (0 = infinity).
  * @param {boolean} [opts.attach=false]  emit an IDENTITY pose, for the attach pattern above —
@@ -217,8 +259,7 @@ export function cameraRigFromCamera(THREE, camera, opts = {}) {
   if (attach) {
     // Identity pose: the rig IS the camera, so the runtime reports eyes in camera space and the
     // scene graph does the rest. Deliberately not "the camera's pose from a frame ago".
-    out.position = { x: 0, y: 0, z: 0 };
-    out.orientation = { x: 0, y: 0, z: 0, w: 1 };
+    setPose(out, 0, 0, 0, 0, 0, 0, 1);
   } else {
     // World pose, decomposed from the matrix rather than read off .position/.quaternion: those
     // are LOCAL, and an app camera parented under a rig/dolly (the usual way to build an orbit)
@@ -226,11 +267,36 @@ export function cameraRigFromCamera(THREE, camera, opts = {}) {
     camera.updateMatrixWorld();
     const { p, q, s } = scratch(THREE);
     camera.matrixWorld.decompose(p, q, s);
-    out.position = { x: p.x, y: p.y, z: p.z };
-    out.orientation = { x: q.x, y: q.y, z: q.z, w: q.w };
+    setPose(out, p.x, p.y, p.z, q.x, q.y, q.z, q.w);
   }
   // three's fov is the FULL angle, in degrees
-  return fillCameraRig(out, THREE.MathUtils.degToRad(camera.fov), opts);
+  return fillCameraRig(out, THREE.MathUtils.degToRad(cameraFovDeg(camera)), opts);
+}
+
+/** three's PerspectiveCamera default fov, the stand-in for a camera that has none (web#268). */
+const FALLBACK_FOV_DEG = 50;
+let nonPerspectiveWarned = false;
+
+/**
+ * The vertical FOV a camera actually renders with, in degrees. `camera.zoom` narrows a
+ * PerspectiveCamera's projection without touching `.fov`, so `getEffectiveFOV()` is the
+ * truth when zoom is not 1 (at zoom 1 `.fov` is read directly, bit-identical to
+ * cameraRigFromPose). A camera with no perspective FOV (an OrthographicCamera) cannot describe a
+ * camera rig: warn once and use three's default 50° rather than send the runtime NaN.
+ */
+function cameraFovDeg(camera) {
+  let fov = camera.fov;
+  const zoom = camera.zoom;
+  if (zoom !== undefined && zoom !== 1 && typeof camera.getEffectiveFOV === 'function') fov = camera.getEffectiveFOV();
+  if (!camera.isOrthographicCamera && typeof fov === 'number' && Number.isFinite(fov) && fov > 0) return fov;
+  if (!nonPerspectiveWarned) {
+    nonPerspectiveWarned = true;
+    console.warn(
+      `[inline3d] cameraRigFromCamera needs a perspective camera (got ${camera.isOrthographicCamera ? 'an OrthographicCamera' : `fov ${fov}`}): ` +
+        `a camera rig is a perspective frustum. Using a ${FALLBACK_FOV_DEG}° vertical FOV; pass a PerspectiveCamera, or build the rig with cameraRigFromPose.`,
+    );
+  }
+  return FALLBACK_FOV_DEG;
 }
 
 /**
@@ -253,15 +319,34 @@ export function cameraRigFromPose(pose, opts = {}) {
   const { attach = false, out = {} } = opts;
   out.type = 'camera';
   if (attach) {
-    out.position = { x: 0, y: 0, z: 0 };
-    out.orientation = { x: 0, y: 0, z: 0, w: 1 };
+    setPose(out, 0, 0, 0, 0, 0, 0, 1);
   } else {
     const p = pose.position;
     const q = pose.orientation;
-    out.position = { x: p.x, y: p.y, z: p.z };
-    out.orientation = { x: q.x, y: q.y, z: q.z, w: q.w };
+    setPose(out, p.x, p.y, p.z, q.x, q.y, q.z, q.w);
   }
   return fillCameraRig(out, pose.fov * DEG2RAD, opts);
+}
+
+/**
+ * Write a rig pose into `out.position` / `out.orientation`, REUSING those objects when they are
+ * already there (web#273): the point of `opts.out` is a zero-allocation per-frame rig, and a fresh
+ * pair of literals on every call defeated it. Created only on the first call with a given `out`.
+ * The values are copied, never aliased, so `out` never holds a live reference to a caller's
+ * Vector3/Quaternion.
+ */
+function setPose(out, px, py, pz, qx, qy, qz, qw) {
+  let p = out.position;
+  if (!p || typeof p !== 'object') p = out.position = { x: 0, y: 0, z: 0 };
+  p.x = px;
+  p.y = py;
+  p.z = pz;
+  let q = out.orientation;
+  if (!q || typeof q !== 'object') q = out.orientation = { x: 0, y: 0, z: 0, w: 1 };
+  q.x = qx;
+  q.y = qy;
+  q.z = qz;
+  q.w = qw;
 }
 
 /** three's `MathUtils.DEG2RAD`, so a pose-built rig matches a camera-built one to the bit. */
@@ -277,6 +362,8 @@ function fillCameraRig(out, verticalFovRad, opts) {
   out.convergenceDiopters = convergence > 0 ? 1 / convergence : 0;
   out.verticalFov = verticalFovRad;
   out.metersToVirtual = metersToVirtual;
+  // Infinity is almost never what was meant: say so once per page. The descriptor is unchanged.
+  if (!(out.convergenceDiopters > 0)) noteBuiltCameraRig(out);
   return out;
 }
 
@@ -292,9 +379,11 @@ function fillCameraRig(out, verticalFovRad, opts) {
  * The factors are RELATIVE here (unlike a camera rig, where ipd/parallax are absolute):
  * `ipdFactor` and `parallaxFactor` are [0,1] multipliers on what the display would naturally do
  * — 1 is correct-by-construction, 0 is flat/frozen, and the values between are a comfort dial,
- * not a correctness one. `perspectiveFactor` is [0.1,10] and exaggerates or flattens the
- * off-axis skew; it is the one knob with no physical justification, so treat it as an effect.
- * The runtime clamps anything out of range (once, with a warning) rather than refusing the rig.
+ * not a correctness one. Above 1 exaggerates depth past what the display shows by construction:
+ * the runtime accepts it (it clamps ipd/parallax only to [0, 10000]) and `handle.setViewRig` logs
+ * one console warning. `perspectiveFactor` is [0.1,10] (the runtime clamps it there, once, with a
+ * warning) and exaggerates or flattens the off-axis skew; it is the one knob with no physical
+ * justification, so treat it as an effect.
  *
  * @param {object} [opts]
  * @param {number} [opts.virtualDisplayHeight=0.24]  metres of virtual display (the zoom knob).
@@ -304,11 +393,14 @@ function fillCameraRig(out, verticalFovRad, opts) {
  * @param {object} [opts.out]  a descriptor object to overwrite instead of allocating one.
  * @returns {object} an XRViewRigInit-shaped plain object.
  */
+const ORIGIN = Object.freeze({ x: 0, y: 0, z: 0 });
+const IDENTITY = Object.freeze({ x: 0, y: 0, z: 0, w: 1 });
+
 export function displayRig(opts = {}) {
   const {
     virtualDisplayHeight = 0.24,
-    position = { x: 0, y: 0, z: 0 },
-    orientation = { x: 0, y: 0, z: 0, w: 1 },
+    position = ORIGIN,
+    orientation = IDENTITY,
     ipdFactor = 1,
     parallaxFactor = 1,
     perspectiveFactor = 1,
@@ -316,14 +408,18 @@ export function displayRig(opts = {}) {
   } = opts;
   out.type = 'display';
   // Copied field by field, not aliased: a caller reusing `out` every frame must not end up
-  // holding a live reference to a THREE.Vector3 it is also mutating.
-  out.position = { x: position.x || 0, y: position.y || 0, z: position.z || 0 };
-  out.orientation = {
-    x: orientation.x || 0,
-    y: orientation.y || 0,
-    z: orientation.z || 0,
-    w: orientation.w === undefined ? 1 : orientation.w,
-  };
+  // holding a live reference to a THREE.Vector3 it is also mutating. Written into out's existing
+  // position/orientation when present, so a reused `out` allocates nothing (web#273).
+  setPose(
+    out,
+    position.x || 0,
+    position.y || 0,
+    position.z || 0,
+    orientation.x || 0,
+    orientation.y || 0,
+    orientation.z || 0,
+    orientation.w === undefined ? 1 : orientation.w,
+  );
   out.virtualDisplayHeight = virtualDisplayHeight;
   out.ipdFactor = ipdFactor;
   out.parallaxFactor = parallaxFactor;
@@ -412,4 +508,488 @@ export class EdgeFeather {
     renderer.render(this._scene, this._cam);
     renderer.autoClear = prevAutoClear;
   }
+}
+
+// ── Depth-aware cursor ─────────────────────────────────────────────────────────────────────
+
+/**
+ * A hit test for {@link DepthCursor} that raycasts three.js objects: the first hit along the
+ * ray, as a world point, or null.
+ *
+ * @param {object} THREE  your imported three.js module namespace.
+ * @param {object[]} targets  the Object3Ds that count as content (searched recursively).
+ */
+export function raycastHitTest(THREE, targets) {
+  const raycaster = new THREE.Raycaster();
+  const o = new THREE.Vector3();
+  const d = new THREE.Vector3();
+  return (origin, direction) => {
+    o.set(origin[0], origin[1], origin[2]);
+    d.set(direction[0], direction[1], direction[2]).normalize();
+    raycaster.set(o, d);
+    const hit = raycaster.intersectObjects(targets, true)[0];
+    return hit ? [hit.point.x, hit.point.y, hit.point.z] : null;
+  };
+}
+
+/**
+ * A cursor that rises to the depth of the content under it, so it is never drawn behind
+ * something that pops out of the glass (a depth violation). The page supplies the content —
+ * a hit test — and this does the rest: tracks the pointer over the canvas, hit-tests the
+ * cursor FOOTPRINT (not just the hotspot), places the arrow sprite with the same maths and
+ * policy as the runtime's XR_DXR_cursor_depth (ADR-046 Amendment 2), and hides the CSS cursor
+ * exactly while the sprite replaces it.
+ *
+ * Front-only: the sprite is drawn only while content under it comes OUT of the glass, the margin
+ * in front of it. Over content on or behind the glass nothing is drawn — the CSS/OS cursor is the
+ * cursor, untouched. The sprite is the classic arrow at the OS cursor's size, tip on the hotspot.
+ *
+ * Opt-in: nothing runs unless you construct one and call update(). In 2D (one view) or with the
+ * pointer off the canvas it is inactive, the sprite is hidden and the CSS cursor is back.
+ *
+ *   const cursor = new DepthCursor(THREE, { canvas, hitTest: raycastHitTest(THREE, [model]) });
+ *   scene.add(cursor.object);
+ *   wall.addScene(canvas, (views, layer) => {
+ *     cursor.update(views);            // first, with THIS frame's views
+ *     // ... render every view as usual; the sprite draws last, depth test off ...
+ *   });
+ *
+ * Head motion: the sprite sits on the line from the viewer through the pointer's point on the
+ * canvas, so its image on the glass does not move when the head does — it stays under the
+ * mouse like the OS cursor, and only its depth follows the content under that line of sight.
+ *
+ * The attach pattern (eye cameras parented under an app camera): pass `viewSpace` = that
+ * parent, so the views' local transforms are carried into world space; keep `cursor.object` at
+ * the scene root.
+ */
+export class DepthCursor {
+  /**
+   * @param {object} THREE  your imported three.js module namespace.
+   * @param {object} opts
+   * @param {HTMLElement} opts.canvas  the woven canvas (pointer is tracked over it).
+   * @param {(origin:number[], direction:number[]) => number[]|null} opts.hitTest  nearest
+   *        content point along a ray in WORLD space, or null. {@link raycastHitTest} for meshes;
+   *        for splats return the renderer's expected depth along the ray (never raycast splats).
+   * @param {number} [opts.height]  sprite height as a fraction of the canvas height. Default: the
+   *        OS arrow's size, 19 CSS px of the canvas's on-page height (re-read every frame).
+   * @param {number} [opts.color=0xffffff]  the arrow's fill colour (the outline is always dark).
+   * @param {number} [opts.margin=0.015]  how far in front of out-of-screen content it floats, in
+   *        eye-baseline units (0.015 ≈ 1 mm of on-screen disparity at a 63-65 mm IPD).
+   * @param {'hybrid'|'screen'|'world'} [opts.anchor='hybrid']  where along that depth: 'hybrid'
+   *        follows the pointer exactly while it moves and stays world-fixed (parallaxes with the
+   *        content) while it is still; 'screen' never parallaxes; 'world' always does.
+   * @param {'canvas'|'window'} [opts.pointerScope='canvas']  'window' keeps the cursor over DOM
+   *        layered on the canvas (overlay buttons) and hides the CSS cursor page-wide meanwhile.
+   * @param {'both'|'off'|'alpha'|'blur'|object} [opts.soften='both']  crosstalk softening of the
+   *        LIFTED arrow (runtime ADR-046 Amendment 2 §B.7): an edge blur of 0.1 × its ghost offset
+   *        (capped at 6% of its height, 8 px) and an opacity easing to 0.5 over 0.03 baselines of
+   *        lift, both zero on the glass. A preset, or `{ mode, blurK, blurMaxPx, blurMaxFrac,
+   *        alphaMin, fullD }` over the defaults. Drawn in the arrow's own shader.
+   * @param {string} [opts.shape='auto']  the sprite: 'auto' mirrors the page's CSS cursor under the
+   *        pointer — every standard keyword has a sprite (`grab` the open hand, `text` the I-beam,
+   *        the resize arrows, …), `url(…)` images are drawn as images, `none` draws nothing; a
+   *        CURSOR_SHAPES name (or 'none') fixes it. (`color` tints the arrow only.)
+   * @param {(hit: {u: number, v: number, point: number[]|null, css: string|null, cssValue: string|null}) => string|null|undefined} [opts.shapeFor]
+   *        per-frame override while the sprite draws: return a shape name, or nothing for `shape`'s.
+   * @param {object} [opts.viewSpace]  Object3D whose world matrix maps view transforms to world.
+   * @param {number} [opts.raysPerFrame=0]  0 = the whole footprint every frame (two eyes × 10
+   *        points), synchronously. N > 0 = amortised: N rays a frame, cycling the footprint
+   *        (alternating eyes), each point's last hit kept until the pointer moves away from where it
+   *        was cast. The sprite still follows the NEWEST pointer position every frame, at the depth
+   *        the pick has so far; the depth filter absorbs the cadence. ./model passes 3, ./splat 1
+   *        (a gaussian-splat raycast costs ~8 ms a ray).
+   * @param {boolean|'both'} [opts.debug=false]  true: log update() cost, rays a frame and the frame
+   *        interval (rolling stats, at most once a second; `cursor.debugStats.last` holds the newest).
+   *        'both': that, and the OS cursor stays visible beside the sprite (the latency check).
+   */
+  constructor(
+    THREE,
+    { canvas, hitTest, height = null, color = 0xffffff, viewSpace = null, raysPerFrame = 0, margin, anchor = 'hybrid', pointerScope = 'canvas', debug = false, soften, shape = 'auto', shapeFor = null },
+  ) {
+    this._THREE = THREE;
+    this.canvas = canvas;
+    this.hitTest = hitTest;
+    const debugMode = cursorDebugMode(debug);
+    /** `cursor: { debug }` only: the rolling stats (null otherwise — nothing is measured). */
+    this.debugStats = null;
+    if (debugMode) {
+      this.debugStats = new CursorDebugStats({ info: typeof hitTest.info === 'function' ? hitTest.info : null });
+      this._rays = 0;
+      this._seenSamples = 0;
+      this._seenTime = 0;
+      const inner = hitTest;
+      this.hitTest = (o, d) => {
+        this._rays++;
+        return inner(o, d);
+      };
+    }
+    /** Sprite height (canvas heights) when set; null = the OS arrow's size, from the canvas's on-page height. */
+    this.height = height > 0 && Number.isFinite(height) ? height : null;
+    this.viewSpace = viewSpace;
+    this.raysPerFrame = raysPerFrame;
+    this._pick = null; // amortised mode (raysPerFrame > 0): a CursorAmortisedPick, built on first use
+    const tuning = margin > 0 && Number.isFinite(margin) ? { ...CURSOR_DEFAULT_TUNING, margin } : CURSOR_DEFAULT_TUNING;
+    this.placer = new CursorDepthPlacer(tuning, { anchor });
+    this.pointer = new CursorPointer(canvas, { scope: pointerScope, keepCss: debugMode === 'both' });
+    if (this.debugStats) this.debugStats.source = this.pointer.source;
+    /** The last placement (diagnostics): `{active, position, height, disparity, targetDisparity, anchored}`. */
+    this.placement = { active: false };
+    /** Crosstalk softening parameters (resolveCursorSoften). */
+    this.soften = resolveCursorSoften(soften, '@displayxr/inline3d/three DepthCursor');
+    /** The last frame's softening (diagnostics): `{blurPx, alpha, ghostPx, spritePx, radius, aa, soft}`. */
+    this.softening = null;
+    this._soft = null; // { geometry, material } — built on the first softened frame
+    /** Which sprite (the page's CSS cursor / fixed / shapeFor); `.shape` = the one drawn last. */
+    this.shapes = new CursorShapeSelector(this.pointer, { shape, shapeFor });
+    this._tex = null; // { geometry, material } — the textured quad, built on the first non-arrow sprite
+    this._textures = new Map(); // sprite key → THREE texture
+    /**
+     * The runtime-drawn cursor (runtime ADR-046 Amendment 4): when the frame's layer says
+     * "runtime", the depth goes to the browser and no sprite is drawn. Inert without a layer.
+     */
+    this.runtime = new CursorRuntimeLink();
+    /** The XRDisplayLayer this canvas weaves through; `update(views, { layer })` sets it per frame. */
+    this.layer = null;
+
+    // The arrow: a dark outline polygon, the fill inset over it; tip at the origin (the hotspot).
+    const fill = [((color >> 16) & 255) / 255, ((color >> 8) & 255) / 255, (color & 255) / 255, 1];
+    this._fill = fill;
+    const m = cursorArrowMesh(fill, CURSOR_OUTLINE_COLOR);
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(m.positions, 3));
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(m.colors, 4));
+    const mat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    this.object = new THREE.Mesh(geom, mat);
+    this.object.name = 'inline3d-cursor';
+    this.object.matrixAutoUpdate = false;
+    this.object.frustumCulled = false;
+    this.object.renderOrder = 1e9; // last: never occluded, it is in front by construction
+    this.object.visible = false;
+    this._crisp = { geometry: geom, material: mat };
+  }
+
+  /** The sprite drawn last: a CURSOR_SHAPES name, 'none' or 'image'. */
+  get shape() {
+    return this.shapes.current;
+  }
+
+  /** Set the pointer position directly (canvas-normalised, v down), or null — for scripted input. */
+  setPointer(u, v) {
+    this.pointer.set(u, v);
+  }
+
+  /**
+   * Place the sprite for this frame. Call with the views you are about to render.
+   *
+   * Pass the frame's `layer` (the second argument of wall.addScene's callback) as
+   * `update(views, { layer })`: where the browser and the runtime draw the web cursor
+   * (`layer.getCursorDepthSupport()` → "runtime", runtime ADR-046 Amendment 4) the depth under the
+   * pointer is handed to the layer and no sprite is drawn — the browser's own cursor, lifted by
+   * the runtime. Without a layer, or where it says "none", the sprite is drawn as always.
+   * @param {ArrayLike<XRView|{projectionMatrix:ArrayLike<number>,transformMatrix:ArrayLike<number>}>} views
+   * @param {number|{nowMs?: number, layer?: object|null}} [opts]  the time (ms), or `{ nowMs, layer }`.
+   */
+  update(views, opts) {
+    let nowMs = opts;
+    if (opts && typeof opts === 'object') {
+      if ('layer' in opts) this.layer = opts.layer || null;
+      nowMs = opts.nowMs;
+    }
+    if (!(typeof nowMs === 'number' && Number.isFinite(nowMs))) nowMs = globalThis.performance ? globalThis.performance.now() : Date.now();
+    if (this.debugStats) return this._updateMeasured(views, nowMs);
+    return this._update(views, nowMs);
+  }
+
+  // `cursor: { debug }`: the same update, timed. Off, update() never reaches this.
+  _updateMeasured(views, nowMs) {
+    const clock = () => (globalThis.performance ? globalThis.performance.now() : Date.now());
+    this._rays = 0;
+    const t0 = clock();
+    const p = this._update(views, nowMs);
+    const t1 = clock();
+    const ptr = this.pointer;
+    const fresh = ptr.samples !== this._seenSamples && ptr.sampleTime > 0 && ptr.sampleTime !== this._seenTime;
+    const samples = ptr.samples - this._seenSamples;
+    this._seenSamples = ptr.samples;
+    this._seenTime = ptr.sampleTime;
+    this.debugStats.frame(t1 - t0, this._rays, t0, fresh ? t0 - ptr.sampleTime : null, samples);
+    return p;
+  }
+
+  _update(views, nowMs) {
+    if (this.runtime.bind(this.layer)) return this._updateRuntime(views, nowMs);
+    const vs = this._worldViews(views);
+    const uv = this.pointer.uv;
+    let p = { active: false };
+    let h = 0;
+    let nearestPoint = null;
+    if (uv && vs.length >= 2) {
+      const [u, v] = uv;
+      h = this.height ?? cursorDefaultHeight(this.pointer.cssHeight());
+      nearestPoint = this._footprintHit(vs, u, v, h);
+      p = this.placer.update(vs, { u, v, nearestPoint, cursorHeight: h, canvasPx: this.pointer.panelPx() }, nowMs / 1000);
+    }
+    this.placement = p;
+    let visible = !!p.active;
+    if (p.active) {
+      this.object.matrix.fromArray(cursorModelMatrix(p));
+      this.object.matrixWorldNeedsUpdate = true;
+      const [pw, ph] = this.pointer.panelSize();
+      const s = (this.softening = cursorPlacementSoften(p, vs, pw, ph, h, this.soften));
+      const sprite = this.shapes.pick({ u: uv[0], v: uv[1], point: nearestPoint }, nowMs);
+      if (sprite.kind === 'none') visible = false; // the page hides its cursor: so do we (and the OS one stays hidden)
+      else if (sprite.kind === 'shape' && sprite.name === 'arrow') this._useSoft(s);
+      else this._useSprite(s, sprite);
+    } else {
+      this.softening = null;
+    }
+    this.object.visible = visible;
+    this.pointer.hideCss(!!p.active);
+    return p;
+  }
+
+  // The runtime draws (ADR-046 Amendment 4): the same pick and the same placement maths, but the
+  // RAW content disparity goes to the layer in device px, and nothing is drawn or hidden here.
+  _updateRuntime(views, nowMs) {
+    this.object.visible = false;
+    this.softening = null;
+    this.pointer.hideCss(false);
+    const uv = this.pointer.uv;
+    const vs = uv && views && views.length >= 2 ? this._worldViews(views) : null;
+    if (!vs) {
+      this.placer.update(null); // forget the hybrid anchor
+      this.runtime.withdraw();
+      return (this.placement = { active: false, runtime: true });
+    }
+    const [u, v] = uv;
+    const h = this.height ?? cursorDefaultHeight(this.pointer.cssHeight());
+    const nearestPoint = this._footprintHit(vs, u, v, h);
+    const p = this.placer.update(vs, { u, v, nearestPoint, cursorHeight: h, canvasPx: this.pointer.panelPx() }, nowMs / 1000);
+    this.runtime.report(u, v, p.solved ? p.contentDisparityPx : null);
+    return (this.placement = { ...p, active: false, runtime: true });
+  }
+
+  // Crisp frames draw the arrow mesh exactly as without softening; softened ones swap in a quad
+  // whose shader evaluates the arrow at the runtime's 13 blur taps, times the opacity.
+  _useSoft(s) {
+    if (!s.soft) {
+      this.object.geometry = this._crisp.geometry;
+      this.object.material = this._crisp.material;
+      return;
+    }
+    const soft = this._soft || (this._soft = this._makeSoft());
+    const u = soft.material.uniforms;
+    const [x0, y0, x1, y1] = cursorSoftArrowBox(s.radius, s.aa);
+    u.inline3dCursorBox.value.set(x0, y0, x1, y1);
+    u.inline3dCursorSoft.value.set(s.radius, s.alpha, s.aa, 0);
+    this.object.geometry = soft.geometry;
+    this.object.material = soft.material;
+  }
+
+  _makeSoft() {
+    const THREE = this._THREE;
+    const geometry = new THREE.BufferGeometry();
+    // A unit quad; the vertex shader spreads it over the padded arrow box (arrow units, y down).
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0], 3));
+    // three >= 0.154 names the output-transform chunk colorspace_fragment; 0.150-0.153 encodings_fragment.
+    const chunk = THREE.ShaderChunk && THREE.ShaderChunk.colorspace_fragment !== undefined ? 'colorspace_fragment' : 'encodings_fragment';
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        inline3dCursorBox: { value: new THREE.Vector4() },
+        inline3dCursorSoft: { value: new THREE.Vector4(0, 1, 0, 0) },
+        inline3dCursorFill: { value: new THREE.Vector3(this._fill[0], this._fill[1], this._fill[2]) },
+        inline3dCursorOutline: { value: new THREE.Vector3(CURSOR_OUTLINE_COLOR[0], CURSOR_OUTLINE_COLOR[1], CURSOR_OUTLINE_COLOR[2]) },
+      },
+      vertexShader: `
+        uniform vec4 inline3dCursorBox;
+        varying vec2 vArrow;
+        void main() {
+          vArrow = vec2(mix(inline3dCursorBox.x, inline3dCursorBox.z, position.x), mix(inline3dCursorBox.y, inline3dCursorBox.w, position.y));
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(vArrow.x, -vArrow.y, 0.0, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec4 inline3dCursorSoft; // radius, opacity, aa (arrow units)
+        uniform vec3 inline3dCursorFill;
+        uniform vec3 inline3dCursorOutline;
+        varying vec2 vArrow;
+        ${cursorSoftArrowGLSL()}
+        void main() {
+          vec4 c = inline3dSoftArrow(vArrow, inline3dCursorSoft.x, inline3dCursorSoft.z, inline3dCursorFill, inline3dCursorOutline);
+          gl_FragColor = vec4(c.rgb, c.a * inline3dCursorSoft.y);
+          #include <${chunk}>
+        }`,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    return { geometry, material };
+  }
+
+  // Every sprite but the arrow: a texture (a keyword shape rasterised once, or a url() image) on
+  // one soft quad — the same 13-tap blur and opacity, crisp at radius 0. One program for all.
+  _useSprite(s, sprite) {
+    const tex = this._texture(sprite);
+    const q = this._tex || (this._tex = this._makeTex());
+    const u = q.material.uniforms;
+    const radius = s.soft ? s.radius : 0;
+    const [x0, y0, x1, y1] = cursorSpriteBox(sprite, radius, s.aa);
+    const r = cursorSpriteRect(sprite);
+    u.inline3dCursorBox.value.set(x0, y0, x1, y1);
+    u.inline3dCursorRect.value.set(r[0], r[1], r[2], r[3]);
+    u.inline3dCursorSoft.value.set(radius, s.soft ? s.alpha : 1, 0, 0);
+    u.inline3dCursorTex.value = tex;
+    this.object.geometry = q.geometry;
+    this.object.material = q.material;
+  }
+
+  _texture(sprite) {
+    let t = this._textures.get(sprite.key);
+    if (t) return t;
+    const THREE = this._THREE;
+    if (sprite.kind === 'image') {
+      t = new THREE.Texture(sprite.entry.image);
+    } else {
+      const d = cursorShapeTexture(sprite.name);
+      t = new THREE.DataTexture(d.data, d.width, d.height, THREE.RGBAFormat);
+    }
+    t.flipY = false; // row 0 = the sprite's top, as the shader reads it
+    t.generateMipmaps = false;
+    t.minFilter = THREE.LinearFilter;
+    t.magFilter = THREE.LinearFilter;
+    if (THREE.ClampToEdgeWrapping !== undefined) t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+    // The bytes are sRGB: decode on sampling, so the output transform does not encode them twice.
+    if ('colorSpace' in t && THREE.SRGBColorSpace) t.colorSpace = THREE.SRGBColorSpace;
+    else if (THREE.sRGBEncoding !== undefined) t.encoding = THREE.sRGBEncoding;
+    t.needsUpdate = true;
+    if (this._textures.size > 32) {
+      for (const old of this._textures.values()) old.dispose?.();
+      this._textures.clear();
+    }
+    this._textures.set(sprite.key, t);
+    return t;
+  }
+
+  _makeTex() {
+    const THREE = this._THREE;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0], 3));
+    const chunk = THREE.ShaderChunk && THREE.ShaderChunk.colorspace_fragment !== undefined ? 'colorspace_fragment' : 'encodings_fragment';
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        inline3dCursorBox: { value: new THREE.Vector4() },
+        inline3dCursorRect: { value: new THREE.Vector4(0, 0, 1, 1) },
+        inline3dCursorSoft: { value: new THREE.Vector4(0, 1, 0, 0) },
+        inline3dCursorTex: { value: null },
+      },
+      vertexShader: `
+        uniform vec4 inline3dCursorBox;
+        varying vec2 vSprite;
+        void main() {
+          vSprite = vec2(mix(inline3dCursorBox.x, inline3dCursorBox.z, position.x), mix(inline3dCursorBox.y, inline3dCursorBox.w, position.y));
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(vSprite.x, -vSprite.y, 0.0, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec4 inline3dCursorRect; // the area the texture covers (sprite units, y down)
+        uniform vec4 inline3dCursorSoft; // radius (sprite units), opacity
+        uniform sampler2D inline3dCursorTex;
+        varying vec2 vSprite;
+        ${cursorSpriteGLSL()}
+        void main() {
+          vec4 c = inline3dSoftSprite(inline3dCursorTex, vSprite, inline3dCursorRect, inline3dCursorSoft.x);
+          gl_FragColor = vec4(c.rgb, c.a * inline3dCursorSoft.y);
+          #include <${chunk}>
+        }`,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    return { geometry, material };
+  }
+
+  /** Remove listeners, give the CSS cursor back, free the sprite's GPU resources. */
+  dispose() {
+    this.runtime.dispose();
+    this.pointer.dispose();
+    this.shapes.dispose();
+    this.object.visible = false;
+    for (const r of [this._crisp, this._soft, this._tex]) {
+      if (!r) continue;
+      r.geometry.dispose();
+      r.material.dispose();
+    }
+    for (const t of this._textures.values()) t.dispose?.();
+    this._textures.clear();
+  }
+
+  // Nearest content point under the footprint, from the two outer views (or, amortised, from
+  // the first eye over the last cycle of footprint points).
+  _footprintHit(views, u, v, height) {
+    const a = views[0], b = views[views.length - 1];
+    const m = a.transformMatrix;
+    const fl = Math.hypot(m[8], m[9], m[10]) || 1;
+    const f = [-m[8] / fl, -m[9] / fl, -m[10] / fl];
+    const fp = cursorArrowFootprint(u, v, height, this.pointer.aspect());
+    if (this.raysPerFrame > 0) {
+      // Amortised: N rays a frame over the (point, eye) slots; the newest pointer position is
+      // placed this frame regardless, with the depth the pick has so far (CursorAmortisedPick).
+      const pick = (this._pick ||= new CursorAmortisedPick(this.raysPerFrame));
+      const eyes = [a, b];
+      return pick.step(fp, 2, (e, su, sv) => {
+        const ray = cursorViewRay(eyes[e], su, sv);
+        return this.hitTest(ray.origin, ray.direction);
+      }, f, this.pointer.aspect(), height);
+    }
+    const candidates = [];
+    for (const [su, sv] of fp) {
+      for (const view of [a, b]) {
+        const ray = cursorViewRay(view, su, sv);
+        candidates.push(this.hitTest(ray.origin, ray.direction));
+      }
+    }
+    let best = Infinity, nearest = null;
+    for (const p of candidates) {
+      if (!p) continue;
+      const depth = p[0] * f[0] + p[1] * f[1] + p[2] * f[2]; // smaller = nearer the viewer
+      if (depth < best) {
+        best = depth;
+        nearest = p;
+      }
+    }
+    return nearest;
+  }
+
+  _worldViews(views) {
+    const out = [];
+    if (!views) return out;
+    const parent = this.viewSpace ? this.viewSpace.matrixWorld.elements : null;
+    for (const v of views) {
+      const t = v.transformMatrix || v.transform.matrix;
+      out.push({ projectionMatrix: v.projectionMatrix, transformMatrix: parent ? mul4(parent, t) : t });
+    }
+    return out;
+  }
+}
+
+/** Column-major 4x4 multiply, a × b. */
+function mul4(a, b) {
+  const o = new Array(16);
+  for (let c = 0; c < 4; c++) {
+    for (let r = 0; r < 4; r++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k];
+      o[c * 4 + r] = s;
+    }
+  }
+  return o;
 }

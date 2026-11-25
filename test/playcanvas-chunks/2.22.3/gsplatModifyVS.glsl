@@ -1,0 +1,7 @@
+
+void modifySplatCenter(inout vec3 center) {
+}
+void modifySplatRotationScale(vec3 originalCenter, vec3 modifiedCenter, inout vec4 rotation, inout vec3 scale) {
+}
+void modifySplatColor(vec3 center, inout vec4 color) {
+}

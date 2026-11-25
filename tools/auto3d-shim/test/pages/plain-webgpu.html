@@ -1,0 +1,23 @@
+<!doctype html>
+<!-- TEST PAGE — WebGPU with NO engine: a canvas created by script (never inserted, so only the
+     sentinel's getContext('webgpu') can arm it) gets a webgpu context, is configured and cleared once.
+     Nothing else: no timer of the page's own. The sentinel must arm the canvas (its id trap) and set
+     NO timer (case s-webgpu-plain: the §3.3 rule; a WebGPU context starts no globals poll and owns no
+     sweep timer). window.__gpuCanvas: the canvas; data-gpu-done="1" when the frame was submitted. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>plain WebGPU (test)</title></head><body>
+<p>WebGPU, no engine.</p>
+<script type="module">
+const c = document.createElement('canvas'); c.width = 64; c.height = 32;
+window.__gpuCanvas = c;
+const a = navigator.gpu && await navigator.gpu.requestAdapter();
+if (a) {
+  const d = await a.requestDevice();
+  const ctx = c.getContext('webgpu');
+  ctx.configure({ device: d, format: navigator.gpu.getPreferredCanvasFormat(), alphaMode: 'opaque' });
+  const e = d.createCommandEncoder();
+  e.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0.5, b: 1, a: 1 } }] }).end();
+  d.queue.submit([e.finish()]);
+}
+document.documentElement.dataset.gpuDone = a ? '1' : 'no-adapter';
+</script>
+</body></html>

@@ -38,7 +38,10 @@
 //       └── eye camera, N RenderViews, TONEMAP_NEUTRAL, no sky layer
 
 import { PlayCanvasSplatViewer, pageRigTRS, pageViewAxis, pageViewRig } from './inline3d-splat-playcanvas.js';
-import { resolveControls, normalizeCameraPose, now, MAX_DT_S, declareViewRig } from './inline3d-splat-shared.js';
+import { resolveControls, normalizeCameraPose, now, MAX_DT_S, declareViewRig, attachModelStereo, attachComfortDepth, resolveDepthOption, framedSubjectBounds } from './inline3d-splat-shared.js';
+import { displayRig } from './inline3d-three.js';
+import { robustFrame, meshesOfPlayCanvasEntity, resolveFraming, fitOptionsOf } from './inline3d-model-frame.js';
+import { resolveDiag, DiagRecorder, startDiagLoop, registerDiag, watchContent } from './inline3d-splat-diag.js';
 import {
   NEUTRAL_STUDIO,
   neutralStudioRadiance,
@@ -358,6 +361,20 @@ export function boundsOfEntity(pc, entity) {
   };
 }
 
+/**
+ * The frame `addModel` fits on (web#327). `'robust'` (the default): pivot at the surface's
+ * area-weighted median, the 75th-percentile depth on the glass, fit from trimmed extents (see
+ * ./inline3d-model-frame.js); `'box'`: `boundsOfEntity`, as before robust framing became the default. Falls back to the box
+ * when the entity has no triangles it can read. Null when there is nothing to frame.
+ */
+export function frameOfEntity(pc, entity, { framing = 'robust', margin = 0.8 } = {}) {
+  const box = boundsOfEntity(pc, entity);
+  if (!box || framing === 'box') return box;
+  const f = robustFrame(meshesOfPlayCanvasEntity(entity), box, { margin });
+  if (!f) console.info(`${TAG} framing:'robust' fell back to the bounding box (no readable triangles).`);
+  return f || box;
+}
+
 // ── option validation (pure; ./model calls it synchronously, before anything loads) ──────────
 
 /** Options that only mean something on three's path: their values ARE three.js objects. */
@@ -439,7 +456,9 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     antialias = true,
   } = opts;
   const ctl = validatePlayCanvasModelOptions(opts);
+  const framing = resolveFraming(opts.framing);
   const pageMode = ctl.page;
+  const depthOption = resolveDepthOption(opts.depth, '@displayxr/inline3d/model');
   if (pageMode && ctl.ignored.length) {
     console.info(`${TAG} controls:'page' — the page owns the camera, so ${ctl.ignored.join(', ')} ${ctl.ignored.length === 1 ? 'is' : 'are'} ignored.`);
   }
@@ -455,14 +474,21 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     orbit,
     idleSpin,
     renderScale,
+    logTag: '[inline3d/model]',
     flipY: false, // glTF is already Y-up
     orbitMaxDeg: opts.orbitMaxDeg,
     orbitEase: opts.orbitEase,
+    // A mesh turns all the way round, like the three path's SceneViewer: not the photo tilt.
+    orbitStyle: opts.orbitStyle ?? 'turntable',
     zoom: opts.zoom,
     feather,
     nearClip: opts.nearClip,
     farClip: opts.farClip,
     sky: false,
+    viewerEase: opts.viewerEase,
+    cursor: opts.cursor,
+    // Opt-in; undefined = the viewer's own default (a transparent clear).
+    clearColor: opts.clearColor,
     // Each environment's own look: 'room' is three's (untonemapped), the rest the Sample Viewer's.
     toneMapping: envMap ? 'neutral' : ENVIRONMENT_TONE_MAPPING[environment] || 'neutral',
   });
@@ -470,6 +496,11 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
   let handle = null;
   let removed = false;
   let lastPagePose = null;
+  // `?dxrdiag` (or `diag`): the splat handle's recorder, for what a model tile can show — frame
+  // cadence, and the live GL objects + content-swap leak watch (./inline3d-splat-diag.js).
+  const diagCfg = resolveDiag(opts.diag);
+  const diag = diagCfg.on ? new DiagRecorder({ switches: diagCfg.switches, label: 'model' }) : null;
+  let diagLoop = null;
 
   Object.assign(out, {
     backend: 'playcanvas',
@@ -505,21 +536,73 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     },
     remove() {
       removed = true;
+      diagLoop?.remove();
+      diag?.dispose();
+      depth.dispose();
       handle?.remove();
       viewer.dispose(); // app.destroy(): the model, its textures and any page entities go with it
     },
     exclude: (el) => handle?.exclude(el),
     unexclude: (el) => handle?.unexclude(el),
+    /**
+     * Compile `entity`'s mesh programs off the frame before it is shown (default: the model) —
+     * PlayCanvasSplatViewer.warmEntity. Resolves the number of programs warmed; 0 before `ready`.
+     */
+    async warmEntity(entity, o) {
+      await out.ready?.catch?.(() => null);
+      return removed ? 0 : viewer.warmEntity(entity ?? out.model, o);
+    },
+    /**
+     * Destroy `entity` (content a page added under handle.engine.root) and release the programs
+     * its materials linked, and its container `asset` when nothing else draws from it —
+     * PlayCanvasSplatViewer.releaseEntity. Returns { programs, container }.
+     */
+    releaseEntity(entity, o) {
+      return removed ? { programs: 0, container: null } : viewer.releaseEntity(entity, o);
+    },
   });
 
+  // The per-eye buffer scale in force (the request times the device-limit clamp,
+  // ./inline3d-buffer-limit.js) and the request as given. Accessors, so they stay live.
+  Object.defineProperty(out, 'renderScale', { get: () => viewer.effectiveRenderScale, enumerable: true, configurable: true });
+  Object.defineProperty(out, 'renderScaleRequested', { get: () => viewer.renderScale, enumerable: true, configurable: true });
+
+  // handle.setStereo / handle.rig (a depth slider; nothing is declared until it is called).
+  const stereo = attachModelStereo(out, { getTile: () => handle, vH: virtualDisplayHeight, makeDisplayRig: displayRig, page: pageMode });
+  // `depth: 'auto'` (opt-in): the comfort factor under setStereo's, on the same display rig.
+  // Without it, inert: `depthFactor` reads 1 and nothing is measured or declared.
+  const depth = attachComfortDepth(out, {
+    option: depthOption,
+    canvas,
+    getTile: () => handle,
+    getBounds: () => (out.frame ? framedSubjectBounds(viewer) : null),
+    getVH: () => virtualDisplayHeight,
+    apply: (k) => stereo.setBase(k),
+    tag: TAG,
+  });
+  if (pageMode) depth.ignore("controls:'page' (the page's camera rig)");
+
+  const onFrame = diag
+    ? (views, layer, frame) => {
+        const t = performance.now();
+        viewer.onFrame(views, layer, frame);
+        diag.frame(views, t);
+      }
+    : viewer.onFrame;
   if (wall && wall.supported) {
-    handle = wall.addScene(canvas, viewer.onFrame, {
+    handle = wall.addScene(canvas, onFrame, {
       ...(pageMode
         ? { viewRig: pageViewRig({ verticalFovDeg: viewer.page.fov, convergence: 2, comfortDepth: ctl.comfortDepth }) }
         : { virtualDisplayHeight }),
       onLayerLost: viewer.onLayerLost,
+      bufferClamped: true, // this viewer clamps its own buffer; the core must never touch its context
       ...(observe ? { observe } : {}),
       ...(firstWovenHoldMs !== undefined ? { firstWovenHoldMs } : {}),
+      // The SDK covers this canvas across a move/resize (core rectCover): on by default here, the
+      // preview tier; 'off' for a page that runs its own cover.
+      rectCover: opts.rectCover === undefined ? 'auto' : opts.rectCover,
+      // The entry's double-attach claim (guardedAttach): lets THIS registration through.
+      _dxrClaim: opts._dxrClaim,
     });
   } else {
     viewer.startMono();
@@ -529,6 +612,12 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
       handle ? handle.firstWoven : Promise.resolve(Object.freeze({ woven: false, confirmed: false, reason: 'unsupported', ms: 0 })),
     );
     delete out._resolveFirstWoven;
+  }
+
+  if (diag) {
+    diagLoop = startDiagLoop(diag, { overlay: !diag.has('nooverlay') && !!handle });
+    if (diagLoop?.el) handle?.exclude?.(diagLoop.el);
+    registerDiag(diag);
   }
 
   for (const [name, args] of pending) {
@@ -550,7 +639,11 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
         const dm = (c[0] - ax.origin[0]) * ax.forward[0] + (c[1] - ax.origin[1]) * ax.forward[1] + (c[2] - ax.origin[2]) * ax.forward[2];
         if (dm > 0) d = dm / (ax.scale || 1);
       }
-      out.viewRig = pageViewRig({ verticalFovDeg: viewer.page.fov, convergence: d ?? 2, comfortDepth: ctl.comfortDepth }, out.viewRig || {});
+      // setStereo's values, ABSOLUTE on this camera rig (1 and 1 until it is called: as before).
+      out.viewRig = pageViewRig(
+        { verticalFovDeg: viewer.page.fov, convergence: d ?? 2, comfortDepth: ctl.comfortDepth, ipdFactor: out.rig.ipdFactor, parallaxFactor: out.rig.parallaxFactor },
+        out.viewRig || {},
+      );
       declareViewRig(handle, out.viewRig);
     };
     if (typeof opts.onBeforeFrame === 'function') {
@@ -589,8 +682,13 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     }
     const wanted = PC_DECODER_KINDS.filter((k) => (k === 'meshopt' && meshoptDecoder) || (declared ? declared.has(PC_DECODERS[k].ext) : false));
 
-    const app = await viewer.attachEngine(pc, { preserveDrawingBuffer, antialias, patchSplats: false });
+    // `?dxrdiag=keepshaders`: the engine's shader cache as it ships (A/B; see ./inline3d-pc-shader-cache.js).
+    const shaderCacheRelease = !diag?.has('keepshaders');
+    // `?dxrdiag=keepprograms`: destroyed materials keep their programs (A/B; ./inline3d-pc-auto-release.js).
+    const programRelease = !diag?.has('keepprograms');
+    const app = await viewer.attachEngine(pc, { preserveDrawingBuffer, antialias, patchSplats: false, shaderCacheRelease, programRelease });
     if (!app || removed) return out;
+    if (diag) watchContent(diag, app, viewer);
     out.engine = Object.freeze({ app, root: viewer.content, camera: viewer.eye || null });
 
     // Lighting before the model, so the first frame the model is in is lit.
@@ -638,10 +736,14 @@ export function attachPlayCanvasModel(out, wall, canvas, src, opts, pending = []
     viewer.content.addChild(entity);
     out.model = entity;
     out.container = asset.resource; // animations, materials, textures (engine types)
-    const bounds = frame || boundsOfEntity(pc, entity);
+    // `frame` overrides everything; else the robust frame (default) or the box (framing:'box').
+    const bounds = frame || frameOfEntity(pc, entity, { framing, margin });
     if (bounds) {
       out.frame = bounds;
-      viewer.fitTo(bounds.center, bounds.extent);
+      const fo = fitOptionsOf(bounds);
+      if (fo) viewer.fitTo(bounds.center, bounds.extent, fo);
+      else viewer.fitTo(bounds.center, bounds.extent);
+      depth.refresh();
     }
     return out;
   })();

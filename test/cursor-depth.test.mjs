@@ -1,0 +1,705 @@
+// Tests for the depth-aware cursor — the placement maths (./cursor-depth, a port of the
+// runtime's u_cursor_depth, ADR-046) and ./three's DepthCursor glue.
+//
+// The views are built the way the runtime builds them — off-axis frusta from each eye onto one
+// physical canvas — and handed over as XRViews carry them (column-major projection + transform
+// matrices). The numbers deliberately match the runtime's tests_aux_cursor_depth.cpp, so the web
+// and native cursors cannot drift apart unnoticed.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  CURSOR_DEFAULT_TUNING as T,
+  CURSOR_DEFAULT_HEIGHT,
+  CURSOR_ARROW,
+  CURSOR_ARROW_FILL,
+  CURSOR_ARROW_CSS_PX,
+  CURSOR_DRAW_THRESHOLD,
+  CURSOR_DRAW_MIN_PX,
+  cursorArrowMesh,
+  cursorDefaultHeight,
+  cursorModelMatrix,
+  cursorShouldDraw,
+  CursorDepthPlacer,
+  cursorFilterStep,
+  cursorPointDisparity,
+  cursorTarget,
+  placeCursor,
+  solveCursorGeometry,
+} from '../js/inline3d-cursor-depth.js';
+import { DepthCursor } from '../js/inline3d-three.js';
+
+const W = 0.3; // canvas width, m
+const H = 0.2; // canvas height, m
+
+const near = (a, b, eps = 1e-5, msg = '') => assert.ok(Math.abs(a - b) <= eps, `${msg} ${a} != ${b}`);
+const near3 = (a, b, eps = 1e-5) => a.forEach((x, i) => near(x, b[i], eps, `[${i}]`));
+
+/** Column-major rigid transform from a unit quaternion + position, with optional uniform scale s. */
+function transform(q = [0, 0, 0, 1], p = [0, 0, 0], s = 1) {
+  const [x, y, z, w] = q;
+  return [
+    (1 - 2 * (y * y + z * z)) * s, 2 * (x * y + z * w) * s, 2 * (x * z - y * w) * s, 0,
+    2 * (x * y - z * w) * s, (1 - 2 * (x * x + z * z)) * s, 2 * (y * z + x * w) * s, 0,
+    2 * (x * z + y * w) * s, 2 * (y * z - x * w) * s, (1 - 2 * (x * x + y * y)) * s, 0,
+    p[0], p[1], p[2], 1,
+  ];
+}
+const apply = (m, v) => [
+  m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12],
+  m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13],
+  m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14],
+];
+
+/** Off-axis view from a display-space eye onto the W×H canvas at z = 0, carried by `world`. */
+function kooima(eye, world = transform()) {
+  const d = eye[2];
+  const l = (-W / 2 - eye[0]) / d, r = (W / 2 - eye[0]) / d;
+  const u = (H / 2 - eye[1]) / d, dn = (-H / 2 - eye[1]) / d;
+  const n = 0.01, f = 100;
+  const proj = [
+    2 / (r - l), 0, 0, 0,
+    0, 2 / (u - dn), 0, 0,
+    (r + l) / (r - l), (u + dn) / (u - dn), -(f + n) / (f - n), -1,
+    0, 0, (-2 * f * n) / (f - n), 0,
+  ];
+  // The view's transform: the world transform's rotation (and scale), the eye carried through it.
+  const t = world.slice();
+  const pe = apply(world, eye);
+  t[12] = pe[0]; t[13] = pe[1]; t[14] = pe[2];
+  return { projectionMatrix: proj, transformMatrix: t };
+}
+
+test('cursor-depth: the canvas point under the cursor is where the view rays meet', () => {
+  const g = solveCursorGeometry(kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6]), 0.25, 0.75);
+  assert.ok(g);
+  near3(g.canvasPoint, [-W / 2 + 0.25 * W, H / 2 - 0.75 * H, 0]);
+  near3(g.eye, [0, 0, 0.6]);
+  near(g.eyeToCanvas, 0.6);
+  near(g.canvasHeight, H);
+});
+
+test('cursor-depth: off-axis, unequal-depth eyes still find the canvas point', () => {
+  const g = solveCursorGeometry(kooima([0.05, 0.03, 0.55]), kooima([0.11, 0.045, 0.57]), 0.9, 0.1);
+  near3(g.canvasPoint, [-W / 2 + 0.9 * W, H / 2 - 0.1 * H, 0]);
+  near(g.canvasHeight, H);
+});
+
+test('cursor-depth: disparity in eye-baseline units — 0 on the canvas, -1 halfway to the eye', () => {
+  const g = solveCursorGeometry(kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6]), 0.5, 0.5);
+  near(cursorPointDisparity(g, [0, 0, 0]), 0);
+  near(cursorPointDisparity(g, [0, 0, 0.3]), -1);
+  near(cursorPointDisparity(g, [0.05, -0.02, 0.3]), -1);
+  near(cursorPointDisparity(g, [0, 0, -0.6]), 0.5);
+  assert.equal(cursorPointDisparity(g, [0, 0, 0.9]), null);
+});
+
+test('cursor-depth: placement sits on the cyclopean ray and keeps its apparent size', () => {
+  const g = solveCursorGeometry(kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6]), 0.25, 0.75);
+  const p = placeCursor(g, -1, 0.05);
+  near3(p.position, [g.canvasPoint[0] / 2, g.canvasPoint[1] / 2, 0.3]);
+  near(p.height, 0.05 * H * 0.5);
+  near(placeCursor(g, 0, 0).height, CURSOR_DEFAULT_HEIGHT * H);
+  near(cursorPointDisparity(g, placeCursor(g, -0.37, 0.05).position), -0.37);
+});
+
+test('cursor-depth: invariant under a rigid transform + 12.5x scale (camera rigs)', () => {
+  const h = 0.35, n = Math.hypot(0.3, 1, 0.2);
+  const q = [(Math.sin(h) * 0.3) / n, Math.sin(h) / n, (Math.sin(h) * 0.2) / n, Math.cos(h)];
+  const X = transform(q, [3, -1.5, 7], 12.5);
+  const g0 = solveCursorGeometry(kooima([-0.032, 0.01, 0.6]), kooima([0.032, 0.01, 0.6]), 0.3, 0.6);
+  const g1 = solveCursorGeometry(kooima([-0.032, 0.01, 0.6], X), kooima([0.032, 0.01, 0.6], X), 0.3, 0.6);
+  near3(g1.canvasPoint, apply(X, g0.canvasPoint), 1e-6 * 12.5 * 100);
+  near(g1.canvasHeight, g0.canvasHeight * 12.5, 1e-6 * 100);
+  const p0 = [0.02, -0.03, 0.17];
+  near(cursorPointDisparity(g1, apply(X, p0)), cursorPointDisparity(g0, p0), 1e-6);
+});
+
+test('cursor-depth: head motion does not move the cursor on the glass', () => {
+  const onGlass = (eye, p) => {
+    const k = eye[2] / (eye[2] - p[2]);
+    return [eye[0] + (p[0] - eye[0]) * k, eye[1] + (p[1] - eye[1]) * k];
+  };
+  let ref = null;
+  for (const h of [[0, 0, 0.6], [0.12, -0.05, 0.5], [-0.2, 0.08, 0.75]]) {
+    const el = [h[0] - 0.032, h[1], h[2]], er = [h[0] + 0.032, h[1], h[2]];
+    const g = solveCursorGeometry(kooima(el), kooima(er), 0.3, 0.4);
+    const c = placeCursor(g, -0.4, 0.03).position;
+    const sl = onGlass(el, c), sr = onGlass(er, c);
+    near(sr[0] - sl[0], 0.064 * -0.4);
+    near(sr[1], sl[1]);
+    if (ref) { near3(sl, ref[0]); near3(sr, ref[1]); } else ref = [sl, sr];
+  }
+});
+
+test('cursor-depth: degenerate input is null, never garbage', () => {
+  const mono = kooima([0, 0, 0.6]);
+  assert.equal(solveCursorGeometry(mono, mono, 0.5, 0.5), null);
+  const a = kooima([-0.032, 0, 0.6]), b = kooima([0.032, 0, 0.6]);
+  assert.equal(solveCursorGeometry(a, b, -0.01, 0.5), null);
+  assert.equal(solveCursorGeometry(a, b, 0.5, NaN), null);
+});
+
+test('cursor-depth: target = content minus margin, clamped; nothing under it = the canvas', () => {
+  assert.equal(cursorTarget(T, false, -0.4), 0);
+  near(cursorTarget(T, true, -0.2), -0.2 - T.margin);
+  assert.equal(cursorTarget(T, true, -5), T.minDisparity);
+  assert.equal(cursorTarget(T, true, 0.95), 0, 'content behind the glass: the cursor stays ON it');
+  assert.equal(T.maxDisparity, 0);
+});
+
+test('policy (ADR-046 A2): never behind the glass — random content ⇒ target ≤ 0; content on/behind ⇒ exactly 0', () => {
+  let s = 11;
+  const rnd = () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  // Even a tuning that asks for the old +0.6 clamp cannot put it behind the glass.
+  const old = { ...T, maxDisparity: 0.6 };
+  for (let i = 0; i < 2000; i++) {
+    const d = (rnd() - 0.5) * 4;
+    for (const tu of [T, old]) {
+      const t = cursorTarget(tu, true, d);
+      assert.ok(t <= 0, `d=${d} → ${t}`);
+      if (d >= 0) assert.equal(t, 0, `content on/behind the glass (d=${d}) leaves it on the glass`);
+      else assert.equal(t, Math.max(d - tu.margin, tu.minDisparity), `in front: max(d − margin, dMin) (d=${d})`);
+    }
+  }
+  assert.equal(cursorTarget(T, true, 0), 0);
+  assert.equal(cursorTarget(T, true, -0), 0);
+  // Even a NEGATIVE margin (a tuning that asks to sink into the content) is capped at the glass.
+  assert.equal(cursorTarget({ ...T, margin: -0.1 }, true, -0.05), 0);
+  assert.equal(cursorTarget({ ...old, margin: -0.1 }, true, -0.05), 0);
+});
+
+test('policy (ADR-046 A2): the draw threshold — only at or past −0.005 baselines, and ≥ 0.5 px where px are known', () => {
+  assert.equal(CURSOR_DRAW_THRESHOLD, -0.005);
+  assert.equal(CURSOR_DRAW_MIN_PX, 0.5);
+  assert.equal(cursorShouldDraw(-0.0049), false, 'just short of the threshold: the OS cursor');
+  assert.equal(cursorShouldDraw(-0.0051), true, 'just past it: drawn');
+  assert.equal(cursorShouldDraw(0), false);
+  assert.equal(cursorShouldDraw(0.2), false, 'behind the glass: never drawn');
+  assert.equal(cursorShouldDraw(NaN), false);
+  // The pixel floor: 50 px per baseline → 0.5 px is 0.01 baselines.
+  assert.equal(cursorShouldDraw(-0.009, 50), false, 'past the threshold but under 0.5 px');
+  assert.equal(cursorShouldDraw(-0.011, 50), true);
+  assert.equal(cursorShouldDraw(-0.006, 1000), true, 'a fine panel: the threshold rules');
+  assert.equal(cursorShouldDraw(-0.006, null), true, 'px unknown: the threshold alone');
+});
+
+test('CursorDepthPlacer: active = the draw decision — over content behind the glass it is solved but NOT drawn', () => {
+  const a = kooima([-0.032, 0, 0.6]), b = kooima([0.032, 0, 0.6]);
+  const placer = new CursorDepthPlacer();
+  const behind = placer.update([a, b], { u: 0.5, v: 0.5, nearestPoint: [0, 0, -0.1] }, 1);
+  assert.equal(behind.solved, true);
+  assert.equal(behind.active, false, 'the OS cursor is the cursor');
+  assert.equal(behind.targetDisparity, 0);
+  assert.equal(behind.disparity, 0);
+  const nothing = new CursorDepthPlacer().update([a, b], { u: 0.5, v: 0.5, nearestPoint: null }, 1);
+  assert.equal(nothing.active, false, 'nothing under it: nothing drawn (not "drawn at 0")');
+  // The pixel floor, through canvasPx: baseline 0.064 m over a 0.2 m canvas 40 px tall → 12.8 px per
+  // baseline, so content just in front (target −0.035) is 0.45 px: under the floor.
+  const shallow = [0, 0, 0.6 * (1 - 1 / (1 + 0.005))]; // d = −0.005
+  const pFloor = new CursorDepthPlacer().update([a, b], { u: 0.5, v: 0.5, nearestPoint: shallow, canvasPx: 40 }, 1);
+  near(pFloor.pxPerBaseline, (0.064 / H) * 40);
+  near(pFloor.disparity, -0.005 - T.margin);
+  assert.equal(pFloor.active, false, 'under 0.5 px on the panel');
+  assert.equal(new CursorDepthPlacer().update([a, b], { u: 0.5, v: 0.5, nearestPoint: shallow, canvasPx: 400 }, 1).active, true);
+});
+
+test('arrow: the classic 12×19 arrow, TIP at the hotspot; one mesh for every backend', () => {
+  assert.deepEqual([...CURSOR_ARROW[0]], [0, 0], 'vertex 0 is the tip, at the hotspot');
+  const xs = CURSOR_ARROW.map((p) => p[0]), ys = CURSOR_ARROW.map((p) => p[1]);
+  assert.equal(Math.min(...xs), 0, 'nothing left of the tip');
+  assert.equal(Math.min(...ys), 0, 'nothing above the tip');
+  near(Math.max(...ys), 18.6 / 19, 1e-9, 'height');
+  near(Math.max(...xs), 11.7 / 19, 1e-9, 'width (12 px of 19)');
+  const area = (poly) => Math.abs(poly.reduce((a, p, i) => { const q = poly[(i + 1) % poly.length]; return a + p[0] * q[1] - q[0] * p[1]; }, 0)) / 2;
+  const m = cursorArrowMesh();
+  assert.equal(m.count, 30, 'outline (5 triangles) then fill (5 triangles)');
+  // 3D: y UP, the tip at the origin, the body down-right — so the model matrix puts the tip on the placement.
+  near3([m.positions[0], m.positions[1], m.positions[2]], [0, 0, 0], 0);
+  let triArea = 0, fillArea = 0;
+  for (let t = 0; t < 10; t++) {
+    const P = [0, 1, 2].map((k) => [m.positions[(t * 3 + k) * 3], m.positions[(t * 3 + k) * 3 + 1]]);
+    for (const [x, y] of P) assert.ok(x >= -1e-9 && y <= 1e-9, `every vertex right of and below the tip (${x}, ${y})`);
+    const a = Math.abs((P[1][0] - P[0][0]) * (P[2][1] - P[0][1]) - (P[2][0] - P[0][0]) * (P[1][1] - P[0][1])) / 2;
+    if (t < 5) triArea += a; else fillArea += a;
+  }
+  near(triArea, area(CURSOR_ARROW), 1e-6, 'the triangles tile the outline polygon exactly');
+  near(fillArea, area(CURSOR_ARROW_FILL), 1e-6, 'and the fill polygon');
+  assert.ok(fillArea < triArea, 'the fill is inset');
+  // Colours: dark outline first, white fill.
+  assert.deepEqual([...m.colors.slice(0, 3)].map((c) => c < 0.1), [true, true, true]);
+  assert.deepEqual([...m.colors.slice(15 * 4, 15 * 4 + 3)], [1, 1, 1]);
+  // The fill's edges sit one px (1/19) in from the outline's: check the two edges at the tip.
+  const f0 = CURSOR_ARROW_FILL[0];
+  near(f0[0], 1 / 19, 1e-9, 'one px in from the left edge');
+  const [ax, ay] = CURSOR_ARROW[6]; // the tip → right-wing edge
+  near((ay * f0[0] - ax * f0[1]) / Math.hypot(ax, ay) * -1, 1 / 19, 1e-9, 'one px in from the top edge');
+  // The model matrix puts the mesh origin (the tip) at the placement position.
+  const M = cursorModelMatrix({ basis: { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, height: 0.02, position: [0.1, 0.2, 0.3] });
+  assert.deepEqual([M[12], M[13], M[14]], [0.1, 0.2, 0.3]);
+});
+
+test('size: the OS arrow — 19 CSS px of the canvas by default, recomputed for its size', () => {
+  assert.equal(CURSOR_ARROW_CSS_PX, 19);
+  near(cursorDefaultHeight(400), 19 / 400, 1e-12);
+  near(cursorDefaultHeight(950), 0.02, 1e-12);
+  assert.equal(cursorDefaultHeight(20), 0.5, 'capped');
+  assert.equal(cursorDefaultHeight(0), CURSOR_DEFAULT_HEIGHT, 'unknown: the fallback');
+});
+
+test('cursor-depth: the filter rises fast and sinks slowly, and re-primes after a gap', () => {
+  const f = {};
+  assert.equal(cursorFilterStep(f, T, -0.3, 1.0), -0.3);
+  assert.ok(cursorFilterStep(f, T, 0, 1.03) < -0.25);
+  const g = {};
+  cursorFilterStep(g, T, 0, 1.0);
+  const d = cursorFilterStep(g, T, -0.3, 1.03);
+  near(d, -0.3 * (1 - Math.exp(-1)), 1e-4);
+  assert.equal(cursorFilterStep(g, T, 0.5, 1.03), d);
+  assert.equal(cursorFilterStep(g, T, 0.1, 2.0), 0.1);
+});
+
+test('cursor-depth: CursorDepthPlacer accepts XRView-shaped views and is inactive in 2D', () => {
+  const a = kooima([-0.032, 0, 0.6]), b = kooima([0.032, 0, 0.6]);
+  const xr = (v) => ({ projectionMatrix: v.projectionMatrix, transform: { matrix: v.transformMatrix } });
+  const placer = new CursorDepthPlacer();
+  const p = placer.update([xr(a), xr(b)], { u: 0.5, v: 0.5, nearestPoint: [0, 0, 0.1] }, 1);
+  assert.equal(p.active, true);
+  near(p.targetDisparity, 1 - 0.6 / 0.5 - T.margin);
+  assert.equal(placer.update([xr(a)], { u: 0.5, v: 0.5, nearestPoint: null }, 2).active, false);
+});
+
+// ── DepthCursor (three.js glue) against a recording stub ───────────────────────────────────
+
+function stubTHREE() {
+  class Mat { constructor(o) { Object.assign(this, o); } dispose() { this.disposed = true; } }
+  class Geom { setAttribute(k, v) { this[k] = v; } dispose() { this.disposed = true; } }
+  return {
+    BufferGeometry: Geom,
+    Float32BufferAttribute: class { constructor(a, n) { this.array = a; this.itemSize = n; } },
+    LineBasicMaterial: Mat,
+    MeshBasicMaterial: Mat,
+    ShaderMaterial: Mat,
+    ShaderChunk: { colorspace_fragment: '' },
+    Vector3: class { constructor(...a) { this.v = a; } set(...a) { this.v = a; return this; } },
+    Vector4: class { constructor(...a) { this.v = a; } set(...a) { this.v = a; return this; } },
+    DoubleSide: 2,
+    Mesh: class {
+      constructor(geometry, material) {
+        this.geometry = geometry;
+        this.material = material;
+        this.matrix = { elements: null, fromArray(a) { this.elements = a; } };
+      }
+    },
+    LineSegments: class {
+      constructor(geometry, material) {
+        this.geometry = geometry;
+        this.material = material;
+        this.matrix = { elements: null, fromArray(a) { this.elements = a; } };
+      }
+    },
+  };
+}
+
+// handlers[k] dispatches to every listener of k (the pointer AND the CSS reader listen to moves).
+function stubListeners(target, handlers = {}) {
+  const lists = {};
+  target.addEventListener = (k, f) => {
+    (lists[k] ||= []).push(f);
+    handlers[k] = (e) => (lists[k] || []).slice().forEach((g) => g(e));
+  };
+  target.removeEventListener = (k, f) => {
+    lists[k] = (lists[k] || []).filter((g) => g !== f);
+    if (!lists[k].length) delete handlers[k];
+  };
+  return handlers;
+}
+function stubAttrs(target) {
+  const attrs = new Map();
+  target.setAttribute = (k, v) => attrs.set(k, String(v));
+  target.removeAttribute = (k) => attrs.delete(k);
+  target.hasAttribute = (k) => attrs.has(k);
+  target.getAttribute = (k) => (attrs.has(k) ? attrs.get(k) : null);
+  return target;
+}
+function stubCanvas() {
+  const handlers = {};
+  const c = stubAttrs({
+    nodeType: 1,
+    style: { cursor: 'crosshair' },
+    handlers,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 300, height: 200 }),
+  });
+  stubListeners(c, handlers);
+  return c;
+}
+/** The depth cursor's hide: the data attribute — the page's inline cursor is never written. */
+const cssHidden = (el) => el.hasAttribute('data-inline3d-cursor-hidden');
+
+test('DepthCursor: rises in front of what it hovers, hides the CSS cursor, and gives it back', () => {
+  const canvas = stubCanvas();
+  // Content: a plane at z = 0.1 (in front of the glass) covering the left half of the canvas.
+  const hitTest = (o, d) => {
+    if (d[2] >= 0) return null;
+    const t = (0.1 - o[2]) / d[2];
+    const p = [o[0] + d[0] * t, o[1] + d[1] * t, 0.1];
+    return p[0] < 0 ? p : null;
+  };
+  const cur = new DepthCursor(stubTHREE(), { canvas, hitTest });
+  const views = [kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6])];
+
+  // No pointer yet: inactive, CSS cursor untouched.
+  assert.equal(cur.update(views, 1000).active, false);
+  assert.equal(cssHidden(canvas), false);
+
+  // Over the content: in front of z = 0.1 by the margin, CSS cursor hidden.
+  canvas.handlers.pointermove({ clientX: 75, clientY: 100 }); // u = 0.25
+  const p = cur.update(views, 1016);
+  assert.equal(p.active, true);
+  assert.equal(cur.object.visible, true);
+  near(p.targetDisparity, 1 - 0.6 / 0.5 - T.margin);
+  assert.ok(p.position[2] > 0.1, 'sprite is in front of the content');
+  assert.equal(cssHidden(canvas), true);
+  assert.equal(canvas.style.cursor, 'crosshair', "the page's inline cursor is never written");
+
+  // The arrow at the OS cursor's size (19 CSS px of a 200-px canvas), scaled by t; its tip on the placement.
+  near(p.height, (19 / 200) * H * (1 / (1 - p.disparity)), 1e-9);
+  near3([cur.object.matrix.elements[12], cur.object.matrix.elements[13], cur.object.matrix.elements[14]], p.position);
+
+  // Off the content (right half): back on the glass.
+  cur.setPointer(0.75, 0.5);
+  assert.equal(cur.update(views, 1032).targetDisparity, 0);
+
+  // The footprint, not the hotspot: just right of the content edge still sees it.
+  cur.setPointer(0.505, 0.5);
+  assert.ok(cur.update(views, 1048).targetDisparity < 0, 'a nearer edge within the footprint counts');
+
+  // Settled on the glass: nothing drawn, the CSS cursor (the page's 'crosshair') is back.
+  cur.setPointer(0.75, 0.5);
+  let q;
+  for (let t = 1100; t < 3000; t += 16) q = cur.update(views, t);
+  assert.equal(q.active, false);
+  assert.equal(cur.object.visible, false);
+  assert.equal(cssHidden(canvas), false, "the page's cursor, untouched on the plane");
+  cur.setPointer(0.505, 0.5);
+  cur.update(views, 3016);
+
+  // 2D (one view): inactive, CSS cursor restored.
+  assert.equal(cur.update([views[0]], 1064).active, false);
+  assert.equal(cur.object.visible, false);
+  assert.equal(cssHidden(canvas), false);
+
+  // Leaving the canvas deactivates; dispose removes listeners and restores the cursor.
+  cur.update(views, 1080);
+  canvas.handlers.pointerleave();
+  assert.equal(cur.update(views, 1096).active, false);
+  cur.dispose();
+  assert.equal(canvas.handlers.pointermove, undefined);
+  assert.equal(cssHidden(canvas), false);
+  assert.equal(canvas.style.cursor, 'crosshair');
+});
+
+test('DepthCursor: raysPerFrame (an expensive hit test) casts N rays a frame and still finds the content', () => {
+  const canvas = stubCanvas();
+  let rays = 0;
+  const hitTest = (o, d) => {
+    rays++;
+    if (d[2] >= 0) return null;
+    const t = (0.1 - o[2]) / d[2];
+    return [o[0] + d[0] * t, o[1] + d[1] * t, 0.1];
+  };
+  const cur = new DepthCursor(stubTHREE(), { canvas, hitTest, raysPerFrame: 1 });
+  const views = [kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6])];
+  cur.setPointer(0.5, 0.5);
+  let p;
+  for (let i = 0; i < 9; i++) p = cur.update(views, 1000 + i * 16);
+  assert.equal(rays, 9, 'one ray per frame');
+  near(p.targetDisparity, 1 - 0.6 / 0.5 - T.margin);
+});
+
+// ── 1.37: anchor modes, margin, options, pointer scope ─────────────────────────────────────
+
+import { CURSOR_ANCHOR_MODES, CursorPointer, resolveCursorOption } from '../js/inline3d-cursor-depth.js';
+
+const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+
+test('cursor-depth: the default margin is 0.015 baseline (~1 mm at 63–65 mm IPD), clamp [−0.6, 0]', () => {
+  // ADR-046 Amendment 2 A.2, halved from 0.03 on 2026-10-11 after a Windows panel check.
+  assert.equal(T.margin, 0.015);
+  // The behaviour, not just the field: content at d = −0.2 puts the cursor at −0.215.
+  assert.ok(Math.abs(cursorTarget(T, true, -0.2) - -0.215) < 1e-12);
+  assert.equal(T.minDisparity, -0.6);
+  assert.equal(T.maxDisparity, 0);
+});
+
+test('anchor hybrid: on the ray while the pointer moves, world-FIXED while it is still', () => {
+  const placer = new CursorDepthPlacer(); // hybrid by default
+  const hint = (u, v) => ({ u, v, nearestPoint: [0, 0, 0.1] });
+  const head = (x) => [kooima([x - 0.032, 0, 0.6]), kooima([x + 0.032, 0, 0.6])];
+  // Moving: identical to the screen placement.
+  const screen = new CursorDepthPlacer(T, { anchor: 'screen' });
+  let p = placer.update(head(0), hint(0.4, 0.5), 1.0);
+  const s = screen.update(head(0), hint(0.4, 0.5), 1.0);
+  near3(p.position, s.position);
+  assert.equal(p.anchored, false);
+  // Still, same head: continuous (the stop frame does not jump).
+  const stopped = placer.update(head(0), hint(0.4, 0.5), 1.016);
+  assert.equal(stopped.anchored, true);
+  near3(stopped.position, screen.update(head(0), hint(0.4, 0.5), 1.016).position);
+  // Still, head moves 8 cm: the cursor stays put in the WORLD (so it parallaxes like content),
+  // while the screen-anchored one slides with the head.
+  p = placer.update(head(0.08), hint(0.4, 0.5), 1.032);
+  const sMoved = screen.update(head(0.08), hint(0.4, 0.5), 1.032);
+  near3([p.position[0], p.position[1]], [stopped.position[0], stopped.position[1]], 1e-6);
+  assert.ok(Math.abs(sMoved.position[0] - stopped.position[0]) > 1e-3, 'screen mode follows the head');
+  // Pointer moves again: back on the ray.
+  p = placer.update(head(0.08), hint(0.45, 0.5), 1.048);
+  near3(p.position, screen.update(head(0.08), hint(0.45, 0.5), 1.048).position);
+});
+
+test('anchor world: straight in front of the pointer canvas point, at the placed depth', () => {
+  const placer = new CursorDepthPlacer(T, { anchor: 'world' });
+  const views = [kooima([0.05 - 0.032, 0.02, 0.6]), kooima([0.05 + 0.032, 0.02, 0.6])]; // off-axis viewer
+  const p = placer.update(views, { u: 0.3, v: 0.6, nearestPoint: [0, 0, 0.1] }, 1.0);
+  const g = p.geometry;
+  // Same x/y as the canvas point (display normal = z here), in front of it.
+  near(p.position[0], g.canvasPoint[0]);
+  near(p.position[1], g.canvasPoint[1]);
+  assert.ok(p.position[2] > 0);
+  // Same depth along the normal as the screen-anchored placement.
+  const s = new CursorDepthPlacer(T, { anchor: 'screen' }).update(views, { u: 0.3, v: 0.6, nearestPoint: [0, 0, 0.1] }, 1.0);
+  near(p.position[2], s.position[2]);
+  assert.deepEqual([...CURSOR_ANCHOR_MODES], ['hybrid', 'screen', 'world']);
+  assert.throws(() => new CursorDepthPlacer(T, { anchor: 'nope' }), /anchor/);
+});
+
+test('resolveCursorOption: off by default, depth or an options object, validated', () => {
+  assert.equal(resolveCursorOption(undefined), null);
+  assert.equal(resolveCursorOption(false), null);
+  assert.deepEqual(resolveCursorOption('depth'), {});
+  assert.deepEqual(resolveCursorOption({ margin: 0.003, anchor: 'world', pointerScope: 'window', height: 0.04 }), {
+    margin: 0.003,
+    anchor: 'world',
+    pointerScope: 'window',
+    height: 0.04,
+  });
+  assert.throws(() => resolveCursorOption('flat'), /expected 'depth'/);
+  assert.throws(() => resolveCursorOption({ size: 1 }), /unknown option/);
+  assert.throws(() => resolveCursorOption({ anchor: 'x' }), /anchor/);
+  assert.throws(() => resolveCursorOption({ pointerScope: 'page' }), /pointerScope/);
+  assert.throws(() => resolveCursorOption({ margin: -1 }), /positive/);
+});
+
+test('DepthCursor: margin option + pointerScope window (over overlay DOM, page-wide CSS hide)', () => {
+  const winHandlers = {};
+  const realAdd = globalThis.addEventListener, realRemove = globalThis.removeEventListener;
+  stubListeners(globalThis, winHandlers);
+  const html = stubAttrs({ nodeType: 1 });
+  const styles = [];
+  globalThis.document = {
+    documentElement: html,
+    head: { appendChild: (el) => styles.push(el) },
+    getElementById: () => (styles.length ? styles[0] : null),
+    createElement: () => ({}),
+  };
+  try {
+    const canvas = stubCanvas();
+    const hitTest = (o, d) => {
+      const t = (0.1 - o[2]) / d[2];
+      return [o[0] + d[0] * t, o[1] + d[1] * t, 0.1];
+    };
+    const cur = new DepthCursor(stubTHREE(), { canvas, hitTest, margin: 0.002, pointerScope: 'window' });
+    const views = [kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6])];
+    // A move over an overlay element still lands in the canvas box: tracked.
+    winHandlers.pointermove({ clientX: 150, clientY: 100 });
+    const p = cur.update(views, 1000);
+    assert.equal(p.active, true);
+    near(p.targetDisparity, 1 - 0.6 / 0.5 - 0.002);
+    assert.ok(cssHidden(html), 'page-wide hide while it shows');
+    assert.equal(styles.length, 1);
+    assert.equal(styles[0].textContent, '[data-inline3d-cursor-hidden],[data-inline3d-cursor-hidden] *{cursor:none!important}');
+    // Outside the canvas box: inactive, page cursor back.
+    winHandlers.pointermove({ clientX: 900, clientY: 100 });
+    assert.equal(cur.update(views, 1016).active, false);
+    assert.ok(!cssHidden(html));
+    cur.dispose();
+    assert.equal(winHandlers.pointermove, undefined);
+  } finally {
+    globalThis.addEventListener = realAdd;
+    globalThis.removeEventListener = realRemove;
+    delete globalThis.document;
+  }
+});
+
+test('anchor hybrid: depth changing under a STILL pointer slides along the kept line of sight (no drift off the click point)', () => {
+  // Off-axis viewer (10 cm up, 6 cm right): the case where lifting along the display normal
+  // would pull the sprite visibly off the pointer.
+  const views = [kooima([0.06 - 0.032, 0.1, 0.6]), kooima([0.06 + 0.032, 0.1, 0.6])];
+  const hybrid = new CursorDepthPlacer();
+  const world = new CursorDepthPlacer(T, { anchor: 'world' });
+  // Frame 1: nothing under the pointer yet — anchored on the glass.
+  const a0 = hybrid.update(views, { u: 0.4, v: 0.6, nearestPoint: null }, 1.0);
+  world.update(views, { u: 0.4, v: 0.6, nearestPoint: null }, 1.0);
+  const E0 = a0.geometry.eye, S0 = a0.geometry.canvasPoint;
+  // Content appears under the still pointer; let the filter rise.
+  let h, w;
+  for (let i = 1; i <= 40; i++) {
+    h = hybrid.update(views, { u: 0.4, v: 0.6, nearestPoint: [0, 0, 0.12] }, 1.0 + i * 0.016);
+    w = world.update(views, { u: 0.4, v: 0.6, nearestPoint: [0, 0, 0.12] }, 1.0 + i * 0.016);
+  }
+  assert.equal(h.anchored, true);
+  assert.ok(h.position[2] > 0.1, 'it rose');
+  // Projected from E0 onto the glass, the hybrid sprite is still exactly on the click point S0 …
+  const onGlass = (e, p) => { const k = e[2] / (e[2] - p[2]); return [e[0] + (p[0] - e[0]) * k, e[1] + (p[1] - e[1]) * k]; };
+  near3(onGlass(E0, h.position), [S0[0], S0[1]], 1e-6);
+  // … while lifting along the normal (world) lands visibly off it for this viewer.
+  const off = onGlass(E0, w.position);
+  assert.ok(Math.hypot(off[0] - S0[0], off[1] - S0[1]) > 0.005, 'world drifts > 5 mm here');
+  // And it is at the same depth as the world placement (only the line differs).
+  near(h.position[2], w.position[2], 1e-6);
+});
+
+test('anchor hybrid: a still pointer + the head moving NEARER keeps the sprite at the depth the content needs', () => {
+  const hint = { u: 0.45, v: 0.5, nearestPoint: [0, 0, 0.1] };
+  const at = (z) => [kooima([-0.032, 0, z]), kooima([0.032, 0, z])];
+  const hybrid = new CursorDepthPlacer();
+  const world = new CursorDepthPlacer(T, { anchor: 'world' });
+  hybrid.update(at(0.6), hint, 1.0);
+  world.update(at(0.6), hint, 1.0);
+  let h, w;
+  for (let i = 1; i <= 60; i++) {
+    h = hybrid.update(at(0.5), hint, 1.0 + i * 0.016); // 10 cm nearer, pointer still
+    w = world.update(at(0.5), hint, 1.0 + i * 0.016);
+  }
+  assert.equal(h.anchored, true);
+  near(h.position[2], w.position[2], 1e-6); // same distance in front of the glass as the world placement
+  assert.ok(h.position[2] > 0.1, 'still in front of the content');
+});
+
+test('CursorPointer: the hide is an attribute — the page\'s inline cursor is never written, so a change made meanwhile stands', () => {
+  const canvas = stubCanvas();
+  canvas.style.cursor = 'grab';
+  const ptr = new CursorPointer(canvas);
+  ptr.hideCss(true);
+  assert.equal(cssHidden(canvas), true);
+  assert.equal(canvas.style.cursor, 'grab', 'inline value intact while hidden');
+  ptr.hideCss(false);
+  assert.equal(cssHidden(canvas), false, 'restored');
+  ptr.hideCss(true);
+  canvas.style.cursor = 'grabbing'; // the page changed it meanwhile (a drag began)
+  ptr.hideCss(false);
+  assert.equal(canvas.style.cursor, 'grabbing', "the page's newer cursor is kept");
+  ptr.hideCss(true);
+  ptr.dispose();
+  assert.equal(cssHidden(canvas), false, 'dispose gives it back');
+});
+
+// ── hybrid is DISPLAY-space: the rig moving under a still pointer must not carry the sprite ──
+
+/** A rig orbiting a pivot `dist` m behind the glass by `deg` about Y, with uniform scale `s`. */
+function orbitRig(deg, dist = 0.5, s = 1) {
+  const a = (deg * Math.PI) / 180;
+  const q = [0, Math.sin(a / 2), 0, Math.cos(a / 2)];
+  const r = transform(q, [0, 0, 0], s);
+  // Rotate about the pivot at display-space (0, 0, -dist): p = pivot - R·pivot.
+  const pv = apply(r, [0, 0, -dist]);
+  return transform(q, [-pv[0], -pv[1], -dist - pv[2]], s);
+}
+const invRigid = (m) => (p) => {
+  // Inverse of a rotation+uniform-scale+translation, column-major.
+  const d = [p[0] - m[12], p[1] - m[13], p[2] - m[14]];
+  const s2 = m[0] * m[0] + m[1] * m[1] + m[2] * m[2];
+  return [
+    (m[0] * d[0] + m[1] * d[1] + m[2] * d[2]) / s2,
+    (m[4] * d[0] + m[5] * d[1] + m[6] * d[2]) / s2,
+    (m[8] * d[0] + m[9] * d[1] + m[10] * d[2]) / s2,
+  ];
+};
+/** Where a display-space point projects onto the glass (z = 0) from display-space eye e, in canvas u/v. */
+const toUV = (e, p) => {
+  const k = e[2] / (e[2] - p[2]);
+  return [(e[0] + (p[0] - e[0]) * k + W / 2) / W, (H / 2 - (e[1] + (p[1] - e[1]) * k)) / H];
+};
+
+test('anchor hybrid: the RIG orbiting under a still pointer + still head keeps the sprite on the pointer (idle spin)', () => {
+  const eye = [0.03, 0.04, 0.6]; // slightly off-axis viewer, still
+  const views = (deg) => {
+    const w = orbitRig(deg);
+    return [kooima([eye[0] - 0.032, eye[1], eye[2]], w), kooima([eye[0] + 0.032, eye[1], eye[2]], w)];
+  };
+  const hybrid = new CursorDepthPlacer();
+  const hint = { u: 0.62, v: 0.41, nearestPoint: null };
+  let p;
+  // 8 s of 8 deg/s idle spin at 60 fps, pointer and head still. Content (in front of the glass,
+  // fixed in DISPLAY space here so the depth is steady) keeps the sprite drawn.
+  for (let i = 0; i <= 480; i++) {
+    const deg = (8 * i) / 60;
+    const w = orbitRig(deg);
+    const contentPt = apply(w, [0, 0, 0.1]);
+    p = hybrid.update(views(deg), { ...hint, nearestPoint: contentPt }, 1.0 + i / 60);
+    if (i > 2) assert.equal(p.anchored, true, `frame ${i} anchored`);
+    // The sprite, back in DISPLAY space, projected from the (still) eye, lands on the pointer.
+    const local = invRigid(w)(p.position);
+    const uv = toUV(eye, local);
+    near(uv[0], hint.u, 1e-4, `u at frame ${i}`);
+    near(uv[1], hint.v, 1e-4, `v at frame ${i}`);
+  }
+  assert.ok(p.active && p.disparity < -0.05, 'it was drawn, off the glass');
+});
+
+test('anchor hybrid: still pointer, rig orbited AND head moved → same display-space parallax as without the orbit', () => {
+  const head = (x, w) => [kooima([x - 0.032, 0, 0.6], w), kooima([x + 0.032, 0, 0.6], w)];
+  const hint = (w) => ({ u: 0.4, v: 0.5, nearestPoint: apply(w, [0, 0, 0.1]) });
+  const ref = new CursorDepthPlacer();
+  const orb = new CursorDepthPlacer();
+  const w0 = orbitRig(0);
+  ref.update(head(0, w0), hint(w0), 1.0);
+  orb.update(head(0, w0), hint(w0), 1.0);
+  let r, o, w;
+  for (let i = 1; i <= 30; i++) {
+    w = orbitRig(i, 0.5, 1 + i * 0.01); // orbit 30 deg and zoom 30 % meanwhile
+    r = ref.update(head(0.08 * (i / 30), w0), hint(w0), 1.0 + i * 0.016);
+    o = orb.update(head(0.08 * (i / 30), w), hint(w), 1.0 + i * 0.016);
+  }
+  assert.equal(o.anchored, true);
+  // Display-space position identical: the head move still parallaxes the sprite exactly as before.
+  near3(invRigid(w)(o.position), r.position, 1e-6);
+  // And it did parallax: from the moved head it is no longer exactly over the pointer.
+  const uv = toUV([0.08, 0, 0.6], r.position);
+  assert.ok(Math.abs(uv[0] - 0.4) > 1e-3, 'head motion still parallaxes');
+});
+
+test('anchor hybrid: a canvas whose SHAPE changes under a still pointer re-anchors on the ray (#1951 rule)', () => {
+  const wide = (x) => {
+    // Same eyes, canvas 20 % wider: the projection's horizontal extent changes.
+    const v = kooima([x, 0, 0.6]);
+    const p = v.projectionMatrix.slice();
+    p[0] /= 1.2;
+    p[8] /= 1.2; // keep the frustum symmetric-equivalent for x = ±0.032 enough for the solve
+    return { projectionMatrix: p, transformMatrix: v.transformMatrix };
+  };
+  const hint = { u: 0.4, v: 0.5, nearestPoint: [0, 0, 0.1] };
+  const placer = new CursorDepthPlacer();
+  placer.update([kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6])], hint, 1.0);
+  const still = placer.update([kooima([-0.032, 0, 0.6]), kooima([0.032, 0, 0.6])], hint, 1.016);
+  assert.equal(still.anchored, true);
+  const resized = placer.update([wide(-0.032), wide(0.032)], hint, 1.032);
+  assert.equal(resized.anchored, false, 'a resized canvas is a new canvas: back on the ray');
+  const screen = new CursorDepthPlacer(T, { anchor: 'screen' });
+  screen.update([wide(-0.032), wide(0.032)], hint, 1.0);
+  near3(resized.position, screen.update([wide(-0.032), wide(0.032)], hint, 1.016).position, 1e-3);
+});
+
+test('anchor hybrid: the head pulling back past the anchor eye re-anchors instead of placing the sprite behind it', () => {
+  const at = (z) => [kooima([-0.032, 0, z]), kooima([0.032, 0, z])];
+  // Content halfway to the eye: clamped to the comfort limit, lift = 0.375 × eyeToCanvas.
+  const hint = (z) => ({ u: 0.45, v: 0.5, nearestPoint: [0, 0, 0.5 * z] });
+  const placer = new CursorDepthPlacer();
+  placer.update(at(0.6), hint(0.6), 1.0);
+  let p = placer.update(at(0.6), hint(0.6), 1.016);
+  assert.equal(p.anchored, true);
+  p = placer.update(at(1.8), hint(1.8), 1.032); // 3× farther: s = 1 - 0.375 × 3 < 0
+  assert.equal(p.anchored, false);
+  assert.ok(p.position[2] > 0 && p.position[2] < 1.8, `in front of the glass, before the eye: ${p.position[2]}`);
+});

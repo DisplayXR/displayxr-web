@@ -9,8 +9,8 @@ repo's root [`index.html`](../index.html), published at
 
 | Sample | What it shows |
 |---|---|
-| [`hello-cube/`](hello-cube/) | The minimum complete page: one rotating three.js cube in a woven canvas. |
-| [`camera-rig/`](camera-rig/) | The **camera rig**: the page sends its own orbiting camera each frame instead of a virtual-display height. Convergence, comfort, the `attach` pattern, and <kbd>C</kbd> to A/B it against a display rig. |
+| [`hello-cube/`](hello-cube/) | The minimum complete page: one rotating three.js cube in a woven canvas. Append `?debug` for a bring-up HUD (physical-pixel readout) and tap-to-toggle fullscreen; both are off by default. |
+| [`camera-rig/`](camera-rig/) | The **camera rig**: the page sends its own orbiting camera each frame instead of a virtual-display height. Convergence, the camera-rig depth rule (`ipdFactor` from `cameraRigComfortFactor`, the share of the comfort zone used, the comfort ceiling), the `attach` pattern, and <kbd>C</kbd> to A/B it against a display rig. |
 | [`display-modes/`](display-modes/) | Reading the **display** and changing it: `getDisplayInfo()`, the `getRenderingModes()` table (non-2-view modes listed but greyed &mdash; the browser is fixed at two), `requestRenderingMode()`, and a 2D/3D lens toggle via `setStereoEnabled()` (lens **and** rig, because the lens alone shows the woven atlas flat). Every action logs a greppable `[display-modes]` line. |
 | [`windows/`](windows/) | Mixed producers — still photos, a live side-by-side video and a real-time three.js scene, all on one session. |
 | [`wall-3d/`](wall-3d/) | A long lazy-loading scrolling wall: layers created as tiles near the viewport, closed as they leave. |
@@ -19,6 +19,11 @@ repo's root [`index.html`](../index.html), published at
 | [`composition/`](composition/) | **The 15-case 2D/3D overlap matrix** — demo *and* standing hardware regression surface (see below). |
 | [`splat/`](splat/) | A 3D Gaussian splat tile via `addSplat()`, rendered with the PlayCanvas engine (`?engine=spark` for Spark), with a 2D plate over it. Default: Spark's butterfly (`assets/butterfly.sog`, © World Labs, used with permission; SH bands kept) on a turntable; a `.sog` that records its capture camera opens at it. `?url=` takes your own `.sog` / `.ply` or a Streamed SOG's `lod-meta.json`. |
 | [`model/`](model/) | `addModel()`: a glTF mesh (Khronos DamagedHelmet), a mesh + splat sharing one PlayCanvas scene, and a Draco-compressed glTF. PlayCanvas by default; `?engine=three` is the three.js + Spark twin. |
+| [`hands/`](hands/) | The `./hands` surface on its own: tracked-hand joints drawn as dots in the rig frame, the browser's per-frame hand gate, a cube that turns green on a pinch. The model and splat samples take `?hands` for the real thing (pinch to turn, two pinches to zoom) through `addModel` / `addSplat`'s `hands: true`. Windows + a hand tracker; reports no hands elsewhere. |
+| [`player/`](player/) | `addPlayer()`: a media player with SDK transport (play/pause/seek/mute), built on `addVideo`. Default (SBS) and `format:'mono'` side by side. |
+| [`call/`](call/) | `addCall()`: a peer-to-peer 3D video call (up to 4) — invite link + QR, a stereo camera woven with convergence, everyone else flat. `?signal=ws://localhost:8787` for `node signaling/dev-server.mjs`, `?signal=peerjs` for the demo PeerJS broker (the sample's own `peerjs-cloud.js`, not part of the package), `?camera=synthetic` for a test pair. |
+| [`camera/`](camera/) | The 3D camera as a primitive (`/camera`): a correctly mirrored 3D self view, "Take 3D photo" (`_2x1.jpg` with the stereo record as XMP), "Record" (`_2x1.webm` + a 2D copy). `?camera=synthetic` is the eye-swap check. |
+| [`call-embed/`](call-embed/) | The one-line embed: a bare `<dxr-call>` element on the hosted server (2D everywhere, 3D on the DisplayXR Browser) with a visible copy-this-snippet box — the CDN `dist/call.js` form, the attributes form, and the npm `mountCall` form. Guide: [`docs/call.md`](../docs/call.md). |
 | [`shop/`](shop/) | A shoppable storefront whose product hero has depth (a built Next.js export). |
 | [`overlay-test/`](overlay-test/) | A minimal diagnostic repro for the 2D-overlay aspect path — a probe, not a showcase. |
 

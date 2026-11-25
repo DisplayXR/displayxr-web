@@ -2,13 +2,14 @@
 //
 //   npm i --no-save puppeteer-core            # once, anywhere on the resolve path
 //   python3 -m http.server 8765 --bind 127.0.0.1   # from the repo root
-//   CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" node tools/layer-rig-capture/run.mjs /tmp/out
+//   CHROME=… PAGE="http://127.0.0.1:8765/tools/layer-rig-capture/index.html?path=cameras&controls=page" node tools/layer-rig-capture/run.mjs /tmp/out
+//   (?path=renderview|cameras — the view path; &controls=page — the page owns the camera, stage in world space)
 //
 // ONE headless Chrome (ANGLE Metal on macOS), closed on exit. Writes result.json + cam3d/disp3d/mono PNGs.
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 const OUT = process.argv[2] || '.';
-const URL = process.env.PAGE || 'http://127.0.0.1:8765/tools/layer-rig-capture/index.html';
+const URL = process.env.PAGE || `http://127.0.0.1:8765/tools/layer-rig-capture/index.html${process.argv[3] || ''}`;
 fs.mkdirSync(OUT, { recursive: true });
 const browser = await puppeteer.launch({
   executablePath: process.env.CHROME,
@@ -35,6 +36,11 @@ try {
     }
   }
   console.log('gain 1 == today:', R.gain1.hash === R.cam3d.hash, ' mono camera == display:', R.mono.cam.hash === R.mono.disp.hash);
+  const pl = R.plane;
+  const d = (m, k) => (m[0][k]?.x ?? NaN) - (m[1][k]?.x ?? NaN);
+  console.log(`planeOffset ${pl.offset.toFixed(3)} m → planeM ${pl.state.planeM.toFixed(3)}: behind L/R ${pl.m.map((e) => e.behind?.x).join(' / ')} disparity ${d(pl.m, 'behind').toFixed(1)} (expected ${(pl.expectBehind[0].x - pl.expectBehind[1].x).toFixed(2)}); contact disparity ${d(pl.m, 'contact').toFixed(1)} (expected ${(pl.expectContact[0].x - pl.expectContact[1].x).toFixed(2)}); pop ${d(pl.m, 'pop').toFixed(1)} (expected ${(pl.expectPop[0].x - pl.expectPop[1].x).toFixed(2)})`);
+  console.log('state (display, 3D):', JSON.stringify(R.disp3d.state));
+  console.log('WARN lines:'); for (const w of R.warns) console.log('  ' + w);
 } finally {
   await browser.close();
 }

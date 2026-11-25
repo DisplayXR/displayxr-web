@@ -1,8 +1,10 @@
 // Type definitions for @displayxr/inline3d/splat.
 // EXPERIMENTAL — not covered by the 1.x semver promise. See docs/sdk-stability.md.
 
-import type { SceneViewer, SubjectBounds, OrbitPose } from './viewer.js';
-import type { FirstWovenResult } from './index.js';
+import type { CursorOptions } from './cursor-depth.js';
+import type { SceneViewer, SubjectBounds, OrbitPose, FitToOptions } from './viewer.js';
+import type { HandControlOptions, HandControls } from './hands.js';
+import type { FirstWovenResult, RectCoverOption, ViewerEaseOption, DisplayMetrics } from './index.js';
 
 /**
  * The knobs behind `SplatOptions.perf`. Every one is a Spark 2.1.0 setting except `alphaRadius`,
@@ -74,9 +76,26 @@ export interface PlayCanvasSplatViewer {
   depthOffset: number;
   /** The engine's `AppBase`, once booted. */
   readonly app: unknown;
-  fitTo(center: number[], extent: number[]): void;
+  /**
+   * ADVANCED (not covered by the semver promise): the camera rig's `pc.Entity`. Its LOCAL frame is
+   * the display frame: the glass at the origin, +z toward the viewer, one tile height = `vH` units.
+   * A child of it stays fixed on the display while the subject turns and
+   * zooms, which is where a backdrop plane goes (`backdropPlacement`, making-3d-look-right rule 10).
+   * Null until the engine has booted.
+   */
+  readonly rigNode: unknown;
+  /** The display rig's virtual display height: one tile height, in rigNode-local units. */
+  readonly vH: number;
+  /** SceneViewer.fitTo, same arithmetic; `opts` as there. */
+  fitTo(center: number[], extent: number[], opts?: FitToOptions): void;
   setPose(pose?: OrbitPose): void;
   getPose(opts?: { target?: boolean }): Required<OrbitPose>;
+  /**
+   * Move the pose by a delta, eased (SceneViewer.nudgePose's twin): degrees to add (`roll` about
+   * the view axis), zoom a ratio to multiply within `zoomOpts` (it becomes the new rest, as a
+   * `setPose` zoom does). Counts as interaction for the idle turntable and ends an orbit relax.
+   */
+  nudgePose(delta?: { yaw?: number; pitch?: number; zoom?: number; roll?: number }): void;
   resetPose(): void;
   getSubjectBounds(): SubjectBounds & { front: number; back: number; scale: number };
   setFocus(point: number[] | { x: number; y: number; z: number } | null, opts?: { snap?: boolean; recentre?: boolean }): PlayCanvasSplatViewer;
@@ -174,20 +193,39 @@ export interface ResolvedRig {
   focusDistances: { subject_m: number | null; near_m: number | null; far_m: number | null } | null;
   /** Focus distance along the rest camera's view axis — the zero-disparity PLANE. */
   convergence: number;
+  /** In force — `setStereo`'s values when set, else `stereoDefault`'s. */
   ipdFactor: number;
   parallaxFactor: number;
+  /** The asset's own scalars (block `dxr`, else addSplat's options, else 1) — what `setStereo(null)` restores. PlayCanvas backend. */
+  stereoDefault?: { ipdFactor: number; parallaxFactor: number };
 }
 
 /**
- * `handle.setLayerRig` options — how ROUND the display-rig layers are, for the whole tile (last
- * call wins). The rounding gain is k = D / (metersToVirtual · viewerDistance): the photo rig's
- * convergence distance over the viewer's. docs/proposals/layer-display-rig.md.
+ * `handle.setLayerRig` / `handle.setLayerRigOptions` options — tile-wide; they MERGE across calls
+ * (a key given replaces, `null` clears it back to its default). The rounding gain is
+ * k = D / (metersToVirtual · viewerDistance): the photo rig's convergence distance over the
+ * viewer's. docs/proposals/layer-display-rig.md.
  */
 export interface SplatLayerRigOptions {
-  /** Nominal viewer distance in metres (default 0.6, the browser's own nominal). */
-  viewerDistance?: number;
+  /**
+   * Nominal viewer distance n in metres. Default: the browser's
+   * `XRDisplayInfo.nominalViewerPosition.z` where it reports one, else 0.6. Passing it pins n
+   * (see {@link SplatLayerRigState.viewerDistanceSource}).
+   */
+  viewerDistance?: number | null;
   /** An explicit gain k instead (1 = exactly the photo rig; larger = rounder). */
-  gain?: number;
+  gain?: number | null;
+  /**
+   * Metres ON THE PANEL (display space), + = toward the viewer: moves the display-rig stage
+   * forward by this much. The plane that lands on the glass moves back from the photo's
+   * convergence plane by planeOffset·D/viewerDistance (world units). Default 0.
+   */
+  planeOffset?: number | null;
+  /**
+   * The plane that lands on the glass, as a distance from the photo's camera in world units
+   * (wins over planeOffset). Default: the photo's convergence distance D.
+   */
+  planeDistance?: number | null;
 }
 
 /** `handle.layerRigState()`. */
@@ -196,10 +234,31 @@ export interface SplatLayerRigState {
   display: Array<string | number>;
   /** The `nolayerrig` kill switch is on (requests recorded, never applied). */
   disabled: boolean;
-  /** The last drawn frame drew the display layers through rounded views (false in mono). */
+  /** The view path of the last drawn frame: RenderViews, the N-camera fallback, or one view. */
+  path: 'renderviews' | 'ncamera' | 'mono' | null;
+  /** The display-rig views were actually applied on the last drawn frame. */
+  engaged: boolean;
+  /** Same as `engaged` (the 1.23 name). */
   rounded: boolean;
+  /** Why not engaged (or what is wrong with some layers while engaged); null when all is well. */
+  reason: string | null;
+  /** The n in use (metres). */
+  viewerDistance: number;
+  /**
+   * Where `viewerDistance` came from: the page's option, the browser's reported nominal viewer
+   * (`XRDisplayInfo.nominalViewerPosition.z`, asked once per tile, asynchronously — early frames
+   * may read 'default' before it lands), or the 0.6 m fallback.
+   */
+  viewerDistanceSource: 'page' | 'browser' | 'default';
   /** The gain the last frame used (null off a camera rig). */
   gain: number | null;
+  /** The plane that lands on the glass, as a distance from the photo's camera (world units). */
+  planeM: number | null;
+  /** The photo rig's convergence distance D (world units). */
+  photoConvergenceM: number | null;
+  planeOffset: number;
+  /** The views were verified (read off the views) as located for the rig used; null if unknown. */
+  located: boolean | null;
 }
 
 /** `handle.makeSbsMaterial` options. */
@@ -234,6 +293,25 @@ export interface SplatVideoOptions {
   muted?: boolean;
   /** Default true for a URL (the SDK's own element), false for an element you pass. */
   autoplay?: boolean;
+  /**
+   * `'cut'` (default) or `'crossfade'`: a GPU dissolve from the video already on the plane (its
+   * last frame, frozen) to this one. From the splat, and on `setVideo(null)`, it is always a cut.
+   * The same vocabulary as `./player`'s `setSource`; `./splat`'s gaussian transitions throw here.
+   */
+  transition?: 'cut' | 'crossfade';
+  /** Crossfade length. Default 600 (the player's). 0 = a cut. */
+  durationMs?: number;
+  /** A named easing ({@link SplatEasing}) or `(x) => y` on [0, 1]. Default `'easeInOutSine'`. */
+  easing?: SplatEasing | ((x: number) => number);
+  /** Only `'frozen'`: the outgoing video dissolves from its last frame. */
+  outgoing?: 'frozen';
+  /**
+   * A letterbox slot: the picture is fitted into a centred band of this aspect inside the tile
+   * (`2.39` or `'2.39:1'` for a scope band in a 16:9 tile), the rest of the element left clear —
+   * `./player`'s `band`, on the plane. `fit: 'cover'` fills the band and crops the eye image about
+   * its centre.
+   */
+  band?: number | string | null;
 }
 
 /** What `handle.setVideo(src)` resolves to. */
@@ -242,6 +320,18 @@ export interface SplatVideo {
   readonly video: HTMLVideoElement;
   readonly format: 'sbs' | 'tb' | 'mono';
   readonly fit: 'contain' | 'cover';
+  /** The band's aspect, or null. */
+  readonly band: number | null;
+  /**
+   * Where the picture is on screen, in CSS px from the canvas's top-left, clipped to the canvas;
+   * the letterbox bars are the canvas minus this. Null before the first drawn frame and once
+   * another `setVideo` replaced this one. Place controls against the picture with it.
+   */
+  readonly rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number } | null;
+  /** `cb(rect)` whenever the rect changes (a resize, a new size, a band): a microtask right after the draw, same frame, before paint. Returns an unsubscribe. */
+  onRectChange(cb: (rect: { x: number; y: number; width: number; height: number }) => void): () => void;
+  /** What the swap did: `'crossfade'` only when it replaced a video on screen and asked to. Resolved at the swap, before the fade ends. */
+  readonly transition: 'cut' | 'crossfade';
   /** `handle.setVideo(null)`, or a no-op if another setVideo has replaced this one. */
   remove(): Promise<null>;
   /** Frames drawn with the plane up, and texture uploads (new video frames). */
@@ -319,6 +409,13 @@ export interface SplatOptions {
    * it is still the cumulative turntable (a full-width drag = 180°).
    */
   orbit?: boolean;
+  /**
+   * Tracked-hand controls (`@displayxr/inline3d/hands`): one pinch dragged turns the splat, two
+   * pinches spread / dragged zoom / turn it (and twist rolls it on Spark). Needs the DisplayXR
+   * Browser 1.8.0+ with a hand provider; inert elsewhere. `true` or the controller options;
+   * exposed as `handle.hands`. Default off.
+   */
+  hands?: boolean | HandControlOptions;
   /** PlayCanvas: the largest drag tilt, degrees, either axis (default 15). */
   orbitMaxDeg?: number;
   /** PlayCanvas: easing time constants, seconds — `drag` while held (0.2), `rest` after release (0.6). */
@@ -338,11 +435,42 @@ export interface SplatOptions {
   /** Backstop on total depth, in display heights (default 4.0). Rarely binds. */
   depthLimit?: number;
   /**
+   * OPT-IN eye clear: `[r, g, b, a]` in 0..1 (alpha defaults to 1) or a CSS colour string (`#hex`,
+   * `rgb()`/`rgba()`, `transparent`, or any colour the browser parses). Unset: the transparent
+   * clear, exactly as before. An OPAQUE clear is recommended: where the weave reads an alpha-0
+   * pixel it can show stale or black pixels (web#198). Make the page colour behind the canvas
+   * match, so the 2D fallback and any feathered edge look the same. Unreadable → one warning,
+   * the default clear stays.
+   */
+  clearColor?: [number, number, number] | [number, number, number, number] | string;
+  /**
+   * OPT-IN comfort depth (display rig only). `'auto'` (the Shibata zone of comfort) or
+   * `{ zone: 'shibata' | 'percival' | <diopters> }`. The SDK measures the framed subject's depth
+   * (tile heights in front of / behind the glass), the canvas's physical height
+   * (`displayMetrics()`) and the display's NOMINAL viewer distance (`getDisplayInfo()`, 0.6 m when
+   * it reports none — never the live head distance), and multiplies the display rig's `ipdFactor`
+   * and `parallaxFactor` (together) by `comfortDepthFactor()` of those, on top of
+   * `setStereo`'s values (Spark has no setStereo: the factor is the rig's whole ipdFactor / parallaxFactor). It ONLY EVER LOWERS DEPTH (the factor is ≤ 1), because the same depth in
+   * tile heights carries more vergence load on a small or close device (a tablet at 0.4 m) than on
+   * a laptop at 0.6 m: where the subject already fits, nothing changes.
+   *
+   * Measured when the subject is first framed, when the canvas resizes and when the display
+   * reports a change — NOT on zoom or orbit (those are framing choices the developer owns; the box
+   * is the framed one at zoom 1), and not per frame. Read the factor in force from `depthFactor`.
+   * Ignored, with one console warning, on a camera rig (an asset with a capture camera, `rig: 'camera'`) or under `controls: 'page'`. Anything else
+   * throws at the call. Unset: nothing is measured or declared — the tile is exactly as before.
+   */
+  depth?: 'auto' | { zone?: 'shibata' | 'percival' | number };
+  /**
    * Fit the horizontal against the box's DIAGONAL (width and depth) rather than width alone,
    * so a long subject still fits once the turntable turns it (default true).
    */
   fitSweep?: boolean;
-  /** Per-eye buffer scale; 0.5–0.7 is usually free (default 1). */
+  /**
+   * Per-eye buffer scale; 0.5–0.7 is usually free (default 1). Clamped to the device's GL limits: the whole store (2 × eye wide in 3D) is kept within
+   * min(MAX_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE, MAX_VIEWPORT_DIMS), both axes shrunk by one factor,
+   * with a one-time console warning. The handle's `renderScale` reports the value in force.
+   */
   renderScale?: number;
   feather?: number;
   /**
@@ -390,6 +518,26 @@ export interface SplatOptions {
   sky?: boolean;
   /** PlayCanvas: a CAP on the projection's far plane (only ever lowers it). Unset: untouched. */
   farClip?: number;
+  /**
+   * The tracking ease (default on): when a viewer is acquired or lost and the views jump (the
+   * runtime's nominal viewer <-> the tracked eyes) the eye cameras glide from where they were
+   * drawn to the new views instead of snapping in one frame. Unset: the session's
+   * `createInline3D({ viewerEase })`, else on. `false` restores the snap.
+   */
+  viewerEase?: ViewerEaseOption;
+  /**
+   * `'depth'`: a cursor that is never drawn on the glass behind content that pops out (ADR-046 +
+   * Amendment 2, the same policy as native `XR_DXR_cursor_depth`). While the subject under the
+   * pointer's footprint comes OUT of the screen, the classic arrow (the OS cursor's size, tip on
+   * the hotspot) is drawn the margin (0.015 eye baselines, ~1 mm) in front of it and the CSS cursor
+   * is hidden; over anything on or behind the glass nothing is drawn and the CSS cursor is the
+   * cursor, untouched. Never behind the glass. OPT-IN: without it nothing
+   * is loaded or run. PlayCanvas: hit-tested with the engine's depth picker (meshes and splats,
+   * one low-res pass every other frame while the pointer is over the tile). three: a raycast
+   * against the subject. Pass an object to tune it: `{ margin, anchor, height, pointerScope, soften, shape, shapeFor }`
+   * (any object also means depth).
+   */
+  cursor?: 'depth' | CursorOptions;
   /** Camera rig only: the distance in world metres that sits ON the glass. */
   convergence?: number;
   /**
@@ -421,6 +569,13 @@ export interface SplatOptions {
   observe?: Element;
   /** Forwarded to the core window: see `TileOptions.firstWovenHoldMs`. */
   firstWovenHoldMs?: number;
+  /**
+   * The SDK's cover across a move or resize of this canvas (see `TileOptions.rectCover`).
+   * **Default `'auto'` here** (the core default is `'off'`): a solid cover showing the last frame,
+   * raised when the canvas's size, dpr or page position changes and cut when `rewoven()` settles.
+   * Pass `'off'` if the page runs its own cover.
+   */
+  rectCover?: RectCoverOption;
   /**
    * Who owns the camera. `'viewer'` (the default): the SDK's orbit, idle spin, auto-fit and focus
    * gestures. `'page'` (`engine: 'playcanvas'` only; throws on Spark): the page drives the camera
@@ -652,6 +807,41 @@ export interface SplatSetRigDisplayOptions {
   frame?: { center: number[] | { x: number; y: number; z: number }; extent: number[] | { x: number; y: number; z: number } };
 }
 
+/** A rectangle in canvas fractions: origin top-left, y DOWN (a DOM rect / canvas size). */
+export interface SplatCanvasRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** `handle.setDepthEnvelope`'s options. Metres are on the panel. */
+export interface SplatDepthEnvelopeOptions {
+  /** The out-of-glass cap well inside the frame. Default 0.02. */
+  maxFrontM?: number;
+  /** The cap AT a stage edge / rect edge. Default 0.001 (clamped to `maxFrontM`). */
+  edgeM?: number;
+  /** Ramp width from `edgeM` to `maxFrontM`. Default 0.016. */
+  bandM?: number;
+  /** The window content may come out in. Default (or `null`): the whole canvas. */
+  stage?: SplatCanvasRect | null;
+  /** 2D elements over the canvas to keep flat around; `weight` 0..1 (default 1) fades one in/out. The 8 heaviest are kept. */
+  rects?: Array<SplatCanvasRect & { weight?: number }> | null;
+  /** Viewer distance override; default `nominalViewerPosition.z`, else 0.65. */
+  viewerM?: number | null;
+  /** Canvas physical size override, [w, h]; default the CSS box × the panel's metres per CSS px. */
+  canvasSizeM?: [number, number] | null;
+}
+
+/** `handle.setStereo`'s options. Each a finite number >= 0; `null` = back to the asset's own. */
+export interface SplatStereoOptions {
+  ipdFactor?: number | null;
+  parallaxFactor?: number | null;
+  /** RELATIVE to the asset's own (`rig.stereoDefault`): re-applied to each asset `setSource` brings in. Exclusive with `ipdFactor`; the last one given wins. */
+  ipdScale?: number | null;
+  parallaxScale?: number | null;
+}
+
 /** `setSource`'s options. */
 export interface SplatSourceOptions {
   /** > 0 = a crossfade of this length (the 1.10 option; same as `transition: 'crossfade'`). */
@@ -732,6 +922,12 @@ export type SplatPrepareOptions = SplatSourceOptions & {
    * resident during the dwell.
    */
   resident?: boolean;
+  /**
+   * Effects to compile during this prepare (after the asset and the transition), for a
+   * `playEffect` you will run once this asset is in — e.g. a reveal after the swap. Names, or
+   * `{ name, opts }` with the opts you will play with. See {@link SplatHandle.warmEffect}.
+   */
+  warmEffects?: Array<Exclude<SplatEffectName, 'grade' | 'clip'> | { name: Exclude<SplatEffectName, 'grade' | 'clip'>; opts?: SplatEffectTiming & Record<string, unknown> }>;
 };
 
 /** setSource's particle transitions (docs/splat-effects.md §Particle transitions). */
@@ -836,6 +1032,8 @@ export interface SplatHandle {
    * there until the backend module has loaded — one module fetch after addSplat returns).
    */
   readonly viewer: SceneViewer | PlayCanvasSplatViewer;
+  /** The hand controls, when the `hands` option asked for them (`stop()`, `state.gate`, `controller`). */
+  readonly hands?: HandControls;
   /**
    * Spark's SplatMesh; on `engine: 'playcanvas'` a `{ numSplats, entity, asset, resource }`
    * record of the engine objects. Null until the asset is loaded.
@@ -916,6 +1114,10 @@ export interface SplatHandle {
    * finished; rejects if the new asset cannot be loaded (the current one stays on screen).
    */
   setSource(src: string | Blob | ArrayBuffer | Uint8Array | SplatPreparedSource, opts?: SplatSourceOptions): Promise<SplatHandle>;
+  /** End a running setSource transition now (its end state at once); no-op when none runs. PlayCanvas backend. */
+  finishSwap?(): SplatHandle;
+  /** The core tile's rewoven(): resolves once the canvas is woven again after a rect move. */
+  rewoven?(): Promise<{ woven: boolean; reason?: string }>;
   /**
    * PlayCanvas backend only — throws on Spark. Fetch, decode and upload `src` now, in the
    * background (the SDK's own passes in idle periods; the engine's end-of-load unpack runs when
@@ -938,6 +1140,65 @@ export interface SplatHandle {
    */
   setRig(type: 'display', opts?: SplatSetRigDisplayOptions): Promise<SplatHandle>;
   setRig(type: 'camera' | 'auto'): Promise<SplatHandle>;
+  /**
+   * PlayCanvas backend only — throws on Spark. Live stereo strength: re-declares the rig in force
+   * with these scalars on the next frame, with NO cut (pose, focus and framing stay) — a depth
+   * slider. A key given replaces; a key set to `null` returns to the asset's own value (the SOG
+   * camera block's `dxr`, else addSplat's options, else 1); `setStereo(null)` clears both. Sticky
+   * across `setSource` and `setRig`. On a camera rig the values are ABSOLUTE, exactly like
+   * addSplat's `ipdFactor`/`parallaxFactor`; on a display rig they replace the declared display
+   * rig's factors. `controls:'page'` applies them from the next tick. A stereo video holds its own
+   * display rig; a value set meanwhile applies when the video exits. `handle.rig.ipdFactor` /
+   * `parallaxFactor` read what is in force. The 2D↔3D mode-switch ramp still multiplies on top.
+   */
+  /**
+   * `engine: 'playcanvas'` only (resolves 0 on Spark). Compile the lit programs of `entity` — your
+   * content under `handle.engine.root`, e.g. a glTF — in idle time, through the renderer's own
+   * shader lookup (MeshInstance.getShaderInstance with its exact pass, light hash, lights, view
+   * format and the eye cameras' live shader params), and finish each link off the frame
+   * (KHR_parallel_shader_compile). PlayCanvas's forward renderer otherwise links every new program
+   * synchronously on its first draw: a 13-material car froze 0.8–0.95 s on a panel. Warm it while
+   * it is hidden (`entity.enabled = false` is fine), with the lights it will be shown under; show
+   * it after this resolves. Resolves the number of programs warmed. docs/playcanvas-adapter.md §warmEntity.
+   */
+  warmEntity(entity: unknown, opts?: { timeoutMs?: number }): Promise<number>;
+  /**
+   * `engine: 'playcanvas'` only (a no-op returning `{ programs: 0, container: null }` on Spark).
+   * Destroy `entity` — content you added under `handle.engine.root` — and release what it held on
+   * the GPU: the shader programs its materials linked (PlayCanvas never frees a program by itself:
+   * its ProgramLibrary caches every variant for the device's life, and `Material.destroy()` does
+   * not destroy them), and, with `asset`, the glTF container it was instantiated from (unloaded
+   * and taken out of the registry unless something else in the tile still draws from it). A
+   * program another material still uses is kept. Call it for whatever a content swap replaces.
+   * Returns the number of programs destroyed and what happened to the container.
+   * docs/content-lifecycle-rules.md.
+   */
+  releaseEntity(entity: unknown, opts?: { asset?: unknown }): { programs: number; container: 'unloaded' | 'in-use' | null };
+  setStereo(opts: SplatStereoOptions | null): SplatHandle;
+  /**
+   * The `depth` option's comfort factor in force, in (0, 1]: what the display rig's ipdFactor and
+   * parallaxFactor are multiplied by (under `setStereo`'s values). 1 without the option, before
+   * the first measurement, and on a rig it does not apply to.
+   */
+  readonly depthFactor: number;
+  /** This tile in physical units — the core `TileHandle.displayMetrics()`, on the splat handle. Never rejects. */
+  displayMetrics(): Promise<DisplayMetrics>;
+  /**
+   * PlayCanvas backend only — throws on Spark. THE FRAME ENVELOPE: content may come OUT of the
+   * glass only well inside the frame. At each screen spot the out-of-glass cap is
+   * `edgeM + (maxFrontM − edgeM) · smoothstep(0, bandM, distance)`, where `distance` (metres on the
+   * panel) is to the nearest `stage` edge or to any `rects` entry (weighted). A gaussian beyond the
+   * cap slides back along its own ray from the declared camera rig (centre and scale together), so
+   * the 2D picture is unchanged, the sort stays valid and both eyes agree; behind the glass is never
+   * touched. Tile-wide and LIVE: every asset — an incoming one from its first frame, both sides of
+   * a crossfade — is judged through the rig declared now (its convergence, lens, `ipdFactor` ×
+   * `metersToVirtual`, so `setStereo` is accounted for). Camera rigs only (incl. `controls:'page'`);
+   * inert on a display rig and while a stereo video holds the rig. Physical size comes from
+   * `getDisplayInfo()` (see `displayMetrics()`), overridable with `canvasSizeM` / `viewerM`.
+   * A key given replaces; `null` turns it off. Cheap to call per layout change: uniforms only.
+   * docs/splat-effects.md §Depth envelope.
+   */
+  setDepthEnvelope(opts: SplatDepthEnvelopeOptions | null): SplatHandle;
   /**
    * PlayCanvas backend only — throws on Spark, and with `controls:'page'`. Play a stereo video ON
    * this handle: no new canvas, layer or session (docs/playcanvas-adapter.md §setVideo). The splat
@@ -968,7 +1229,49 @@ export interface SplatHandle {
    * `?dxrdiag=nolayerrig`. Callable before `ready`. docs/proposals/layer-display-rig.md.
    */
   setLayerRig(layer: string | number | { id: number }, rig: 'display' | 'camera', opts?: SplatLayerRigOptions): SplatHandle;
-  /** `engine: 'playcanvas'` only. What `setLayerRig` is doing. */
+  /**
+   * `engine: 'playcanvas'` only. Change the per-eye buffer scale live (the `renderScale` option),
+   * in (0, 4]; the backing store is resized on the next animation frame. Throws a RangeError
+   * otherwise. The request is kept as given (`renderScaleRequested`); the store is still clamped
+   * to the device's GL limits, and `renderScale` reports what is in force.
+   */
+  setRenderScale(scale: number): SplatHandle;
+  /**
+   * The per-eye buffer scale IN FORCE: the request times the device-limit clamp. E.g. 0.8 for a
+   * request of 1 on a device whose MAX_TEXTURE_SIZE (4096) cannot hold a 5120-wide SBS store.
+   * Both engines.
+   */
+  readonly renderScale: number;
+  /** The per-eye buffer scale as requested (the option, or the last `setRenderScale`). Both engines. */
+  readonly renderScaleRequested: number;
+  /**
+   * `engine: 'playcanvas'` only. The `<video>` `setVideo`'s plane is showing now, or null (none, or
+   * one still waiting for its first frame). Read-only; no event reports it changing.
+   */
+  readonly videoElement?: HTMLVideoElement | null;
+  /** `engine: 'playcanvas'` only. The tile's canvas (page chrome sits beside it). */
+  readonly canvas?: HTMLCanvasElement;
+  /**
+   * `engine: 'playcanvas'` only. The 2D tier's EYE offset — a head-parallax analogue for a flat
+   * screen with no tracked eyes (e.g. a phone's tilt). `{x, y}` is normalised in the mono camera's
+   * plane (+x right, +y up) and clamped to the unit disc; |offset| = 1 moves the eye far enough to
+   * swing its line of sight to the focus by `orbitMaxDeg` (15° by default), the drag orbit's comfort
+   * cone. Off-axis: the focus plane stays put on screen while nearer content moves against the
+   * farther. It moves the eye, not the scene, so it composes with the orbit (`setPose`, the drag)
+   * rather than fighting it. A snap, like `setPose` — ease it in the page. `null` resets to
+   * `{0, 0}`. Mono only: in woven 3D the head tracker owns the eyes, so the value is kept (it applies
+   * again if the tile falls back to 2D) but draws nothing; ignored on `controls: 'page'`. Throws a
+   * TypeError on a non-finite component.
+   */
+  setViewOffset(offset: { x?: number; y?: number } | null): SplatHandle;
+  /** `engine: 'playcanvas'` only. The current eye offset (after the unit-disc clamp). */
+  readonly viewOffset: { x: number; y: number };
+  /** `engine: 'playcanvas'` only. Change the layer rig's tile-wide options live (merge; `null` clears). */
+  setLayerRigOptions(opts: SplatLayerRigOptions): SplatHandle;
+  /**
+   * `engine: 'playcanvas'` only. What `setLayerRig` is doing — engaged or not, on which view path,
+   * and why not. The same line is WARNed on the first 3D frame and on every change.
+   */
   layerRigState(): SplatLayerRigState;
   /**
    * `engine: 'playcanvas'` only, after `ready`. An unlit `pc.ShaderMaterial` that shows the left
@@ -988,6 +1291,17 @@ export interface SplatHandle {
     name: Exclude<SplatEffectName, 'grade' | 'clip'>,
     opts?: SplatEffectTiming & Record<string, unknown>,
   ): Promise<{ finished: boolean }>;
+  /**
+   * `engine: 'playcanvas'` only (throws on Spark). Compile the program `playEffect(name, opts)`
+   * will need NOW, finishing the link in idle periods (KHR_parallel_shader_compile), so the
+   * effect's first frame does not stall on it — a particle reveal (`'assemble'`) links for
+   * 250–300 ms on a panel otherwise. Keyed on the chunk the play would install with the tile
+   * effects on at the time: warm in the state you will play from. Resolves `true` once warm,
+   * `false` when nothing could be warmed (an entity-scope effect, a custom fragment stage); the
+   * effect then compiles on its first frame, as before. Validated at the call.
+   * docs/splat-effects.md §Warming an effect.
+   */
+  warmEffect(name: Exclude<SplatEffectName, 'grade' | 'clip'>, opts?: SplatEffectTiming & Record<string, unknown>): Promise<boolean>;
   /**
    * `engine: 'playcanvas'` only. Set a persistent effect (`grade`, `clip`, `custom`), hold a
    * transition at `{ progress }`, or pass `null` to remove it (the exact baseline).
@@ -1030,6 +1344,17 @@ export interface SplatHandle {
    * `{ woven: false, reason: 'unsupported' }` at once where there is no inline-3D session.
    */
   readonly firstWoven: Promise<FirstWovenResult>;
+  /**
+   * The core window's `TileHandle.rewoven()`: `firstWoven` measured from now. Cover the canvas
+   * across a rect change (moved into a box, fullscreen, a layout resize) and release when this
+   * settles. Same result shape; `{ woven: false, reason: 'unsupported' }` without a session.
+   */
+  rewoven(): Promise<FirstWovenResult>;
+  /**
+   * End a running `setSource` transition now (the new asset at its end state, in this task).
+   * No-op when none runs. For a page that leaves a scene mid-crossfade on a shared canvas.
+   */
+  finishSwap(): SplatHandle;
 }
 
 /**
@@ -1053,3 +1378,31 @@ export function addSplat(
 
 /** Robust model-space bounds of a loaded SplatMesh, lifted through its own matrix. */
 export function measureSplatBounds(mesh: object, three?: object): SubjectBounds | null;
+
+/**
+ * Parse a `.sog`'s `meta.json`. Null when the bytes are not a `.sog`, have no `meta.json`, or the
+ * entry cannot be read on this platform.
+ */
+export function readSogMeta(bytes: ArrayBuffer | Uint8Array): Promise<Record<string, unknown> | null>;
+/** The `camera` block straight out of `.sog` bytes (readSogMeta + parse). Null when it has none. */
+export function readSogCamera(bytes: ArrayBuffer | Uint8Array): Promise<SogCamera | null>;
+
+/** The named perf profiles `perf: 'exact' | 'balanced' | 'aggressive'` applies (Spark engine). */
+export const SPLAT_PERF_PRESETS: Readonly<Record<'exact' | 'balanced' | 'aggressive', Readonly<SplatPerfOptions>>>;
+/**
+ * Apply a perf profile to a live `SparkRenderer` you built yourself (the knobs are live; takes
+ * effect next frame). `true` = 'balanced'. Returns the profile actually applied, or null.
+ */
+export function applySplatPerf(spark: object, perf: true | 'exact' | 'balanced' | 'aggressive' | SplatPerfOptions): SplatPerfOptions | null;
+
+/**
+ * Run the rig waterfall the viewers use: camera block → caller options → the cloud, to one
+ * resolved rig, every field beside the step that produced it. `cloud` is `{ tx, ty, invz, n }`
+ * from one pass over the splats in rest-camera space, or null.
+ */
+export function resolveRig(args: {
+  camera?: SogCamera | null;
+  opts?: SplatOptions;
+  cloud?: { tx: ArrayLike<number>; ty: ArrayLike<number>; invz: ArrayLike<number>; n: number } | null;
+  canvasAspect?: number;
+}): ResolvedRig;

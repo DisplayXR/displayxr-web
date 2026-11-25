@@ -1,10 +1,35 @@
 // Type definitions for @displayxr/inline3d/viewer.
 // EXPERIMENTAL — not covered by the 1.x semver promise. See docs/sdk-stability.md.
 
+import type { ViewerEaseOption } from './index.js';
+
 /** Model-space bounds of the subject a viewer frames on. */
 export interface SubjectBounds {
+  /** The turn pivot, and the point on the glass unless `screenPlaneZ` is given. */
   center: number[];
+  /** The size the fit scales to the tile. */
   extent: number[];
+  /**
+   * Model-space z placed on the zero-disparity plane (+z toward the viewer), when it is not
+   * `center[2]`. `addModel`'s robust framing sets it to the surface's 75th-percentile depth.
+   */
+  screenPlaneZ?: number;
+  /** `[back, front]` model-space z the `depth: 'auto'` option measures, when not the fit box. */
+  depthRange?: number[];
+  /** `addModel` robust framing only: the bounding box it started from (`framing: 'box'`'s frame). */
+  box?: { center: number[]; extent: number[] };
+}
+
+/** `fitTo`'s optional third argument. Omit it for the classic fit (centre on the glass). */
+export interface FitToOptions {
+  /**
+   * Model-space z to put on the zero-disparity plane. The subject still turns about `center`; the
+   * slide is in display space and scales with fit × zoom, so this depth stays on the glass under
+   * zoom. Survives `resetPose` (it is framing, not pose); a later `fitTo` without it drops it.
+   */
+  screenPlaneZ?: number;
+  /** `[back, front]` model-space z for the `depth: 'auto'` measure. Unset: the fit box. */
+  depthRange?: number[];
 }
 
 export interface SceneViewerOptions {
@@ -29,12 +54,32 @@ export interface SceneViewerOptions {
   orbit?: boolean;
   /** Degrees/second of turntable once idle. Ignored under prefers-reduced-motion. */
   idleSpin?: number;
-  /** Per-eye buffer scale; 0.5–0.7 is usually free after the interlace (default 1). */
+  /**
+   * Per-eye buffer scale; 0.5–0.7 is usually free after the interlace (default 1). Clamped to the device's GL limits: the whole store (2 × eye wide in 3D) is kept within
+   * min(MAX_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE, MAX_VIEWPORT_DIMS), both axes shrunk by one factor,
+   * with a one-time console warning. `effectiveRenderScale` reports the value in force.
+   */
   renderScale?: number;
   /** Edge fade in buffer px (needs EdgeFeather from ./three). */
   feather?: number;
   /** Pitch clamp in degrees (default [-60, 60]). */
   pitchLimit?: number[];
+  /**
+   * The tracking ease (default on): when a viewer is acquired or lost and the views jump (the
+   * runtime's nominal viewer <-> the tracked eyes) the eye cameras glide from where they were
+   * drawn to the new views instead of snapping in one frame. Unset: the session's
+   * `createInline3D({ viewerEase })`, else on. `false` restores the snap.
+   */
+  viewerEase?: ViewerEaseOption;
+  /**
+   * OPT-IN eye clear: `[r, g, b, a]` in 0..1 (alpha defaults to 1) or a CSS colour string (`#hex`,
+   * `rgb()`/`rgba()`, `transparent`, or any colour the browser parses). Unset: the transparent
+   * clear, exactly as before. An OPAQUE clear is recommended: where the weave reads an alpha-0
+   * pixel it can show stale or black pixels (web#198). Make the page colour behind the canvas
+   * match, so the 2D fallback and any feathered edge look the same. Unreadable → one warning,
+   * the default clear stays.
+   */
+  clearColor?: [number, number, number] | [number, number, number, number] | string;
 }
 
 export interface OrbitPose {
@@ -44,6 +89,12 @@ export interface OrbitPose {
   pitch?: number;
   /** Multiplier on the fit scale. */
   zoom?: number;
+  /**
+   * Degrees about the VIEW axis (counter-clockwise as the viewer sees it), applied outside yaw and
+   * pitch. Written only by the two-hand gesture (`@displayxr/inline3d/hands`) or an explicit call;
+   * 0 for every page that never touches it. Both viewers (three.js and PlayCanvas) carry it.
+   */
+  roll?: number;
   /** Display metres along the depth axis, `+` toward the viewer (out of the glass). */
   depthOffset?: number;
 }
@@ -96,15 +147,35 @@ export declare class SceneViewer {
   readonly monoCamera: object;
   /** True while the side-by-side backing store is in use. */
   readonly is3D: boolean;
+  /** The requested per-eye buffer scale (the `renderScale` option). */
+  renderScale: number;
+  /**
+   * The per-eye buffer scale in force: `renderScale` times the device-limit clamp the last resize
+   * applied (1 where the store fits the device's MAX_TEXTURE_SIZE & co.).
+   */
+  readonly effectiveRenderScale: number;
 
-  /** Centre the subject on the zero-disparity plane and scale it to the tile. */
+  /** The `clearColor` option, parsed (`[r,g,b,a]`), or null = the transparent clear. */
+  readonly clearColor: number[] | null;
+  /**
+   * Centre the subject on the zero-disparity plane and scale it to the tile. With
+   * `opts.screenPlaneZ`, that depth goes on the glass instead and `center` stays the turn pivot.
+   * The two-argument call is unchanged.
+   */
   fitTo(
     center: number[] | { x: number; y: number; z: number },
     extent: number[] | { x: number; y: number; z: number },
+    opts?: FitToOptions,
   ): void;
 
   /** Snap the pose. Writes the eased value and its target together. */
   setPose(pose?: OrbitPose): void;
+  /**
+   * Move the pose by a delta, EASED — what an input device does. Degrees to add, `zoom` a ratio
+   * to multiply (pitch clamped, zoom bounded). Counts as interaction for the idle turntable, like
+   * a pointer drag. `@displayxr/inline3d/hands` drives the viewer through this.
+   */
+  nudgePose(delta?: { yaw?: number; pitch?: number; zoom?: number; roll?: number }): void;
   /**
    * Point the viewer at something: the orbit centre, the pivot plane and (on a camera rig) the
    * convergence distance are ONE point, and this is it. `recentre: true` (a display rig) brings

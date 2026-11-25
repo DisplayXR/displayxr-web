@@ -3,7 +3,13 @@
 
 /** Options shared by every add*() call. */
 export interface TileOptions {
-  /** Per-eye buffer resolution in px (defaults to the CSS box × devicePixelRatio, dpr capped at 2). */
+  /**
+   * Per-eye buffer resolution in px (defaults to the CSS box × devicePixelRatio, dpr capped at 2).
+   * `addImage` / `addVideo` clamp the store to the device's GL limits — 2 × width and the height
+   * within min(MAX_TEXTURE_SIZE, MAX_RENDERBUFFER_SIZE, MAX_VIEWPORT_DIMS), both axes by one
+   * factor, warned once — explicit sizes included. An `addScene` canvas is the page's to size;
+   * the SDK warns once if the browser clamped its drawing buffer below `canvas.width/height`.
+   */
   width?: number;
   /** Per-eye buffer height in px (see `width`). */
   height?: number;
@@ -18,25 +24,131 @@ export interface TileOptions {
    * you know is not fresh; 0 means "the first stereo frame".
    */
   firstWovenHoldMs?: number;
+  /**
+   * Cover this canvas across a rect change, owned by the SDK. Default `'off'` on `addImage` /
+   * `addVideo` / `addScene` (frozen defaults); `'auto'` on `./splat` and `./model`.
+   *
+   * Once the window has woven, a change of the canvas's CSS size, devicePixelRatio or PAGE position
+   * (scrolling the document is not a move) raises a sibling element over the canvas on the frame
+   * the change is seen, and cuts it when {@link TileHandle.rewoven} settles; a further change
+   * while it is up restarts the wait. The cover is a 2D canvas, never a second woven canvas,
+   * placed as the canvas's next sibling (`pointer-events: none`, `data-inline3d-cover`). It is
+   * filled with `color` and, with `snapshot`, the last frame: the left eye, cover-fit to the new
+   * box, captured once at the change with one `drawImage` (never `toDataURL`).
+   *
+   * Where the browser reports {@link WovenState} (DisplayXR Browser on Windows), the cover follows
+   * that report instead of the hold: nothing is raised while the tile stays `'woven'` through the
+   * change; it goes up on a `'pending'` / `'withheld'` read after the change (the tile left the
+   * weave, so the page's own raster of it is on screen) and comes down on the first `'woven'` read.
+   * A cover over a tile the browser is still weaving would be woven with it: its 2D left eye, read
+   * as a side-by-side pair, puts half of the picture, twice as wide, into each eye.
+   *
+   * The fill has to be opaque, because it hides the canvas's own raster under the cover. Without a
+   * `color`, each raise takes the page's background behind the canvas: the first background color
+   * from the canvas up, if it is opaque, or the document's canvas color (CSS `Canvas`, which follows
+   * `color-scheme`) when nothing paints one. It is black when that backdrop is not one opaque color
+   * (a translucent color, an image or a gradient). So a cover that shows for a frame reads as the
+   * page's own 2D rather than a black box.
+   *
+   * - `'auto'` — `{ snapshot: true, live: true }`, filled from the page as above.
+   * - `'off'` — nothing; a page that runs its own cover passes this.
+   * - `{ color?, snapshot?, live? }` — `color` any CSS color (default: from the page, as above);
+   *   `snapshot` default true; `live` (1.52) default true: while the cover is up its picture follows the canvas (the
+   *   left eye of each new frame, once the page has redrawn for the new box), so a window drag
+   *   shows moving 2D content instead of one still frame. `live: false` keeps the single still.
+   *
+   * Before the first join nothing is raised: cover a fresh canvas yourself until `firstWoven`
+   * (rule 5). A pure move is seen at the next session frame, so a move made after that frame's
+   * callback can show for one frame.
+   */
+  rectCover?: RectCoverOption;
+  /**
+   * Declare that this window's picture is the same wherever the viewer stands — a stereo photo or
+   * video, a flat UI — as opposed to a live 3D scene, where look-around is the point. Default
+   * `true` on `addImage` / `addVideo` (and everything built on them: `./player`, `./camera`),
+   * `false` on `addScene` (and `./viewer`, `./splat`, `./model`).
+   *
+   * While EVERYTHING the foreground tab shows is viewer-independent, the DisplayXR Browser asks the
+   * runtime for views of the display's nominal viewer instead of tracked ones (runtime
+   * `XR_DXR_display_info` v25, `XrViewLocateFixedViewerDXR`), so a viewer tracker — a webcam on a
+   * display that does not track by itself — is never started for the page. A display that tracks
+   * by itself keeps weaving to its own eye positions. Advisory: nothing the SDK paints changes,
+   * and a browser without the capability ({@link inline3dViewerIndependentSupported}) never
+   * receives it. Replaceable with {@link TileHandle.setViewerIndependent}.
+   */
+  viewerIndependent?: boolean;
 }
+
+/** See {@link TileOptions.rectCover}. */
+export type RectCoverOption = 'auto' | 'off' | { color?: string; snapshot?: boolean; live?: boolean };
+
+/**
+ * The browser's per-frame report for one layer (`XRDisplayLayer.wovenState`, DisplayXR Browser
+ * builds that carry it; absent elsewhere). A level, never latched.
+ *
+ * - `'pending'` — no presented frame has reported this layer yet (from construction, again after
+ *   close(), and whenever the frame's reply does not list it).
+ * - `'woven'` — the latest swapped frame put this layer's rect into the weave.
+ * - `'withheld'` — it did not; {@link WovenWithheldReason} says why.
+ */
+export type WovenState = 'pending' | 'woven' | 'withheld';
+
+/**
+ * Why a layer reads `'withheld'` (`XRDisplayLayer.withheldReason`). The same tokens the browser
+ * logs; what each means and whose fix it is: `docs/woven-canvas-rules.md` §3. A future browser may
+ * add tokens, so treat an unknown string as "withheld, reason not listed".
+ */
+export type WovenWithheldReason =
+  | 'no-quad'
+  | 'no-identity'
+  | 'no-join'
+  | 'cross-pass:mono'
+  | 'cross-pass:mono(cover,2:1)'
+  | 'resolve-dropped'
+  | (string & {});
 
 /**
  * What {@link TileHandle.firstWoven} resolves to. Settles once and never rejects.
  *
- * - `woven: true, reason: 'hold-elapsed'` — a stereo frame is on a layer that has existed for
- *   `firstWovenHoldMs`. Drop the poster covering the canvas.
- * - `woven: false` — the window will not weave (`'layer-failed'`, `'session-ended'`,
- *   `'removed'`; the subpaths add `'unsupported'`). The canvas is already flat (image/video) or
- *   its `onLayerLost` has run (scene). Drop the poster onto the 2D fallback.
+ * - `woven: true, reason: 'woven'` (`confirmed: true`) — the BROWSER reported the layer woven
+ *   (`XRDisplayLayer.wovenState`), after a stereo frame was drawn. No hold. Drop the poster.
+ * - `woven: true, reason: 'hold-elapsed'` (`confirmed: false`) — a browser without that report:
+ *   a stereo frame is on a layer that has existed for `firstWovenHoldMs`. Drop the poster.
+ * - `woven: true, reason: 'hold-capped'` — `rewoven()`: the canvas kept resizing or moving, so
+ *   it stopped waiting four holds after the call; with the report, also a 'woven' read that never
+ *   qualified (see {@link TileHandle.rewoven}). Drop the cover; the rect may still be settling.
+ * - `woven: true, reason: 'store-capped'` (since 1.59.0) — a scene canvas whose page-sized store
+ *   never got the side-by-side shape (each eye tile the canvas box's aspect) within four holds of
+ *   the layer. firstWoven waits while the store is wrong, then holds from when it became right;
+ *   this is the cap on that wait. The console says what the store and box were. Fix the sizing:
+ *   the woven frames are wrong, not just late.
+ * - `woven: false, confirmed: true`, `reason` a {@link WovenWithheldReason} or `'pending'` — the
+ *   browser kept reporting the layer withheld (or never listed it) for the whole cap: four holds,
+ *   at least 4.8 s. A safety release, not a loss: the canvas is NOT taken flat and `rewoven()`
+ *   keeps working. Drop the cover; what shows is what the browser draws for that reason
+ *   (`cross-pass:mono` is flat in place; `no-identity` can be the raw pair).
+ * - `woven: false, confirmed: false` — the window will not weave (`'layer-failed'`,
+ *   `'session-ended'`, `'removed'`; the subpaths add `'unsupported'`). The canvas is already flat
+ *   (image/video) or its `onLayerLost` has run (scene). Drop the poster onto the 2D fallback.
  */
 export interface FirstWovenResult {
   readonly woven: boolean;
   /**
-   * `true` only when the BROWSER reported the join. Always `false` today: no browser exposes
-   * that, so the result is the SDK's worst-case hold rather than a report.
+   * `true` only when the BROWSER reported the state (`XRDisplayLayer.wovenState`). `false` on a
+   * browser without that report: the result is then the SDK's worst-case hold.
    */
   readonly confirmed: boolean;
-  readonly reason: 'hold-elapsed' | 'layer-failed' | 'session-ended' | 'removed' | 'unsupported';
+  readonly reason:
+    | 'woven'
+    | 'hold-elapsed'
+    | 'hold-capped'
+    | 'store-capped'
+    | 'layer-failed'
+    | 'session-ended'
+    | 'removed'
+    | 'unsupported'
+    | 'pending'
+    | WovenWithheldReason;
   /** Milliseconds from the add*() call to settling. */
   readonly ms: number;
 }
@@ -51,8 +163,13 @@ export interface FirstWovenResult {
  *   `verticalFov`, offsets the eyes, and skews each frustum so `convergenceDiopters` lands on
  *   the zero-disparity plane.
  *
- * Every field is optional; the runtime **clamps** an out-of-range value (once, with a warning)
- * rather than rejecting the rig. A descriptor applies per-locate, so animating one means sending
+ * Every field is optional; the runtime **clamps** a value outside a field's sanity range (once,
+ * with a warning — e.g. `convergenceDiopters` to `[0, 20]`, `verticalFov` to `[0.01, 3.13]` rad,
+ * `perspectiveFactor` to `[0.1, 10]`, ipd/parallax to `[0, 10000]`) rather than rejecting the rig.
+ * It does **not** enforce comfort: a camera rig's gain and a display rig's factors above 1 are
+ * applied as given. `handle.setViewRig` logs a one-time console warning for the usual mistakes
+ * (a camera rig converged at infinity, a `verticalFov` that looks like degrees, display-rig
+ * factors above 1) and still sends the rig unchanged. A descriptor applies per-locate, so animating one means sending
  * new values each frame — see {@link TileHandle.setViewRig} for the one-frame latency that
  * implies. Build one with `cameraRigFromCamera` / `displayRig` from
  * `@displayxr/inline3d/three`, or by hand.
@@ -66,17 +183,17 @@ export interface XRViewRigInit {
   orientation?: DOMPointInit;
   /** **Display rig.** Metres of virtual display; `m2v = this / the element's physical height`. */
   virtualDisplayHeight?: number;
-  /** Eye separation — display rig: relative `[0,1]`; camera rig: absolute `>= 0`. */
+  /** Eye separation — display rig: relative, 1 = correct, `[0,1]` a comfort dial (above 1 exaggerates); camera rig: absolute `>= 0`, the depth dial (≈ 1 open scene, cameraRigComfortFactor-filled when bounded; docs/authoring-inline-3d.md § Aim for real depth). */
   ipdFactor?: number;
   /** Head-tracking response — display rig: `[0,1]`; camera rig: absolute `>= 0`. */
   parallaxFactor?: number;
   /** **Display rig only**, `[0.1,10]`: exaggerates or flattens the off-axis skew. */
   perspectiveFactor?: number;
-  /** **Camera rig.** `1 / (convergence distance in world units)`; `0` = infinity. */
+  /** **Camera rig.** `1 / (convergence distance in world units)`; `0` = infinity. Converge on the centre of interest so the subject straddles the glass. */
   convergenceDiopters?: number;
   /** **Camera rig.** The FULL vertical angle, in RADIANS (three's `camera.fov` is degrees). */
   verticalFov?: number;
-  /** **Camera rig.** Metres → world units on the eye; `0`/unset means 1. */
+  /** **Camera rig.** World units per real metre; `0`/unset means 1. True scale → the true conversion; no true scale → convergence / 2 (docs/authoring-inline-3d.md § Aim for real depth). */
   metersToVirtual?: number;
 }
 
@@ -93,8 +210,9 @@ export type XRHardwareDisplayMode = '2d' | '3d';
  * `null` there means the machine has no such display.
  *
  * `recommendedViewScaleX/Y` are **advisory**. The browser cannot resize a page's canvas, so
- * nothing applies them for you — a page honours them by sizing its own backing store. Ignoring
- * them costs sharpness or fill rate, never correctness.
+ * nothing applies them for you — a page honours them by sizing its own backing store, most simply
+ * with `sceneBufferSize(canvas, { viewScale: info })`. Ignoring them costs sharpness or fill
+ * rate (on a big panel, a lot of it), never correctness.
  */
 export interface XRDisplayInfo {
   displayWidthMeters: number;
@@ -103,7 +221,61 @@ export interface XRDisplayInfo {
   displayPixelHeight: number;
   recommendedViewScaleX: number;
   recommendedViewScaleY: number;
+  /**
+   * The runtime's NOMINAL viewer position, metres, in display space: origin at the panel
+   * centre, +x right, +y up, +z out of the glass toward the viewer (w = 1). A constant of the
+   * panel — where the runtime seats the viewer when nobody is tracked, and the distance its
+   * camera rig is calibrated to (`z` is that rig's n) — NOT the live eye position.
+   *
+   * Absent on browsers that predate it (DisplayXR Browser patch 0221) and when the runtime
+   * reports nothing usable, so read it as `info.nominalViewerPosition?.z ?? fallback`.
+   */
+  nominalViewerPosition?: DOMPointReadOnly;
 }
+
+/** {@link TileHandle.displayMetrics}: a window in physical units. Metres throughout. */
+export interface DisplayMetrics {
+  /** The canvas's CSS box on the panel, [width, height]. */
+  canvasSizeM: [number, number];
+  /** One CSS px on the panel (physical pixel pitch × devicePixelRatio). */
+  metersPerCssPx: number;
+  displaySizeM: [number, number];
+  /** `nominalViewerPosition.z`, else the default. */
+  nominalViewerM: number;
+  /** Always the default today: no browser or runtime surface reports one. */
+  eyeSeparationM: number;
+  source: { size: 'display' | 'default'; viewer: 'display' | 'default'; eyeSeparation: 'default' };
+}
+
+/** What {@link TileHandle.displayMetrics} fills in when the display cannot say. */
+// The depth budget (also `@displayxr/inline3d/depth`): pure measurements, see depth.d.ts.
+export {
+  DEPTH_EYE_SEPARATION_M,
+  DEPTH_DEFAULT_VIEWER_M,
+  disparityPct,
+  cameraRigDisparityPct,
+  depthBudgetFromBounds,
+  comfortZone,
+  comfortDepthFactor,
+  backdropPlacement,
+  cameraRigComfortFactor,
+  withheldReasonHint,
+} from './depth.js';
+export type { DepthReport, DepthReportBasis, ComfortZoneName, ComfortZoneReport, BackdropPlacement } from './depth.js';
+
+export const DISPLAY_METRICS_DEFAULTS: Readonly<{
+  displaySizeM: readonly [number, number];
+  displayPixels: readonly [number, number];
+  nominalViewerM: number;
+  eyeSeparationM: number;
+}>;
+
+/** {@link TileHandle.displayMetrics} as a pure function of an XRDisplayInfo, a client rect and devicePixelRatio. */
+export function displayMetricsFrom(
+  info: XRDisplayInfo | null,
+  rect: { width: number; height: number } | null,
+  dpr?: number,
+): DisplayMetrics;
 
 /**
  * One rendering mode the DISPLAY can be put in, as reported by the runtime.
@@ -156,6 +328,24 @@ export interface HardwareDisplayStateChange {
 }
 
 export type DisplayModeChange = RenderingModeChange | HardwareDisplayStateChange;
+
+/**
+ * Is anyone being tracked in front of the display? From the DisplayXR runtime (which may hand the
+ * decision to the vendor plug-in), via the browser's `session.trackingState` (patch 0195).
+ *
+ * - `'tracking'` — a viewer is in the display's 3D zone.
+ * - `'searching'` — the runtime's derived isTracking is FALSE: nobody is in the zone, **or** the
+ *   display is in an untracked / 2D mode. It does **not** necessarily mean the tracker lost lock
+ *   on a viewer who is still there, so do not word a page's UI as if it did.
+ * - `'unknown'` — no opinion: this browser has no tracking-state surface, or the session ended.
+ */
+export type XRTrackingState = 'unknown' | 'tracking' | 'searching';
+
+/** The tracking state changed. The callback is handed the STATE first, this object second. */
+export interface TrackingStateChange {
+  type: 'trackingstatechange';
+  state: XRTrackingState;
+}
 
 /** What a page may lift into the floating native viewer. `null` = no `XRDisplayLayer.undock`. */
 export interface UndockCapabilities {
@@ -215,7 +405,24 @@ export interface SceneOptions extends TileOptions {
    * mono path). NOT called when a lazy tile merely scrolls off screen — that layer is coming
    * back. A throw is caught and warned about.
    */
+  /**
+   * This caller sizes the canvas within the device's GL limits itself, so the core must not
+   * inspect its drawing buffer. With it the core never calls `getContext()` on the canvas, which
+   * matters for an engine that creates its context AFTER `addScene` (asynchronously): a core
+   * `getContext()` would create it first, with the default attributes. The SDK's own renderers
+   * pass it. Default false.
+   */
+  bufferClamped?: boolean;
   onLayerLost?: () => void;
+  /**
+   * Called INSIDE the ResizeObserver callback when the canvas's CSS box or devicePixelRatio
+   * changes — after the frame's animation callbacks, before its paint. Resize your backing store
+   * and draw one frame here (replay your last views) and the old store is never shown stretched
+   * onto the new box, which is what waiting for the next frame shows. Called only on a real
+   * change, never re-entrantly; a throw is caught and warned about once. Default: none, and then
+   * no observer is attached to a scene canvas (unchanged).
+   */
+  onResize?: (box: { width: number; height: number; dpr: number }) => void;
 }
 
 /** The per-frame render callback passed to {@link Inline3D.addScene}. */
@@ -225,7 +432,67 @@ export type SceneFrameCallback = (
   frame: XRFrame,
 ) => void;
 
-/** The handle returned by every add*() call. */
+/**
+ * The handle returned by every add*() call.
+ *
+ * An add*() on a canvas that is still registered (not `remove()`d) on the same manager warns once
+ * per canvas (1.38) and then proceeds as it always has: the layer is closed and rebuilt (a fresh
+ * identity gap), or a subpath puts a second renderer on the context, and the call returns its own
+ * new handle. Change what is in the canvas instead, or `remove()` first.
+ */
+/** A p50 / p95 pair over the frame clock's recent window, in milliseconds. */
+export interface FramePercentiles {
+  p50: number;
+  p95: number;
+}
+
+/**
+ * A scene window's frame clock, part of {@link TileHandle.stats} (1.53). Measured over the last
+ * 120 `onFrame` deliveries (about 2 s at 60 Hz, 4 s at 30 Hz) with no per-frame allocation.
+ * Read it a few times a second at most; each read sorts the window.
+ */
+export interface SceneFrameClock {
+  /**
+   * Interval between consecutive `onFrame` deliveries, on the XR frame timestamp. Gaps where the
+   * window sat out frames (no layer) and pauses over 1 s are not counted. `null` before the first
+   * interval.
+   */
+  frameIntervalMs: FramePercentiles | null;
+  /**
+   * Wall time your `onFrame` took per call (main-thread CPU). GPU work is queued, not waited on,
+   * so it is NOT in this number. `null` before the first call.
+   */
+  cbMs: FramePercentiles | null;
+  /** How many intervals `frameIntervalMs` is computed from (0 to 120). */
+  frameClockSamples: number;
+  /**
+   * The display's refresh rate when the session reports it (`XRSession.frameRate`), else `null`.
+   * The SDK does not estimate it from the cadence: a 30 Hz panel and a 60 Hz panel delivering
+   * every second vsync look the same from here.
+   */
+  displayHz: number | null;
+  /** Where `displayHz` came from; `null` when it is unknown. */
+  displayHzSource: 'session' | null;
+  /**
+   * A hint, computed from the numbers above: `true` when the interval is steady
+   * (p95 ≤ 1.15 × p50), your callback is idle (cb p50 ≤ 0.5 × interval p50) and — when
+   * `displayHz` is known — the interval is a whole number of refresh periods (within 8%). Then the
+   * interval is set by the compositor's cadence, and spending less CPU will not shorten it.
+   * `false` when any condition fails; `null` with fewer than 30 intervals. It cannot see GPU
+   * cost: to rule out a GPU-bound frame, change the resolution and watch whether the interval
+   * moves.
+   */
+  paced: boolean | null;
+}
+
+/** What {@link TileHandle.stats} returns. */
+export interface SceneStats extends SceneFrameClock {
+  /** `onFrame` deliveries. */
+  frames: number;
+  /** Deliveries that carried fewer than two views (the load-induced mono fallback). */
+  monoFrames: number;
+}
+
 export interface TileHandle {
   /** Remove this window: close its weave layer and stop driving it. */
   remove(): void;
@@ -266,15 +533,59 @@ export interface TileHandle {
    * walk out of 2D, and the 2-view mode going active restores exactly this rig.
    */
   setViewRig(rig: XRViewRigInit): boolean;
+  /** This window's viewer-independence declaration ({@link TileOptions.viewerIndependent}). */
+  readonly viewerIndependent: boolean;
+  /**
+   * Replace this window's viewer-independence declaration ({@link TileOptions.viewerIndependent}),
+   * e.g. when a tile switches from a stereo video to a live scene. Returns whether a **live**
+   * layer took it; the value is stored either way and builds the next layer. Advisory: never
+   * changes what the SDK paints.
+   */
+  setViewerIndependent(viewerIndependent: boolean): boolean;
   /**
    * The panel this window weaves on, or `null` where there is no glasses-free display.
+   *
+   * `null` is returned only once the layer has answered for real or the cap has passed, never for
+   * "not ready yet". Called before this window's layer has delivered its first frame (right after
+   * `add*()`, the natural place), the call waits for the release signal — where the browser
+   * reports {@link TileHandle.wovenState}, the first `'woven'` read (a `'withheld'` read right
+   * after the layer is built does not count: it comes before the weave session can answer);
+   * elsewhere, the layer's first stereo frame; no first-woven hold — and asks then. If the layer
+   * still answers `null` before the cap, that answer is not returned: the call is asked again on
+   * each later release signal (the next `'woven'` read, or the next session frame once a stereo
+   * frame has been drawn) and resolves with the first non-`null` answer. Once a read on this layer
+   * has answered for real, later calls go straight to the layer. The cap is the first-woven cap
+   * (four holds from the layer's construction, never under 4.8 s): past it the layer's `null` is
+   * returned as a real absence. Without a live layer it settles at once, as below.
    *
    * Rejects with an `Error` on a browser without the display-mode API
    * ({@link inline3dDisplayModesSupported}) or while this window has no live layer (lazy mode,
    * tile off screen).
    */
   getDisplayInfo(): Promise<XRDisplayInfo | null>;
-  /** Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}. */
+  /**
+   * This window in physical units — canvas size in metres, metres per CSS px, the panel, the
+   * nominal viewer distance, the eye separation — from {@link getDisplayInfo}, with anything not
+   * measurable filled from {@link DISPLAY_METRICS_DEFAULTS} and flagged in `source`. Never rejects.
+   * The canvas size is read at the call: call again after a resize.
+   */
+  displayMetrics(): Promise<DisplayMetrics>;
+  /**
+   * Runtime ADR-046 Amendment 4: hand this window's depth under the pointer to its live layer
+   * (`XRDisplayLayer.setCursorDepth`); nothing / null withdraws. Returns whether a live layer took
+   * it. `cursor: 'depth'` calls this for you; a page drawing its own pair cursor can too.
+   */
+  setCursorDepth(depth?: XRCursorDepthInit | null): boolean;
+  /** "runtime" when the browser and the runtime draw this window's cursor; "none" otherwise (incl. no live layer yet). Never rejects. */
+  getCursorDepthSupport(): Promise<'runtime' | 'none'>;
+  /**
+   * Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}.
+   *
+   * An empty list is returned only once the cap has passed, never for "not ready yet": like
+   * {@link getDisplayInfo}, a call made before this window's layer has delivered its first frame
+   * waits for the same release signal, an empty answer before the cap is asked again on the next
+   * one, and the cap is the same. Rejects as {@link getDisplayInfo} does.
+   */
   getRenderingModes(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
   /**
    * Ask the runtime to switch the display to `modeIndex`. A thin pass-through — it resolves and
@@ -287,6 +598,10 @@ export interface TileHandle {
    * by the session's `renderingmodechange` event, not by this promise.
    *
    * A `viewCount === 1` mode is requestable and is how a page goes flat.
+   *
+   * Made before this window's layer has delivered its first frame, the request waits for it (the
+   * same release signal and cap as {@link getDisplayInfo}; forwarded once, not retried): before
+   * then the browser has no weave session to forward it to.
    *
    * With the eased transition on (the default — see {@link ModeSwitchOptions}) a going-flat
    * request is HELD while the disparity ramps out, so the promise resolves when the request has
@@ -309,14 +624,26 @@ export interface TileHandle {
    * its layer, and a window that never set a rig at all.
    *
    * Rejects with an `Error` when no such mode is listed, otherwise as `requestRenderingMode` does.
+   * A browser that cannot forward mode requests (the Android DisplayXR Browser today)
+   * rejects with a `NotSupportedError` even though its modes read
+   * `isRequestable: true`. Try, then fall back to easing your rig's `ipdFactor`/`parallaxFactor`
+   * to 0 — docs/woven-canvas-rules.md, "A 2D/3D toggle".
    */
   setStereoEnabled(enabled: boolean): Promise<boolean>;
   /** Listen for one display event, re-emitted on this handle. Returns an unsubscribe function. */
   on(type: 'renderingmodechange', cb: (e: RenderingModeChange) => void): () => void;
   on(type: 'hardwaredisplaystatechange', cb: (e: HardwareDisplayStateChange) => void): () => void;
+  /**
+   * Nobody-is-tracked changes, with the STATE as the first argument. The same subscription as the
+   * manager's; silent forever on a browser without the surface. See {@link Inline3D.trackingState}.
+   */
+  on(type: 'trackingstatechange', cb: (state: XRTrackingState, e: TrackingStateChange) => void): () => void;
   /** Drop a listener registered with {@link TileHandle.on}. */
   off(type: 'renderingmodechange', cb: (e: RenderingModeChange) => void): void;
   off(type: 'hardwaredisplaystatechange', cb: (e: HardwareDisplayStateChange) => void): void;
+  off(type: 'trackingstatechange', cb: (state: XRTrackingState, e: TrackingStateChange) => void): void;
+  /** The manager's {@link Inline3D.trackingState}, read live. */
+  readonly trackingState: XRTrackingState;
   /**
    * Both display events through one callback — the older shape, still supported. Returns an
    * unsubscribe function; inert (a no-op unsubscribe) on a browser without the API.
@@ -331,17 +658,55 @@ export interface TileHandle {
    * a rising ratio is the machine telling you the session is falling back, and is worth
    * surfacing before it turns into a bug report about "blinking".
    *
-   * Scene windows only — image/video windows always report `{ frames: 0, monoFrames: 0 }`.
+   * Since 1.53 it also reports the scene's **frame clock** ({@link SceneFrameClock}), so an app
+   * that adapts its resolution can tell "my frame is expensive" from "the compositor delivers
+   * frames at this cadence whatever I do". Numbers only: the SDK never throttles or clamps.
+   *
+   * Scene windows only — image/video windows report `frames: 0, monoFrames: 0` and null clock
+   * fields.
    */
-  stats(): { frames: number; monoFrames: number };
+  stats(): SceneStats;
+  /**
+   * The browser's report for this window's layer, read live ({@link WovenState}); `'pending'`
+   * while the window has no live layer; `null` on a browser that does not report it (the
+   * attribute is absent on mac, Linux, Android and Windows builds without it). Diagnostics:
+   * `firstWoven` / `rewoven()` already settle on it.
+   */
+  readonly wovenState: WovenState | null;
+  /** The why-token while {@link TileHandle.wovenState} is `'withheld'`, else `null`. */
+  readonly withheldReason: WovenWithheldReason | null;
   /**
    * Resolves once, when it is safe to reveal this canvas: see {@link FirstWovenResult}. THE way to
    * release a poster held over a woven canvas — `await Promise.all([ready, handle.firstWoven])`
-   * and cut, never fade. Approximate until a browser reports joins (`confirmed` stays `false`).
+   * and cut, never fade. On a browser that reports `wovenState` it settles on that report
+   * (`confirmed: true`, no hold); elsewhere it is the worst-case hold (`confirmed: false`).
    */
   readonly firstWoven: Promise<FirstWovenResult>;
   /** Callback form of {@link TileHandle.firstWoven}: called once, asynchronously. Returns an unsubscribe. */
   onFirstWoven(cb: (result: FirstWovenResult) => void): () => void;
+  /**
+   * {@link TileHandle.firstWoven}, measured from NOW. Cover an already-woven canvas across a rect
+   * change (fullscreen, a layout resize, a move), then release on this ({@link TileOptions.rectCover}
+   * does both for you). A change of the canvas's CSS size, devicePixelRatio or page position (since
+   * 1.38; document scroll excluded) while pending restarts the hold (checked every frame, any
+   * window kind). It settles anyway, `woven: true, reason:
+   * 'hold-capped'`, four holds after the call, so a size that never stops animating cannot hold a
+   * cover up for good. A second call while pending returns the same promise, restarted. Before the
+   * first join it is `firstWoven`; on a window that will not weave it is that `woven: false` result.
+   *
+   * On a browser that reports `wovenState` it settles `confirmed: true, reason: 'woven'` on the
+   * first 'woven' read (with a stereo frame drawn since the call) that either follows a
+   * 'withheld'/'pending' read seen after the call, or comes three session frames after the last
+   * box change seen after the call, or — when no box change is seen after the call, the usual
+   * case of a page that moves the canvas and THEN calls this — comes three session frames after
+   * the call. The report is a live per-frame level trailing the join by 1–3 frames, so a read
+   * three frames on reflects the rect as it was at the call, and a 'woven' from the old rect
+   * never settles it; a read on the frame of the call never does. Expect ~50 ms instead of the
+   * 1.2 s hold.
+   * The cap stays: still 'withheld' four holds after the call (at least 4.8 s), it settles `woven:
+   * false, confirmed: true, reason: <withheldReason>`.
+   */
+  rewoven(): Promise<FirstWovenResult>;
 }
 
 /** An open inline-3D session you add weaved windows to. Returned by {@link createInline3D}. */
@@ -353,13 +718,33 @@ export interface Inline3D {
   readonly refSpace: XRReferenceSpace | null;
   /** Number of currently-active (weaving) windows. */
   readonly liveCount: number;
+  /**
+   * The panel, synchronously. Since 1.59.0.
+   *
+   * The last {@link getDisplayInfo} answer this document read (the SDK reads it itself on the
+   * first live layer), else the one the last page on this origin read — a frozen copy of the six
+   * numeric fields with `cached: true` — else `null`. A display read needs a layer that has
+   * delivered a frame, so this is how a page sizes its FIRST woven frames at the right view
+   * scale: `sceneBufferSize(canvas, { sbs: true, viewScale: wall.displayInfo })` in the same task
+   * as `addScene`. A cached value can name another display; it costs resolution until the live
+   * read lands (re-size then), never geometry.
+   */
+  readonly displayInfo: (XRDisplayInfo & { readonly cached?: true }) | null;
 
   // The panel is the DOCUMENT's, not a tile's, so the display API lives here; the same names are
   // on every tile handle, routed to whichever window currently holds a live layer.
 
-  /** The panel, or `null` where there is no glasses-free display. See {@link TileHandle.getDisplayInfo}. */
+  /**
+   * The panel, or `null` where there is no glasses-free display — `null` only once the cap has
+   * passed, never for "not ready yet" (a call before the live window has answered waits for its
+   * release signal and is asked again while it answers `null`, capped). See
+   * {@link TileHandle.getDisplayInfo}.
+   */
   getDisplayInfo(): Promise<XRDisplayInfo | null>;
-  /** Every rendering mode the display can be put in. See {@link XRDisplayRenderingMode}. */
+  /**
+   * Every rendering mode the display can be put in; an empty list only once the cap has passed,
+   * never for "not ready yet". See {@link TileHandle.getRenderingModes}.
+   */
   getRenderingModes(): Promise<ReadonlyArray<XRDisplayRenderingMode>>;
   /** Switch the display to `modeIndex`. See {@link TileHandle.requestRenderingMode}. */
   requestRenderingMode(modeIndex: number): Promise<void>;
@@ -367,10 +752,19 @@ export interface Inline3D {
   setStereoEnabled(enabled: boolean): Promise<boolean>;
   on(type: 'renderingmodechange', cb: (e: RenderingModeChange) => void): () => void;
   on(type: 'hardwaredisplaystatechange', cb: (e: HardwareDisplayStateChange) => void): () => void;
+  on(type: 'trackingstatechange', cb: (state: XRTrackingState, e: TrackingStateChange) => void): () => void;
   off(type: 'renderingmodechange', cb: (e: RenderingModeChange) => void): void;
   off(type: 'hardwaredisplaystatechange', cb: (e: HardwareDisplayStateChange) => void): void;
+  off(type: 'trackingstatechange', cb: (state: XRTrackingState, e: TrackingStateChange) => void): void;
   /** As last REPORTED by `hardwaredisplaystatechange` — never what was last requested. */
   readonly hardwareDisplayState: XRHardwareDisplayMode | null;
+  /**
+   * Is anyone being tracked in front of the display right now? Mirrors `session.trackingState` as
+   * last read — `'unknown'` where the browser has no such surface (silently), and again once the
+   * session ends. Pages use it for "step back into view" hints; see
+   * {@link CreateInline3DOptions.untrackedFallback} for having the SDK flatten image/video tiles.
+   */
+  readonly trackingState: XRTrackingState;
   /** The active mode as last read/reported. `viewCount: 0` means "not read yet". */
   readonly activeMode: { modeIndex: number; viewCount: number };
   /** True while the SDK is holding every window's rig flat because a 1-view mode is active. */
@@ -441,6 +835,8 @@ export interface Inline3D {
 /** The shape {@link createInline3D} resolves to when inline-3D is unavailable. */
 export interface Inline3DUnsupported {
   supported: false;
+  /** Always `'unknown'`: no session, nobody to track. Present so a page need not branch first. */
+  trackingState: 'unknown';
   error?: unknown;
 }
 
@@ -470,7 +866,83 @@ export interface CreateInline3DOptions {
   autoChrome?: boolean;
   /** The eased 2D<->3D transition. On by default; see {@link ModeSwitchOptions}. */
   modeSwitch?: ModeSwitchOptions;
+  /**
+   * What the SDK does to the image and video windows it owns the pixels of while **nobody is
+   * tracked** (`trackingState === 'searching'`). Default `'none'`.
+   *
+   * Whose job this is depends on the display's eye-tracking mode:
+   * - **MANAGED** (the default, and Leia's): the vendor owns tracking loss. It eases the eyes
+   *   together and reports `'searching'` only once the display is already 2D. Leave this at
+   *   `'none'`: a flatten here would be a second transition.
+   * - **MANUAL**: the vendor does nothing and the app handles tracking loss. Use `'mono'`.
+   *
+   * - `'none'` — nothing changes.
+   * - `'mono'` — each `addImage` / `addVideo` window eases to its LEFT eye in both halves of its
+   *   side-by-side buffer on `'searching'`, and back on `'tracking'`, over the mode switch's
+   *   duration. The buffer is never reallocated and the layer never closed; `'unknown'` leaves it
+   *   where it is.
+   *
+   * **Scene windows are never touched** — the page owns those pixels. Listen for
+   * `trackingstatechange` and do the same for a scene.
+   */
+  untrackedFallback?: 'none' | 'mono';
+  /**
+   * The TRACKING EASE, as the default for every SDK renderer drawing through this session
+   * (`./viewer`'s SceneViewer, `./splat` and `./model` on both engines). When a viewer is
+   * acquired — the views jump from the runtime's nominal viewer to the tracked eyes — or lost,
+   * the eye cameras glide from where they were drawn to the new views over `durationMs` instead
+   * of snapping in one frame; everything parented to the views (parallax, display-rig layers)
+   * follows. Triggered by a jump in the views around a `trackingState` edge (or, where the browser
+   * reports no state, by a large one-frame jump); a no-op when the vendor already animates the eyes. On by default; `false` restores
+   * the snap; a renderer's own `viewerEase` option overrides this. A page rendering its own
+   * `addScene` can use the exported {@link ViewerEase}.
+   */
+  viewerEase?: ViewerEaseOption;
 }
+
+/** `true`/unset = on with defaults, `false` = off, or tune it. */
+export type ViewerEaseOption =
+  | boolean
+  | {
+      /** Default true. */
+      enabled?: boolean;
+      /** The glide, in ms (default 300). 0 disables. */
+      durationMs?: number;
+      /** 'smoothstep' (default) | 'linear' | 'easeOutCubic'. */
+      easing?: 'smoothstep' | 'linear' | 'easeOutCubic' | string;
+    };
+
+/** One frame's matrices as an SDK renderer copies them out of an XRView (column-major). */
+export interface ViewerEaseEntry {
+  proj: Float32Array | Float64Array | number[];
+  pose: Float32Array | Float64Array | number[];
+}
+
+/**
+ * The tracking ease on its own, for a page that renders its own `addScene`: copy each view's
+ * `projectionMatrix` and `transform.matrix` into an entry, call `apply(entries,
+ * frame.session.trackingState)` once per LIVE frame, and render from the entries (keep using the
+ * real XRView for `layer.getViewport`). It rewrites the entries only while an ease is running.
+ */
+export declare class ViewerEase {
+  constructor(opts?: ViewerEaseOption & object);
+  readonly enabled: boolean;
+  readonly durationMs: number;
+  readonly easing: string;
+  /** Is an ease running right now? */
+  readonly active: boolean;
+  /** What the last apply() did: the weight of the old views (0 = passed through), the trigger, the jump (eye separations). */
+  readonly last: { weight: number; reason: null | 'armed-jump' | 'jump' | 'easing'; jump: number };
+  apply(entries: ViewerEaseEntry[], trackingState?: XRTrackingState | string | null, timeMs?: number): number;
+  configure(opts?: ViewerEaseOption): void;
+  /** Forget the previous frame (call after a resize or a view-count change you handle yourself). */
+  reset(): void;
+}
+export function resolveViewerEaseOption(opt?: ViewerEaseOption): { enabled: boolean; durationMs: number; easing: string };
+/** `frame.session.trackingState`, or null when the browser does not report one. */
+export function frameTrackingState(frame: unknown): XRTrackingState | null;
+/** 300. */
+export const VIEWER_EASE_DEFAULT_MS: number;
 
 /**
  * The eased 2D<->3D transition — on by default, and the same sequencer (and the same defaults)
@@ -559,6 +1031,14 @@ export function inline3dOcclusionByDrawOrder(): boolean;
 export function inline3dViewRigSupported(): boolean;
 
 /**
+ * True when this browser takes the viewer-independence declaration
+ * ({@link TileOptions.viewerIndependent}, {@link TileHandle.setViewerIndependent}). Reads the
+ * presence of `XRDisplayLayer.setViewerIndependent`. A page never needs to branch on it: the
+ * declaration is advisory and harmless where it is not sent.
+ */
+export function inline3dViewerIndependentSupported(): boolean;
+
+/**
  * True when this browser exposes the DISPLAY-MODE API — {@link TileHandle.getDisplayInfo},
  * {@link TileHandle.getRenderingModes} and {@link TileHandle.requestRenderingMode}. Sync + cheap;
  * implies {@link inline3DAvailable}.
@@ -600,8 +1080,78 @@ export function undockUrl(el: Element, opts: UndockOptions): string;
 /** An element's rect in physical screen pixels — where the native viewer places its window. */
 export function tileScreenRect(el: Element): { x: number; y: number; w: number; h: number; dpr: number };
 
-/** Open the page's inline-3D session and return a manager you add windows to. */
+/** {@link sceneBufferSize}'s options. */
+export interface SceneBufferSizeOptions {
+  /** Side-by-side (two eyes wide) while woven; `false` for the 1:1 mono store. Default `true`. */
+  sbs?: boolean;
+  /** A quality multiplier on the per-eye size (scale the store, never `setPixelRatio`). Default 1. */
+  renderScale?: number;
+  /** The devicePixelRatio cap when no `viewScale` is given. Default 2, as the SDK's own windows. */
+  maxPixelRatio?: number;
+  /**
+   * The runtime's recommended view scale: pass the {@link XRDisplayInfo} from
+   * `handle.getDisplayInfo()`, or `{x, y}` / `[x, y]`. Per eye is then window device px × scale,
+   * the native runtime's rule: the weave shows no more pixels per view than that. Ignored when
+   * `sbs` is false: the view scale is the 3D mode's, and the flat (2D) store is the full window.
+   */
+  viewScale?: XRDisplayInfo | { x: number; y: number } | [number, number] | null;
+  /** The page's GL context, for its exact limits. Default: a probed throwaway context. */
+  gl?: WebGLRenderingContext | WebGL2RenderingContext | null;
+  /** Override the CSS box (default `canvas.clientWidth` / `clientHeight`). */
+  cssWidth?: number;
+  cssHeight?: number;
+}
+
+/** {@link sceneBufferSize}'s result: what to set the canvas to, and why. */
+export interface SceneBufferSize {
+  /** The whole store: `canvas.width` / `renderer.setSize(width, height, false)`. */
+  width: number;
+  height: number;
+  /** One eye (half of `width` when `sbs`): set the camera aspect from these. */
+  eyeWidth: number;
+  eyeHeight: number;
+  /** The devicePixelRatio used (capped unless a view scale was given). */
+  pixelRatio: number;
+  /** The view scale applied, or null. */
+  viewScale: [number, number] | null;
+  /** renderScale × any device-limit shrink. */
+  scale: number;
+  /** True when the device's GL limits shrank the store (warned once per canvas). */
+  clamped: boolean;
+  /** The binding limit, e.g. `'MAX_TEXTURE_SIZE 4096'`, or null. */
+  limit: string | null;
+}
+
+/**
+ * The backing store an `addScene` page should give its own canvas: per eye, window device px ×
+ * the runtime's recommended view scale (or CSS box × devicePixelRatio capped at 2 without one),
+ * times `renderScale`, shrunk to fit the device's GL limits. Hand-rolled
+ * `clientWidth × devicePixelRatio × 2` overshoots on big panels (an 8K desktop at dpr 3 asks for
+ * 15360×4320) and past the GL limits the browser silently shrinks the drawing buffer, which puts
+ * the eyes off-centre. Since 1.58.0.
+ */
+export function sceneBufferSize(canvas: { clientWidth?: number; clientHeight?: number }, opts?: SceneBufferSizeOptions): SceneBufferSize;
+
+/**
+ * Open the page's inline-3D session and return a manager you add windows to. Resolves
+ * `{ supported: false }` where inline 3D is unavailable. The promise can still reject: `await` it
+ * inside a `try`/`catch` (or `.catch()` the startup), log the error and show the 2D view.
+ */
 export function createInline3D(
+  opts?: CreateInline3DOptions,
+): Promise<Inline3D | Inline3DUnsupported>;
+
+/**
+ * The document's shared manager: the live {@link createInline3D} result if one exists, else a new
+ * one. One inline-3D session per document (woven-canvas rule 1) is the point: a module that needs
+ * a wall it did not create (`mountCall`, `<dxr-call>`) uses this instead of opening a second
+ * session, and a page that made its own wall first gets that same wall back here.
+ *
+ * `opts` apply only when this call creates the manager. An unsupported browser resolves to
+ * `{ supported: false }` every time (nothing is cached; a later call re-probes). Two callers
+ * racing before the first session resolves share one creation. Additive since 1.29.
+ */
+export function sharedInline3D(
   opts?: CreateInline3DOptions,
 ): Promise<Inline3D | Inline3DUnsupported>;
 
@@ -645,6 +1195,12 @@ export interface XRDisplayLayer {
    */
   setViewRig?(rig: XRViewRigInit): void;
   /**
+   * Declare whether this layer's picture depends on the viewer's position (also an
+   * `XRDisplayLayerInit` member, `viewerIndependent`). Optional; same probe rule as `setViewRig`
+   * ({@link inline3dViewerIndependentSupported}).
+   */
+  setViewerIndependent?(viewerIndependent: boolean): void;
+  /**
    * The display-mode API. All three optional for the same reason as `setViewRig`: their presence
    * on the prototype IS the capability signal ({@link inline3dDisplayModesSupported}), and the
    * SDK demands all three before treating the browser as supporting any of them.
@@ -656,5 +1212,28 @@ export interface XRDisplayLayer {
   /** Undock this layer's asset into the floating native viewer. Optional; same probe rule. */
   undock?(init: UndockOptions): Promise<unknown>;
   getUndockCapabilities?(): Promise<UndockCapabilities>;
+  /**
+   * Runtime ADR-046 Amendment 4: the depth under the pointer, per animation frame while it is over
+   * this layer's element; no argument / null / `{}` withdraws. Optional; same probe rule.
+   */
+  setCursorDepth?(depth?: XRCursorDepthInit | null): void;
+  /** "runtime" when the browser and the runtime draw this page's cursor; else "none". Optional; same probe rule. */
+  getCursorDepthSupport?(): Promise<'runtime' | 'none'>;
   close(): void;
+}
+
+/**
+ * What a page passes to `setCursorDepth` (runtime ADR-046 Amendment 4). The runtime does the rest:
+ * the pointer (read at draw time), the policy, the anchor, the look (the browser's own cursor).
+ */
+export interface XRCursorDepthInit {
+  /**
+   * On-screen disparity in DEVICE px between the two outermost rendered views, of the nearest
+   * content under the cursor footprint; < 0 = crossed = in front of the glass. RAW content
+   * disparity, not a target. Absent / null = over the element, nothing 3D under it.
+   */
+  disparityPx?: number | null;
+  /** Where it was sampled: element-normalised, v down. */
+  u: number;
+  v: number;
 }

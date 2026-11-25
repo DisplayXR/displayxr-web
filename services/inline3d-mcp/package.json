@@ -1,0 +1,17 @@
+{
+  "name": "inline3d-mcp-hosted",
+  "private": true,
+  "description": "The hosted DisplayXR inline-3D connector (remote MCP for claude.ai, ChatGPT and any MCP client): guide, scaffold, asset check, and the page checker on a GPU worker.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@displayxr/inline3d-tools": "0.1.5",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@neondatabase/serverless": "1.0.2",
+    "zod": "4.6.7"
+  },
+  "license": "Apache-2.0"
+}
