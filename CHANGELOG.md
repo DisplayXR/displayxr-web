@@ -5,6 +5,19 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Fixed — lazy mode: a display read right after add*() no longer fails
+
+- With `createInline3D()`'s default `lazy: true`, a tile has no layer until the viewport observer
+  first reports it on screen, a few ms after `add*()` returns. `handle.getDisplayInfo()` (and the
+  other layer reads) made in that gap rejected with "needs a live weave layer", although the layer
+  came up immediately after. That is the call site docs/porting-three-js-apps.md §4 recommends, so a
+  lazy page could never refine its store from the view scale, and 1.59.0's store-shape guard then
+  held firstWoven to its cap. A read made before the first report now waits for it (capped like the
+  first-frame wait): on screen it answers, off screen it rejects as before. Found by the
+  inline3d-tools checker on the starter template.
+
 ## 1.60.0 — 2026-11-25
 
 ### Fixed — the store-shape guard (1.59.0) misfired on a display whose views halve the width only

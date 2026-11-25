@@ -385,8 +385,33 @@ test('a display-mode call with no live layer rejects and says WHY (lazy tile off
   const canvas = makeCanvas();
   const handle = wall.addScene(canvas, () => {});
   assert.equal(env.created.length, 0, 'a lazy tile has no layer until it intersects');
+  // Asked before the observer's first report: it waits for the report rather than failing...
+  const modes = handle.getRenderingModes().catch((e) => e);
+  await flush();
+  // ...and the report says off screen: no layer, so it rejects and says why.
+  env.intersect(canvas, false);
+  assert.match(String((await modes).message), /live weave layer/);
+  // Once the observer has reported, a call with no layer rejects at once, as before.
   await assert.rejects(() => handle.getRenderingModes(), /live weave layer/);
   await assert.rejects(() => wall.getDisplayInfo(), /live weave layer/);
+  wall.close();
+});
+
+test('lazy mode: getDisplayInfo() right after addScene, in the same task, waits for the layer the first report builds (tools template, web#357)', async () => {
+  const env = installEnv();
+  const wall = await createInline3D({ lazy: true, autoChrome: false });
+  const canvas = makeCanvas();
+  const handle = wall.addScene(canvas, () => {});
+  const info = handle.getDisplayInfo(); // the porting guide's §4 call site
+  let settled = false;
+  info.then(() => (settled = true), () => (settled = true));
+  await flush();
+  assert.equal(settled, false, 'not rejected while the layer is about to exist');
+  env.intersect(canvas, true); // on screen: the layer is built
+  assert.equal(env.created.length, 1);
+  await env.stereoFrame(); // its first frame releases the read
+  const r = await info;
+  assert.ok(r && r.recommendedViewScaleX > 0, 'the real answer, not a rejection');
   wall.close();
 });
 

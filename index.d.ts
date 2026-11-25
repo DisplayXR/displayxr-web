@@ -560,7 +560,9 @@ export interface TileHandle {
    *
    * Rejects with an `Error` on a browser without the display-mode API
    * ({@link inline3dDisplayModesSupported}) or while this window has no live layer (lazy mode,
-   * tile off screen).
+   * tile off screen). A lazy window asked before the viewport observer's first report (the call
+   * right after add*(), in the same task) waits for that report instead (since 1.60.1): on
+   * screen it gets the layer and answers as above, off screen it rejects.
    */
   getDisplayInfo(): Promise<XRDisplayInfo | null>;
   /**

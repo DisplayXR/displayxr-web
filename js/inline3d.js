@@ -1984,7 +1984,7 @@ class Inline3D {
     return this._layerCallRaw(win, method, label, args);
   }
 
-  _layerCallRaw(win, method, label, args = []) {
+  _layerCallRaw(win, method, label, args = [], waitedForLayer = false) {
     if (!hasDisplayModes()) {
       return Promise.reject(
         new Error(
@@ -1993,6 +1993,19 @@ class Inline3D {
             'Gate on inline3dDisplayModesSupported().'
         )
       );
+    }
+    // Lazy mode, just added: the observer has not reported yet, so the layer does not exist YET
+    // (it is built on the first report when the tile is on screen). The natural call site, right
+    // after add*() in the same task, used to land here and fail although the layer came up a few
+    // ms later. Wait for that report (capped, as the first-frame wait is), then ask once.
+    if (win && !win.layer && win.ioPending && !waitedForLayer) {
+      return new Promise((resolve) => {
+        const t = setTimeout(resolve, this._layerFramedCap(win));
+        win.layerWaiters.push(() => {
+          clearTimeout(t);
+          resolve();
+        });
+      }).then(() => this._layerCallRaw(win, method, label, args, true));
     }
     // `win` is null when the WALL-level call ran with no window live at all — the same failure
     // as a window whose layer is closed, and the same message covers both.
@@ -2748,6 +2761,11 @@ class Inline3D {
     if (win.viewRig) warnViewRigOnce(win.rigWarned, win.viewRig); // as handle.setViewRig: read only
     this._windows.set(canvas, win);
     if (this._lazy && this._observer) {
+      // Until the observer's first report the window has no layer yet but may be about to get
+      // one (it usually is: a page adds the tile it is looking at). Layer reads made in that gap
+      // wait for the report instead of failing (_layerCallRaw).
+      win.ioPending = true;
+      win.layerWaiters = [];
       this._observer.observe(win.observeEl);
     } else {
       this._activate(win);
@@ -2758,6 +2776,7 @@ class Inline3D {
   _remove(canvas) {
     const win = this._windows.get(canvas);
     if (!win) return;
+    this._releaseLayerWaiters(win);
     if (this._observer) this._observer.unobserve(win.observeEl);
     this._deactivate(win);
     this._windows.delete(canvas);
@@ -2795,7 +2814,16 @@ class Inline3D {
       if (!win) continue;
       if (e.isIntersecting) this._activate(win);
       else this._deactivate(win);
+      this._releaseLayerWaiters(win);
     }
+  }
+
+  /** The observer has reported on `win` (or it is gone): reads waiting for its layer ask now. */
+  _releaseLayerWaiters(win) {
+    win.ioPending = false;
+    const ws = win.layerWaiters;
+    win.layerWaiters = [];
+    if (ws) for (const r of ws) r();
   }
 
   _activate(win) {
