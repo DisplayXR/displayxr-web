@@ -1794,6 +1794,10 @@ maximised window, vsync and the frame-rate limit off, the guard off), `arrival.s
   that holds the camera, plus 21 enclosing meshes (grid plane, glass, boxes). The same walk on the
   pre-latch build did not flip either: this path never put a vetoing prop in view headless, so the
   flip itself is covered by the harness cases (`spark-room-props`, `-subject`, `-latch`), not this walk.
+  Harness after this change: **219 run, 2 skipped, all green** (3 new cases + `spark-est-head`).
+  PlayCanvas examples (`corpus/results/2026-11-25-pc-examples-v0.7.10-latch.json`): PASS 211, REVIEW 28,
+  FLAT 36, NONE 1, ERROR 1; against the first v0.7.10 run the only change is `loaders/glb` (REVIEW ->
+  PASS, its known flip).
 - **Not verified: the panel.** For the tester, maximised on the 8K panel, WebGL2 and `?webgpu=1`: the log
   says `SBS 3072x1566 (eye 1536x1566)`; the 3D frame rate and whether the guard still trips; that the
   picture is still sharp enough (2.5× fewer rows than v0.7.9; a joint scale was judged a loss on
