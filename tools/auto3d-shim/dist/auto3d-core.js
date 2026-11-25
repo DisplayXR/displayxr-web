@@ -20,6 +20,9 @@ function dxrCore(cfg, cap, S) {
     releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
     rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
+    scaleSamples: 3,    // the rig's scale (m2v) is set ONCE per activation (v0.7.10): from this many consecutive estimator samples ...
+    scaleSpread: 0.1,   // ... within this fraction of their median, on a quiet page (no resource for guardLoadQuietMs) ...
+    scaleMaxWaitMs: 8000, // ... or from what there is this long after the flip (a page that never stops loading). Flat until then.
     openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
     openSceneConvM: 2,      // 'fixed': converge this far in front of the page camera, scene units read as METRES (Marble worlds and most three.js scenes are metric)
     openSceneRealDepth: 0.5, // 'fixed': the camera-rig depth that means the viewer's REAL IPD (ipdFactor 1); less scales the eye separation down (0.25 halves it)
@@ -300,6 +303,7 @@ function dxrCore(cfg, cap, S) {
     const dr = depthRangeFor(st);
     st.near = dr.near; st.far = dr.far;
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
+    st.rigScale = null; st.rigScaleWait = null; // a new activation decides the rig's scale again (setScaleOnce)
     estimateConvergence(st, true);
     st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
     const rig = buildRig(st, ad.rigFov(st));
@@ -490,7 +494,7 @@ function dxrCore(cfg, cap, S) {
         st.near = dr.near; st.far = dr.far;
         try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ending */ }
       }
-      if (!estimateConvergence(st, false, true) && st.stats.xrFrames % 30 === 0) estimateConvergence(st, false);
+      if (!estimateConvergence(st, false, true) && st.stats.xrFrames % (st.rigScale ? 30 : 10) === 0) estimateConvergence(st, false);
       tickRamp(st, t);
       if (HAS_RIG && st.layer) { try { st.layer.setViewRig(buildRig(st, ad.rigFov(st))); } catch (e) { warnOnce('rig', 'setViewRig failed', e); } }
     }
@@ -571,13 +575,13 @@ function dxrCore(cfg, cap, S) {
         display: { type: 'display', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } },
       };
     }
-    const d = rigDistance(st);
+    const d = rigDistance(st), ds = scaleDistance(st);
+    const k = st.rigScale ? rampK(st) : 0;
     if (rigMode() === 'display') {
       const r = st.rigs.display;
-      r.position.x = r.position.y = 0; r.position.z = -d;
+      r.position.x = r.position.y = 0; r.position.z = -ds;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
-      r.virtualDisplayHeight = 2 * d * Math.tan(verticalFov / 2);
-      const k = rampK(st);
+      r.virtualDisplayHeight = 2 * ds * Math.tan(verticalFov / 2);
       const dep = depthOf('display');
       r.ipdFactor = dep * k;
       r.parallaxFactor = dep * k;
@@ -587,7 +591,6 @@ function dxrCore(cfg, cap, S) {
     }
     const rig = st.rigs.camera;
     rig.type = 'camera';
-    const k = rampK(st); // the fade (1 when settled): 0 puts both eyes on the page camera, i.e. the mono picture
     rig.position.x = rig.position.y = rig.position.z = 0;
     rig.orientation.x = rig.orientation.y = rig.orientation.z = 0; rig.orientation.w = 1;
     rig.verticalFov = verticalFov;
@@ -600,19 +603,53 @@ function dxrCore(cfg, cap, S) {
       st.rig = rig;
       return rig;
     }
-    rig.metersToVirtual = (depthOf('camera') * d) / 0.5;
+    rig.metersToVirtual = (depthOf('camera') * ds) / 0.5;
     rig.ipdFactor = k;
     rig.parallaxFactor = k;
     st.rig = rig;
     return rig;
   }
   const rigDistance = (st) => Math.max(1e-6, (st.conv.d || 1) * site.convScale);
+  const scaleDistance = (st) => Math.max(1e-6, ((st.rigScale && st.rigScale.d) || st.conv.d || 1) * site.convScale);
+  function setScaleOnce(st, src, raw) {
+    if (!st.active) return;
+    const S = st.rigScale;
+    if (src === 'fixed') {
+      if (S && S.open) return;
+      st.rigScale = { d: 0, open: true, basis: 'open scene' };
+      info(`scale set: m2v 1 (open scene${S ? `; replaces ${scaleText(st, S)} (${S.basis})` : ''})`);
+      scaleReady(st);
+      return;
+    }
+    if (S) return;
+    if (src === 'target' && raw > 0) {
+      st.rigScale = { d: raw, basis: `target${st.conv.via ? ': ' + st.conv.via : ''}` };
+    } else {
+      const W = st.rigScaleWait || (st.rigScaleWait = { t0: now(), xs: [] });
+      if (src === 'estimator' && raw > 0) { W.xs.push(raw); if (W.xs.length > T.scaleSamples) W.xs.shift(); }
+      const t = now(), xs = W.xs.slice().sort((a, b) => a - b), med = xs.length ? xs[xs.length >> 1] : 0;
+      const consistent = xs.length >= T.scaleSamples && med > 0 && xs[xs.length - 1] - xs[0] <= T.scaleSpread * med;
+      const quiet = !(guard.loading && guard.loading(t));
+      const late = t - W.t0 >= T.scaleMaxWaitMs; // from this activation's first estimate (the flip)
+      if (!(consistent && quiet) && !late) return;
+      const d = med > 0 ? med : st.conv.d || 1;
+      st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(T.scaleMaxWaitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
+    }
+    info(`scale set: ${scaleText(st, st.rigScale)} (${st.rigScale.basis}; distance ${st.rigScale.d.toPrecision(3)} units)`);
+    scaleReady(st);
+  }
+  function scaleText(st, S) {
+    if (S.open && rigMode() !== 'display') return 'm2v 1';
+    const d = Math.max(1e-6, (S.d || st.conv.d || 1) * site.convScale);
+    return rigMode() === 'display' ? `display portal ${(2 * d * Math.tan(st.ad.rigFov(st) / 2)).toPrecision(3)} units tall at ${d.toPrecision(3)}` : `m2v ${((depthOf('camera') * d) / 0.5).toPrecision(3)}`;
+  }
+  function scaleReady(st) { if (!st.cover && !st.coverForced && rampK(st) < 1 && !st.ramp && !st.releasing) startRamp(st, 1); }
 
   const PIVOT_CUT_COS = Math.cos(Math.PI / 6);
   const ZERO3 = Object.freeze([0, 0, 0]);
   function pivotOffset(st, m) {
     if (rigMode() !== 'display' || T.displayPivot === false || !m) { st.piv = null; return null; }
-    const d = rigDistance(st), P = st.piv;
+    const d = scaleDistance(st), P = st.piv; // the portal's distance (buildRig places it at the scale distance)
     if (P && P.d === d) {
       let same = true;
       for (let k = 0; k < 16; k++) if (P.m[k] !== m[k]) { same = false; break; }
@@ -655,13 +692,15 @@ function dxrCore(cfg, cap, S) {
   function estimateConvergence(st, snap, targetOnly) {
     const s = st.ad.sampler(st);
     if (!s) return false;
-    let d = T.convTarget ? targetDepth(st, s) : 0, src = 'target';
+    let d = T.convTarget ? targetDepth(st, s) : 0, src = 'target', raw = d;
     if (!(d > 0)) {
       if (targetOnly) return false;
       src = 'estimator'; st.conv.via = null;
       const o = {};
-      d = estimateSubjectDistance(s, o);
-      if (o.open) {
+      d = st.openLatched ? 0 : estimateSubjectDistance(s, o);
+      raw = d > 0 && isFinite(d) ? d : 0; // a real estimate (not the fallback below)
+      if (st.openLatched || o.open) {
+        if (!st.openLatched) { st.openLatched = true; info('open scene: the camera stands inside a world — fixed focus for the rest of this page'); }
         src = 'fixed'; st.conv.via = 'open scene'; d = +T.openSceneConvM || 2;
         if (o.p > 0 && !st.scaleWarned && (o.p < 0.2 || o.p > 200)) {
           st.scaleWarned = true;
@@ -673,6 +712,7 @@ function dxrCore(cfg, cap, S) {
     st.conv.d = snap || !st.conv.d || src === 'fixed' ? d : st.conv.d + (d - st.conv.d) * 0.25;
     const was = st.conv.src;
     st.conv.src = src;
+    setScaleOnce(st, src, clamp(raw, s.near * 2, s.far * 0.9) || 0);
     if (was !== src && st.active) notify(); // the chip shows the source ('fixed')
     if (st.active && st.convLogged) settleLog(st);
     return true;
@@ -730,12 +770,12 @@ function dxrCore(cfg, cap, S) {
     const near = s.near;
     const fixedMode = T.openSceneMode !== 'percentile';
     let items = [];
-    let n = 0, among = false, enclosing = 0, bounded = 0;
-    s.forEachBounds((wx, wy, wz, wr, inVolume) => {
+    let n = 0, among = false, enclosing = 0, world = 0, bounded = 0;
+    s.forEachBounds((wx, wy, wz, wr, inVolume, isSplat) => {
       if (n >= 4000) return false;
       n++;
-      if (Math.hypot(wx - px, wy - py, wz - pz) <= wr) { enclosing++; return true; }
-      if (inVolume) { among = true; enclosing++; }
+      if (Math.hypot(wx - px, wy - py, wz - pz) <= wr) { enclosing++; if (isSplat) world++; return true; }
+      if (inVolume) { among = true; enclosing++; world++; }
       const vx = vm[0] * wx + vm[4] * wy + vm[8] * wz + vm[12];
       const vy = vm[1] * wx + vm[5] * wy + vm[9] * wz + vm[13];
       const z = -(vm[2] * wx + vm[6] * wy + vm[10] * wz + vm[14]);
@@ -745,11 +785,10 @@ function dxrCore(cfg, cap, S) {
       if (!inVolume) bounded++;
       return true;
     });
-    if (fixedMode && enclosing && !bounded) {
+    if (fixedMode && (world || (enclosing && !bounded))) {
       if (out) { out.open = true; out.p = items.length ? weightedPercentile(items, clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95)) : 0; }
       return 0;
     }
-    if (fixedMode && among) { items = items.filter((it) => !it.v); among = false; }
     if (!items.length) return 0;
     let cx = 0, cy = 0, cz = 0, ws = 0;
     for (const it of items) { const k = it.r * it.r + 1e-12; cx += it.x * k; cy += it.y * k; cz += it.w * k; ws += k; }
@@ -855,14 +894,14 @@ function dxrCore(cfg, cap, S) {
   function tickCover(st, t) {
     const cv = st.cover;
     if (!cv) {
-      if (st.coverForced && st.stats.stereo > (st.stereo0 || 0)) { st.coverForced = false; if (st.rampK < 1 && !st.ramp) startRamp(st, 1); }
+      if (st.coverForced && st.stats.stereo > (st.stereo0 || 0)) { st.coverForced = false; if (st.rampK < 1 && !st.ramp && st.rigScale) startRamp(st, 1); }
       return;
     }
     if (!cv.out && t - st.layerAt >= T.holdMs && st.stats.stereo > 0) {
       dropCover(st); // a hard cut, never a fade: the picture under it is flat (rampK 0) and fades in from here
       st.coverDropAt = t; // the frame-rate guard's warm-up counts from here
       info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms)`);
-      if (st.rampK < 1) startRamp(st, 1);
+      if (st.rampK < 1 && st.rigScale) startRamp(st, 1); // else it fades in once the scale is set (scaleReady)
       return;
     }
     if (!cv.out && T.coverMaxMs > 0 && t - st.layerAt >= T.coverMaxMs) {
@@ -1149,6 +1188,7 @@ function dxrGuard(core) {
     }).observe({ type: 'resource', buffered: true });
   } catch (e) { /* no Resource Timing: the readyState test alone */ }
   const loading = (t) => document.readyState !== 'complete' || (lastResourceEnd > 0 && t - lastResourceEnd < T.guardLoadQuietMs);
+  api.loading = loading; // also the core's scale decision (v0.7.10): it waits for a quiet page
 
   document.addEventListener('visibilitychange', () => {
     for (const w of core.tracked) { const st = w.deref(); const s = st && g.get(st); if (s) { resetWindow(s); s.ring.length = 0; } }
@@ -1747,7 +1787,7 @@ function dxrDev(core, ctl) {
           real: [realW(st.canvas), realH(st.canvas)],
           eye: st.R ? [st.R.eyeW, st.R.eyeH] : null,
           active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews, eyesOn: !!st.eyesOn, noDisplay: !!(st.nd || st.noDisplay),
-          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via,
+          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via, openLatched: !!st.openLatched, rigScale: st.rigScale ? { ...st.rigScale } : null,
           rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing, lifted: st.lifted || null,
           pivot: st.piv ? { t: [...st.piv.t], c: [...st.piv.c], d: st.piv.d } : null,
           eyeAt: st.eyeAt ? Array.from(st.eyeAt) : null, // eye 0's world position, as last composed by the adapter
@@ -3885,7 +3925,7 @@ function dxrPlayCanvas(core) {
       const s = Math.sqrt(Math.max(m[0] * m[0] + m[1] * m[1] + m[2] * m[2], m[4] * m[4] + m[5] * m[5] + m[6] * m[6], m[8] * m[8] + m[9] * m[9] + m[10] * m[10]));
       const r = Math.hypot(bb.halfExtents.x, bb.halfExtents.y, bb.halfExtents.z) * s;
       if (!(r >= 0) || !isFinite(r)) continue;
-      more = cb(wx, wy, wz, r) !== false;
+      more = cb(wx, wy, wz, r, false, true) !== false; // a splat volume: holding the camera, it is a world (core estimateSubjectDistance)
     }
   }
 
