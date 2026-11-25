@@ -51,6 +51,10 @@
       "types": "./model.d.ts",
       "import": "./js/inline3d-model.js"
     },
+    "./lift": {
+      "types": "./lift.d.ts",
+      "import": "./js/lift/index.js"
+    },
     "./package.json": "./package.json",
     "./player": {
       "types": "./player.d.ts",
@@ -153,6 +157,7 @@
     "splat-playcanvas.d.ts",
     "splat-rig.d.ts",
     "model.d.ts",
+    "lift.d.ts",
     "player.d.ts",
     "camera.d.ts",
     "call.d.ts",
@@ -224,7 +229,8 @@
     "api:check": "node tools/api-surface.mjs --check",
     "api:update": "node tools/api-surface.mjs --update",
     "check:snippets": "node tools/check-snippets.mjs",
-    "test:bundlers": "node test/bundlers/run.mjs"
+    "test:bundlers": "node test/bundlers/run.mjs",
+    "build:lift-builtin": "node tools/lift-builtin/build.mjs"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

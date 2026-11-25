@@ -5,6 +5,22 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Added — `@displayxr/inline3d/lift` ("Convert to 3D", experimental, preview tier)
+
+- **The lift module lands on main** (was the `feat/lift` branch, displayxr-web#289). `lift(element, opts)`
+  converts a `<video>` or `<img>` in place in the DisplayXR Browser: the runtime's conversion stack does
+  the work (live conversion, and Gaussians for Explore), `js/lift/native.js` is the only provider, and
+  no model or ONNX Runtime ships with the SDK. A video gets a chip (Explore / Exit; ↓ SOG while
+  exploring); Explore turns the paused frame into a Gaussian scene with a bounded drag orbit, rendered by
+  the PlayCanvas splat viewer. Types in `lift.d.ts`; guides in `docs/lift.md`, `docs/lift-explore.md`
+  and `docs/lift-builtin.md`. `tools/lift-builtin` (`npm run build:lift-builtin`) builds the browser's
+  built-in bundle. This replaces the placeholder `js/lift/index.js`, so `./call/full` now gets a real
+  `lift` (2D participants can be lifted where a converter exists).
+- The chip shows Explore only when a converter makes Gaussians, and re-reads the converter caps when
+  the browser re-reports the lift state READY (#341).
+
 ## 1.59.0 — 2026-11-24
 
 ### Added — `wall.displayInfo` (synchronous display info)

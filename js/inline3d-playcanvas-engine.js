@@ -16,6 +16,9 @@ export {
   AppBase,
   AppOptions,
   createGraphicsDevice,
+  // js/lift/explore.js builds its WebGL2 device directly (adopting the live DIBR's context), so a
+  // bundle of the lift alone leaves the WebGPU device — and its glslang/twgsl import()s — out.
+  WebglGraphicsDevice,
   DEVICETYPE_WEBGL2,
   RESOLUTION_FIXED,
   // component systems + resource handlers (PLAYCANVAS_SYSTEMS / PLAYCANVAS_HANDLERS)

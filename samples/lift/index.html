@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lift — Convert to 3D</title>
+<style>
+  :root { color-scheme: light dark; }
+  html,body{margin:0;font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+  .wrap{max-width:860px;margin:0 auto;padding:32px 20px 72px}
+  h1{font-size:28px;margin:0 0 4px}
+  .sub{opacity:.7;margin:0 0 22px}
+  figure{margin:22px 0}
+  video,img{display:block;width:100%;max-width:800px;height:auto;margin:0 auto;background:#000}
+  .cover{width:100%;max-width:800px;aspect-ratio:1/1;object-fit:cover}
+  .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px auto 0;max-width:800px}
+  button{font:inherit;font-size:14px;padding:5px 12px;border-radius:8px;border:1px solid #8886;background:#8881;cursor:pointer}
+  label{font-size:14px;opacity:.85}
+  .state{font:12px/1.4 ui-monospace,Menlo,monospace;opacity:.85;width:100%;white-space:pre-wrap}
+  pre#log{font:12px/1.45 ui-monospace,Menlo,monospace;max-height:220px;overflow:auto;background:#8881;padding:10px;border-radius:8px}
+  code{background:#8882;padding:1px 5px;border-radius:4px}
+</style>
+<!-- The explore renderer needs the SDK's optional peer playcanvas (same as addSplat engine:'playcanvas'). -->
+<script type="importmap">
+{ "imports": {
+  "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.22.3/build/playcanvas.mjs",
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div class="wrap">
+  <h1>lift — Convert to 3D</h1>
+  <p class="sub">Any <code>&lt;video&gt;</code>, <code>&lt;img&gt;</code> or <code>&lt;canvas&gt;</code>, lifted in place:
+    live 3D while a video plays, an explorable 3D scene when it pauses (drag to orbit). Alt-click any media to lift it
+    (<code>resolveMediaAt</code>). The conversion is the runtime's: in the DisplayXR Browser the lift is native
+    (<b id="backend">…</b>); anywhere else <code>lift()</code> rejects (<code>unavailable</code>) unless a lift provider is given.
+    Query: <code>mode=auto|live|explore</code> (default: the SDK's — <code>live</code> for a video),
+    <code>video=</code>, <code>image=</code>, <code>quality=</code>, <code>maxAngle=</code>,
+    <code>explore={…}</code> (explore view: <code>comfort</code>, <code>pivotTargetM</code>, <code>eyes</code>).
+    <b>Remote SHARP (demo only):</b> <code>lift=remote-sharp</code> lifts pauses/stills on the SHARP worker
+    (<code>sharp=</code> endpoint, default the same-origin proxy <code>/api/sharp/predict</code> of
+    <code>serve.py --sharp</code>; <code>auth=google</code> [+ <code>login=</code>] for a hosted endpoint's popup sign-in).
+    Lift provider: <b id="liftprov">…</b> <button id="signin" hidden>Sign in for SHARP</button></p>
+
+  <figure>
+    <video id="vid" muted loop playsinline controls></video>
+    <div class="bar">
+      <button data-act="lift" data-t="vid">Lift video</button>
+      <button data-act="play" data-t="vid">Play / pause</button>
+      <button data-act="explore" data-t="vid">Explore</button>
+      <button data-act="resume" data-t="vid">Resume</button>
+      <button data-act="remove" data-t="vid">Remove</button>
+      <label>depth <input type="range" min="0" max="2" step="0.05" value="1" data-act="depth" data-t="vid"></label>
+      <div class="state" id="st-vid">—</div>
+    </div>
+  </figure>
+
+  <figure>
+    <img id="img" alt="still to lift">
+    <div class="bar">
+      <button data-act="lift" data-t="img">Lift image</button>
+      <button data-act="remove" data-t="img">Remove</button>
+      <div class="state" id="st-img">—</div>
+    </div>
+  </figure>
+
+  <figure>
+    <img id="cov" class="cover" alt="object-fit: cover still">
+    <div class="bar">
+      <button data-act="lift" data-t="cov">Lift (object-fit: cover)</button>
+      <button data-act="remove" data-t="cov">Remove</button>
+      <div class="state" id="st-cov">—</div>
+    </div>
+  </figure>
+
+  <pre id="log"></pre>
+</div>
+
+<script type="module">
+import { lift, resolveMediaAt } from '../../js/lift/lift.js';
+
+const q = new URLSearchParams(location.search);
+import { liftCapabilities } from '../../js/lift/native.js';
+const caps = await liftCapabilities();
+document.getElementById('backend').textContent = caps.native ? `native: ${caps.provider || 'runtime'}, ${caps.liftState}` : 'no converter here';
+const vid = document.getElementById('vid');
+// Default clip is the in-repo asset.
+vid.src = q.get('video') || 'assets/synthetic-720p.webm';  // VP9: the DisplayXR Browser ships no H.264/HEVC
+vid.addEventListener('error', () => log(`video: failed to load ${vid.currentSrc || vid.src} (MediaError code ${vid.error?.code}) — check the path is under the served repo root`));
+for (const id of ['img', 'cov']) document.getElementById(id).src = q.get('image') || 'assets/still.jpg';
+
+// Remote SHARP (DEMO ONLY — Apple research-licence weights): ?lift=remote-sharp[&sharp=URL][&auth=google[&login=URL]]
+const LIFT = q.get('lift') || 'native';
+let liftProvider = LIFT;
+if (LIFT === 'remote-sharp') {
+  const { createRemoteSharpLift } = await import('../../js/lift/providers/lift-remote-sharp.js');
+  const endpoint = q.get('sharp') || '/api/sharp/predict';
+  const auth = q.get('auth') === 'google'
+    ? { kind: 'google', loginUrl: q.get('login') || new URL('/auth/popup', new URL(endpoint, location.href)).href }
+    : undefined;
+  // One provider instance for the page, so a popup sign-in (from the button's click — a lift that
+  // starts on a video pause is not a user gesture, and would be popup-blocked) is shared by every lift.
+  liftProvider = createRemoteSharpLift({ endpoint, auth, ...(q.get('timeout') ? { timeoutMs: +q.get('timeout') * 1000 } : {}) });
+  const btn = document.getElementById('signin');
+  if (auth) {
+    btn.hidden = false;
+    btn.onclick = () => liftProvider.signIn().then(() => { btn.textContent = 'Signed in ✓'; log('sharp: signed in'); }, (e) => log(`sharp: sign-in failed: ${e.message}`));
+  }
+  document.getElementById('liftprov').textContent = `remote-sharp → ${endpoint}${auth ? ' (google sign-in)' : ''}`;
+} else document.getElementById('liftprov').textContent = LIFT === 'native' ? 'the runtime (native-gaussians)' : LIFT;
+
+const opts = {
+  // undefined = the SDK default: a video is 'live' (pause never lifts; Explore does), a picture goes to explore.
+  mode: new URLSearchParams(location.search).get('mode') || undefined,
+  quality: q.get('quality') || 'auto',
+  ...(q.get('exploreDpr') ? { exploreMaxDpr: +q.get('exploreDpr') } : {}),
+  ...(q.get('maxAngle') ? { orbit: { maxAngleDeg: +q.get('maxAngle') } } : {}),
+  providers: LIFT !== 'native' ? { lift: liftProvider } : {},
+  // explore view A/B: explore={"comfort":"off"} | {"pivotTargetM":2.5} | {"eyes":"tracked"}
+  ...(q.get('explore') ? { explore: JSON.parse(q.get('explore')) } : {}),
+};
+
+const logEl = document.getElementById('log');
+const log = (...a) => {
+  const line = a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
+  logEl.textContent += line + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+  console.log('[lift-sample]', line);
+};
+const handles = new Map();
+window.__liftHandles = handles; // dev hook: handle.capture() / handle.stats from DevTools or CDP
+
+async function doLift(id, el = document.getElementById(id)) {
+  if (handles.has(id)) return handles.get(id);
+  let h;
+  try {
+    h = await lift(el, opts);
+  } catch (e) {
+    log(`${id}: ${e && e.code === 'unavailable' ? 'no converter here (open this page in the DisplayXR Browser, or pass ?lift=remote-sharp for a still)' : e.message}`);
+    return null;
+  }
+  handles.set(id, h);
+  h.on('statechange', ({ state, from, reason }) => {
+    log(`${id}: ${from} → ${state} (${reason})`);
+    if (state === 'disposed') handles.delete(id);
+  });
+  let lastPct = -1;
+  h.on('progress', ({ phase, value }) => {
+    const pct = Math.round(value * 100);
+    if (pct !== lastPct && pct % 25 === 0) log(`${id}: progress ${phase} ${pct}%`);
+    lastPct = pct;
+  });
+  h.on('error', ({ error, fatal, phase }) => log(`${id}: error${fatal ? ' (fatal)' : ''}${phase ? ' [' + phase + ']' : ''}: ${error && error.message}`));
+  log(`${id}: lifted — layout=${h.layout} woven=${h.woven}`);
+  return h;
+}
+
+// Status line: state · fps · lift ms (4 Hz).
+setInterval(() => {
+  for (const id of ['vid', 'img', 'cov']) {
+    const el = document.getElementById('st-' + id), h = handles.get(id);
+    if (!h) { el.textContent = '—'; continue; }
+    const s = h.stats;
+    el.textContent =
+      `${s.state} · ${s.fps} fps · ` +
+      `lift ${s.generateMs} ms (${(s.splats / 1e3).toFixed(0)} k splats) + load ${s.exploreLoadMs} ms · ` +
+      `pause→explore ${s.pauseToExploreMs} ms · lift by ${s.liftSource || '—'}` +
+      (s.remoteMs ? ` (${s.remoteMs} ms round trip)` : '');
+  }
+}, 250);
+
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-act]');
+  if (!b) return;
+  const id = b.dataset.t, el = document.getElementById(id), h = handles.get(id);
+  switch (b.dataset.act) {
+    case 'lift': await doLift(id); break;
+    case 'play': el.paused ? el.play() : el.pause(); break;
+    case 'explore': h && h.explore(); break;
+    case 'resume': h && h.resume(); break;
+    case 'remove': h && h.remove(); break;
+  }
+});
+document.addEventListener('input', (e) => {
+  const t = e.target;
+  if (t.dataset.act === 'depth') handles.get(t.dataset.t)?.setDepth(+t.value);
+});
+// Alt-click anywhere: resolve the media under the pointer and lift it.
+document.addEventListener('click', (e) => {
+  if (!e.altKey) return;
+  const el = resolveMediaAt(e.clientX, e.clientY);
+  if (!el) return log('alt-click: no media here');
+  e.preventDefault();
+  doLift(el.id || 'media-' + Math.random().toString(36).slice(2, 6), el);
+}, true);
+
+window.__lift = { handles, doLift, log, caps, opts };
+</script>
+</body>
+</html>

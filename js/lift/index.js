@@ -1,15 +1,13 @@
-// js/lift/index.js — PLACEHOLDER for the lift module (`@displayxr/inline3d/lift`), which is on
-// the `feat/lift` branch and not yet on main. That branch replaces this file wholesale (resolve
-// any add/add conflict by taking feat/lift's file).
+// @displayxr/inline3d/lift — "Convert to 3D". EXPERIMENTAL (preview tier, docs/sdk-stability.md).
 //
-// It exists so `./call/full` (js/inline3d-call-full.js) can import lift STATICALLY today — the
-// one shape a bundler can follow — and so the `./call` entry's computed import of this path
-// resolves to "a lift module with no `lift` export" (reason `no-lift-export`) rather than a
-// network 404. Either way the call raises `warning { code: 'lift-not-bundled' }` when a 2D
-// participant would have been lifted, and the lobby reads "2D→3D unavailable in this build".
+//   import { lift } from '@displayxr/inline3d/lift';
+//   const h = await lift(videoOrImg);
 //
-// `lift` is exported as null (not omitted): webpack turns a namespace access to a MISSING export
-// into a build error, and the point of this file is that `/call/full` builds everywhere today.
-
-export const LIFT_PLACEHOLDER = true;
-export const lift = null;
+// The conversion is the runtime's: lift() hands the element to the DisplayXR Browser's conversion
+// stack (`liftCapabilities().native`) and rejects with a NativeLiftError ('unavailable') where there
+// is none. This entry is light: the explore renderer (the PlayCanvas engine, the SDK's optional
+// peer) and the .sog export are dynamic imports that lift() makes on first use. See docs/lift.md.
+export { lift, resolveMediaAt, resolveQuality, STATES } from './lift.js';
+export { getRegistry } from './providers/registry.js';
+export { liftCapabilities, LIFT_ATTRS, LIFT_PRIORITIES, createNativeDepthProvider, createNativeGaussiansLift, NativeLiftError } from './native.js';
+export { createRemoteSharpLift, createPopupAuth, RemoteLiftError } from './providers/lift-remote-sharp.js';

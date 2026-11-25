@@ -1,0 +1,11 @@
+{
+  "name": "displayxr-lift-builtin-build",
+  "private": true,
+  "description": "Build-only dependencies for the DisplayXR Browser's built-in 'Convert to 3D' bundle (tools/lift-builtin/build.mjs). Pinned exactly; never published.",
+  "type": "module",
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "playcanvas": "2.22.3",
+    "puppeteer-core": "25.12.0"
+  }
+}
