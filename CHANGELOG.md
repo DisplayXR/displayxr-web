@@ -5,6 +5,31 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Added — `wall.displayInfo` (synchronous display info)
+
+- The last `getDisplayInfo()` answer this document read, else the one the last page on this
+  origin read (a frozen copy of the six numeric fields, `cached: true`, in `localStorage`), else
+  `null`. The SDK now reads the display itself on the first live layer, and concurrent reads on
+  one layer share one browser call. A display read needs a layer that has delivered a frame, so
+  this is how a page sizes its FIRST woven frames at the view scale:
+  `sceneBufferSize(canvas, { sbs: true, viewScale: wall.displayInfo })` in the same task as
+  `addScene`. The hello-cube and camera-rig samples do.
+
+### Fixed — the first woven frames of a wrong-shaped scene store
+
+- Every stereo frame, a page-sized scene canvas (`addScene` without `bufferClamped`) is checked:
+  each eye tile (`getViewport`) must have the canvas box's aspect. A store still shaped for flat
+  on the first woven frames (sized after an `await` or in a later rAF) gave each eye half the
+  scene until the page caught up. The SDK warns once, reports the count of wrong frames in one
+  `console.debug` line when it is right, and never resizes the store.
+- `firstWoven` waits while the store is wrong and runs its hold from when it became right (with
+  `wovenState`, a 'woven' read counts only `WOVEN_STATE_LAG_FRAMES` frames after the fix). Capped
+  at four holds: `woven: true, reason: 'store-capped'`.
+- Docs (porting §4, llms.txt): size the store before the first woven frame, in the same task as
+  `addScene`.
+
 ## 1.58.1 — 2026-11-24
 
 ### Fixed — `sceneBufferSize` ignores `viewScale` for the flat store (`sbs: false`)
