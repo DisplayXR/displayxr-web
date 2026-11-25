@@ -55,11 +55,12 @@ function animate(now) {
 // ---- backing store: sceneBufferSize, never clientWidth x devicePixelRatio x 2 ----------------
 // Per eye it gives window device px x the runtime's recommended view scale (once getDisplayInfo()
 // has answered; devicePixelRatio <= 2 until then), fitted to the GL limits and the browser's
-// drawing-buffer area cap. A hand-rolled store overflows that cap on a big panel: the browser
+// drawing-buffer area cap. The view scale is the 3D mode's: never pass it for the flat 2D store.
+// A hand-rolled store overflows that cap on a big panel: the browser
 // shrinks the buffer silently, the eyes land off-centre and one eye shows both images.
 let viewInfo = null;
 function sizeBuffer(stereo) {
-  const s = sceneBufferSize(canvas, { sbs: stereo, viewScale: viewInfo, gl: renderer.getContext() });
+  const s = sceneBufferSize(canvas, { sbs: stereo, viewScale: stereo ? viewInfo : null, gl: renderer.getContext() });
   // Writing width/height clears the buffer even when the value is the same: only on a change.
   if (canvas.width !== s.width || canvas.height !== s.height) {
     canvas.width = s.width;

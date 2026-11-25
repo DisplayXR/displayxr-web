@@ -118,7 +118,7 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 - [ ] **Nothing opaque above the canvas**; backgrounds and black go *under* it. Never overlap two
       woven canvases (hide the lower one with `display: none`).
 - [ ] **Buffer = 2 × eye width, from `sceneBufferSize`** (core, 1.58.0+): an `addScene` page sizes its
-      canvas with `sceneBufferSize(canvas, { sbs, viewScale: await handle.getDisplayInfo() })` (set
+      canvas with `sceneBufferSize(canvas, { sbs, viewScale: sbs ? await handle.getDisplayInfo() : null })` (set
       `canvas.width/height`, or `renderer.setSize(s.width, s.height, false)`, only when they change;
       camera aspect from `s.eyeWidth / s.eyeHeight`), never `clientWidth × devicePixelRatio × 2`. Per eye
       it is window device px × the runtime's view scale (dpr ≤ 2 without one), fitted to the GL limits
