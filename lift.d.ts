@@ -159,7 +159,7 @@ export interface LiftHandle {
   readonly caps: LiftCapabilities | null;
   /** Native only: the browser's coarse lift state (`waiting` = the element's 2D frame + a spinner until the converter is READY); null without a runtime converter. */
   readonly liftState: 'waiting' | 'ready' | 'unavailable' | null;
-  /** True when Explore can run: the runtime offers Gaussians (caps list `gaussians`) or the page passed a lift provider. The chip shows Explore only then; explore() without it emits a non-fatal 'error' and does nothing else. */
+  /** True when Explore can run: the runtime offers Gaussians (caps list `gaussians`) or the page passed a lift provider. The chip shows Explore only then; explore() without it emits a non-fatal 'error' and does nothing else. False also while the runtime's converter is blocked after it failed or did not answer (web#341): the chip then shows Explore greyed out with the reason, for 60 s or until the browser reports that converter ready again. */
   readonly canExplore: boolean;
   /** Native only: the browser reports a new coarse lift state. No-op without a runtime converter. Calling it again with 'ready' while already ready means the converter set changed: the handle re-reads the caps and shows or hides Explore (canExplore), with no 'liftstatechange' event. */
   setLiftState(s: 'waiting' | 'ready' | 'unavailable'): void;
@@ -397,6 +397,12 @@ export interface LiftCapabilities {
    * the page's own 2D element; `lift()` rejects).
    */
   liftState?: 'waiting' | 'ready' | 'unavailable';
+  /**
+   * The Gaussians converter's own readiness, when the browser reports it (`modes` lists
+   * `gaussians` whenever one is installed, ready or not). `failed` greys Explore out; any other
+   * state lifts that block. Absent on browsers that do not report it.
+   */
+  gaussiansState?: { state: string; reason?: string };
 }
 
 /**

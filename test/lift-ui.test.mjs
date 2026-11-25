@@ -166,3 +166,15 @@ test('chipLayout: no converter makes Gaussians -> no Explore on a live video (we
   // Omitted keeps the old behaviour (a caller that never says).
   assert.equal(chipLayout('live', { kind: 'video' }).explore, true);
 });
+
+test('chipLayout: a converter that failed -> Explore greyed out with its reason, not hidden (web#341)', () => {
+  const L = chipLayout('live', { kind: 'video', canDownload: true, canExplore: false, exploreReason: 'the 3D converter on this PC failed to start' });
+  assert.equal(L.explore, true);
+  assert.equal(L.exploreBlocked, true);
+  // no reason: hidden as before; a reason is ignored outside live, while waiting, and on stills
+  assert.equal(chipLayout('live', { kind: 'video', canExplore: false }).explore, false);
+  assert.equal(chipLayout('explore', { kind: 'video', canExplore: false, exploreReason: 'x' }).explore, false);
+  assert.equal(chipLayout('live', { kind: 'video', waiting: true, canExplore: false, exploreReason: 'x' }).explore, false);
+  assert.equal(chipLayout('live', { kind: 'still', canExplore: false, exploreReason: 'x' }).explore, false);
+  assert.equal(chipLayout('live', { kind: 'video', canExplore: true }).exploreBlocked, false);
+});
