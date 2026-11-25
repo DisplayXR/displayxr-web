@@ -20,6 +20,7 @@ import {
   NATIVE_CAPS_URL,
   NATIVE_DEPTH_URL,
   NATIVE_GAUSSIANS_URL,
+  NATIVE_GAUSSIANS_TIMEOUT_MS,
 } from '../js/lift/native.js';
 import { createLiftMachine, STATES, resolveLiftMode } from '../js/lift/state.js';
 import { getRegistry } from '../js/lift/providers/registry.js';
@@ -571,4 +572,42 @@ test('lift(): with no converter (runtime not native, no providers.lift) it rejec
     lift(el, { native: { native: false, liftState: 'unavailable', modes: [] } }),
     (e) => e instanceof NativeLiftError && e.code === 'unavailable' && asked.length === 0,
   );
+});
+
+// ── web#341: a Gaussians converter that never answers ────────────────────────────────────
+
+// A fetch that never settles unless its signal aborts (the browser holding a failed job as
+// not-ready until its own deadline).
+const hangingFetch = () => (url, init = {}) =>
+  new Promise((_, reject) => {
+    const s = init.signal;
+    if (s) s.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+  });
+
+test('native gaussians: no answer within timeoutMs ends in a timeout error, not a hang', async () => {
+  const g = createNativeGaussiansLift({ fetch: hangingFetch(), timeoutMs: 40 });
+  const ticks = [];
+  await assert.rejects(g.generateLift({ rgb: frame, onProgress: (p) => ticks.push(p) }), (e) => e.code === 'timeout' && e.fallback === true);
+  assert.ok(ticks.length >= 1, 'progress was reported');
+});
+
+test('native gaussians: the caller aborting mid-wait is an abort, not a timeout', async () => {
+  const g = createNativeGaussiansLift({ fetch: hangingFetch(), timeoutMs: 5000 });
+  const ctl = new AbortController();
+  const p = g.generateLift({ rgb: frame, signal: ctl.signal });
+  setTimeout(() => ctl.abort(), 10);
+  await assert.rejects(p, (e) => e.code === 'aborted');
+});
+
+test('native gaussians: the default wait is bounded', () => {
+  assert.ok(NATIVE_GAUSSIANS_TIMEOUT_MS > 0 && NATIVE_GAUSSIANS_TIMEOUT_MS <= 120000);
+});
+
+test('parseNativeCaps: gaussiansState is passed through when the browser reports it, absent otherwise', () => {
+  const a = parseNativeCaps({ native: true, state: 'ready', liftState: 'ready', modes: ['sbs', 'gaussians'], gaussiansState: { state: 'failed', reason: 'load' } });
+  assert.deepEqual(a.gaussiansState, { state: 'failed', reason: 'load' });
+  assert.deepEqual(a.modes, ['sbs', 'gaussians']);
+  const b = parseNativeCaps({ native: true, state: 'ready', modes: ['sbs', 'gaussians'] });
+  assert.equal(b.gaussiansState, undefined);
+  assert.equal(parseNativeCaps({ native: true, gaussiansState: { state: '' } }).gaussiansState, undefined);
 });
