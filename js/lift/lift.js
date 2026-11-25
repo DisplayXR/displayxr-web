@@ -201,6 +201,8 @@ export async function lift(element, opts = {}) {
   // Register the module's `native-gaussians` lift provider in the shared registry now, before any
   // provider is resolved.
   if (native) ensureNativeProviders(caps);
+  // The page brought its own lift provider (vs. the runtime's): caps changes never replace it.
+  const pageLiftProv = !!o.providers.lift;
   if (native && !o.providers.lift) {
     const lp = defaultLiftProviderFor(caps, o.providers);
     if (lp) o.providers.lift = lp; // native-gaussians (a registered LiftProvider)
@@ -489,6 +491,34 @@ export async function lift(element, opts = {}) {
     return p;
   }
 
+  /**
+   * Native: re-read the runtime's caps and follow whether it now offers Gaussians (a converter was
+   * installed, turned on or off). Only touches the runtime's own `native-gaussians`; a provider the
+   * page passed is left alone.
+   */
+  async function refreshExploreCaps() {
+    if (!native || disposed || pageLiftProv) return;
+    const c = await liftCapabilities({}).catch(() => null);
+    if (!c || disposed) return;
+    const has = !!(c.native && Array.isArray(c.modes) && c.modes.includes('gaussians'));
+    if (has && !liftProv) {
+      ensureNativeProviders(c);
+      o.providers.lift = 'native-gaussians';
+      try {
+        liftProv = await resolveLiftProvider();
+        if (liftProv && typeof liftProv.load === 'function') await liftProv.load({});
+      } catch (error) {
+        liftProv = null;
+        emit('error', { error, fatal: false, phase: 'lift-provider' });
+      }
+    } else if (!has && liftProv && liftProv.id === 'native-gaussians') {
+      if (ownLiftProv && typeof liftProv.dispose === 'function') liftProv.dispose();
+      liftProv = null;
+      o.providers.lift = undefined;
+    }
+    if (chip) chip.setCanExplore(!!liftProv);
+  }
+
   /** Remote/provider progress → the chip ("Lifting with SHARP… 7s") and 'progress' events. */
   function providerProgress(p) {
     const stage = p && p.stage;
@@ -534,6 +564,8 @@ export async function lift(element, opts = {}) {
         liftProv = null;
         emit('error', { error, fatal: false, phase: 'lift-provider' });
       }
+      // Explore is offered only when something can make Gaussians (web#341).
+      if (chip) chip.setCanExplore(!!liftProv);
       await mediaReady();
       if (disposed) return;
       stats.loadMs = Math.round(performance.now() - tLoad);
@@ -850,6 +882,8 @@ export async function lift(element, opts = {}) {
       placement.shadow,
       {
         kind: machineKind,
+        // No Gaussians converter (caps without `gaussians`, no page provider): no Explore (web#341).
+        canExplore: !!(liftProv || o.providers.lift),
         onExplore: () => handle.explore(),
         onResume: () => handle.resume(),
         onExit: () => handle.remove(),
@@ -895,6 +929,12 @@ export async function lift(element, opts = {}) {
       liftState = s;
       if (chip && chip.setWaiting) chip.setWaiting(s === 'waiting');
       emit('liftstatechange', { liftState: s });
+      // The converter set may have changed (one turned on or off): re-read whether Explore can run.
+      if (s === 'ready') refreshExploreCaps().catch(() => {});
+    },
+    /** True when Explore can run: a converter that makes Gaussians exists (web#341). */
+    get canExplore() {
+      return !!liftProv;
     },
     /** Timings: fps (explore frames drawn), loadMs, generateMs (the lift provider's round trip),
      *  exploreLoadMs (PLY parse + upload), pauseToExploreMs, splats. Read-only snapshot. */
@@ -914,6 +954,14 @@ export async function lift(element, opts = {}) {
     },
     /** Freeze the current frame and lift it (videos pause). No-op outside `live`. */
     explore() {
+      // Nothing makes Gaussians: say so instead of pausing the video into a freeze that fails
+      // (web#341). The chip hides Explore in this case; this covers a page calling explore().
+      if (!liftProv) {
+        const error = new NativeLiftError('3D exploration is not available on this PC (no converter makes Gaussians)', 'unsupported');
+        console.warn(`[inline3d/lift] ${error.message}`);
+        emit('error', { error, fatal: false, phase: 'explore' });
+        return;
+      }
       machine.send('explore-request');
     },
     /** Leave explore (or an in-flight lift) NOW for the live view of the PAUSED frame — native:

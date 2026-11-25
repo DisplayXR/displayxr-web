@@ -159,6 +159,8 @@ export interface LiftHandle {
   readonly caps: LiftCapabilities | null;
   /** Native only: the browser's coarse lift state (`waiting` = the element's 2D frame + a spinner until the converter is READY); null without a runtime converter. */
   readonly liftState: 'waiting' | 'ready' | 'unavailable' | null;
+  /** True when Explore can run: the runtime offers Gaussians (caps list `gaussians`) or the page passed a lift provider. The chip shows Explore only then; explore() without it emits a non-fatal 'error' and does nothing else. */
+  readonly canExplore: boolean;
   /** Native only: the browser reports a new coarse lift state. No-op without a runtime converter. */
   setLiftState(s: 'waiting' | 'ready' | 'unavailable'): void;
   /** Native live: `dxr-lift-priority`. Returns false for an unknown value. */

@@ -158,3 +158,11 @@ test('chipLayout: a native lift waiting for the converter shows the label (spinn
   // waiting only matters while live
   assert.deepEqual(on(chipLayout('explore', { kind: 'video', canDownload: true, waiting: true })), on(chipLayout('explore', { kind: 'video', canDownload: true })));
 });
+
+test('chipLayout: no converter makes Gaussians -> no Explore on a live video (web#341)', () => {
+  const on = (L) => Object.keys(L).filter((k) => L[k]).sort();
+  assert.deepEqual(on(chipLayout('live', { kind: 'video', canDownload: true, canExplore: false })), ['exit', 'label']);
+  assert.deepEqual(on(chipLayout('live', { kind: 'video', canDownload: true, canExplore: true })), ['exit', 'explore', 'label']);
+  // Omitted keeps the old behaviour (a caller that never says).
+  assert.equal(chipLayout('live', { kind: 'video' }).explore, true);
+});

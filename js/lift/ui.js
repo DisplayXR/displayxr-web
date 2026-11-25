@@ -152,8 +152,10 @@ export function createAutoHide(o) {
  *     Exit is offered while it converts too.
  *   waiting (native, the browser's converter not READY yet): the label (with a spinner) + Exit; no
  *     Explore until the converter is up (explore would need the in-page converter).
+ *   canExplore false (no converter makes Gaussians — the runtime's caps do not list `gaussians` and
+ *     the page passed no lift provider): no Explore, ever; it would do nothing (web#341).
  * @param {string} state
- * @param {{kind:'video'|'still', canDownload?:boolean, waiting?:boolean}} o
+ * @param {{kind:'video'|'still', canDownload?:boolean, waiting?:boolean, canExplore?:boolean}} o
  * @returns {{label:boolean, explore:boolean, sog:boolean, resume:boolean, exit:boolean}}
  */
 export function chipLayout(state, o) {
@@ -162,7 +164,7 @@ export function chipLayout(state, o) {
   const wait = !!o.waiting && state === 'live';
   return {
     label: still ? busy || state === 'error' || wait : true,
-    explore: !still && state === 'live' && !wait,
+    explore: !still && state === 'live' && !wait && o.canExplore !== false,
     sog: state === 'explore' && !!o.canDownload,
     resume: !still && state === 'explore',
     exit: still ? state !== 'disposed' && state !== 'idle' : state === 'explore' || state === 'error' || state === 'live',
@@ -171,7 +173,8 @@ export function chipLayout(state, o) {
 
 /**
  * @param {ShadowRoot} root
- * @param {{kind:'video'|'still', onExplore():void, onResume():void, onExit():void, onDownload?():void}} actions
+ * @param {{kind:'video'|'still', canExplore?:boolean, onExplore():void, onResume():void, onExit():void, onDownload?():void}} actions
+ *        canExplore: false hides Explore until setCanExplore(true) (no Gaussians converter yet).
  * @param {{autoHideMs?:number, activityRect?:() => DOMRect|{left:number,top:number,right:number,bottom:number}|null}} [opts]
  *        autoHideMs > 0: fade out after that long without pointer activity inside `activityRect()`
  *        (the lifted element's rect) or over the chip.
@@ -213,13 +216,14 @@ export function createChip(root, actions, opts = {}) {
   let saving = false;
   let note = null; // a provider's own status ("Lifting with SHARP… 7s"), shown instead of the % while busy
   let waiting = false; // native: the browser's converter is not READY yet (2D source + spinner)
+  let canExplore = actions.canExplore !== false; // a converter that makes Gaussians exists
   const render = () => {
     const base = LABELS[state] ?? '3D';
     const busy = state === 'loading' || state === 'freezing' || state === 'lifting';
     const wait = waiting && state === 'live';
     label.textContent = wait ? WAITING_LABEL : busy && note ? note : busy && progress != null ? `${base} ${Math.round(progress * 100)}%` : busy ? `${base}…` : base;
     label.classList.toggle('waiting', wait);
-    const L = chipLayout(state, { kind: actions.kind, canDownload: !!actions.onDownload, waiting });
+    const L = chipLayout(state, { kind: actions.kind, canDownload: !!actions.onDownload, waiting, canExplore });
     label.hidden = !L.label;
     bExplore.hidden = !L.explore;
     bSog.hidden = !L.sog;
@@ -302,6 +306,14 @@ export function createChip(root, actions, opts = {}) {
       const v = !!on;
       if (v === waiting) return;
       waiting = v;
+      render();
+      if (auto.enabled) auto.poke();
+    },
+    /** Whether a converter that makes Gaussians exists: Explore is shown only when it does. */
+    setCanExplore(on) {
+      const v = !!on;
+      if (v === canExplore) return;
+      canExplore = v;
       render();
       if (auto.enabled) auto.poke();
     },
