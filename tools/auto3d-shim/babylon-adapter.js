@@ -21,8 +21,8 @@
 // rule), but reached UNIFORMLY through the engine's own hardware scaling level instead of a store the
 // engine does not know about: Babylon picks in store pixels (CreatePickingRayToRef: pointer CSS px /
 // hardware scaling level, against getRenderWidth()), so the store must stay what engine.resize() makes
-// of the level. Capped by the zero-copy width (maxSbsWidth, 3072) the same way (the eye's aspect is kept;
-// the core caps each axis on its own). A fullscreen GUI laid out in pixels keeps the page's density (it
+// of the level. Capped by the zero-copy width (maxSbsWidth, 3072), the context's limits and the area cap
+// (maxSbsArea) with one factor, as the core does (fitEyes, v0.7.10). A fullscreen GUI laid out in pixels keeps the page's density (it
 // would shrink), and a page that sizes its store itself (not engine.resize()) is left as it is.
 //
 // Handedness: the runtime's poses and projections are GL's (right-handed, the eye looks down -Z, clip
@@ -648,7 +648,7 @@ function dxrBabylon(core) {
       const dpr = Math.min(window.devicePixelRatio || 1, core.T.maxEyeDpr);
       st.pxGui = pixelGui(st.scene);
       if (!st.pxGui) k = Math.max(kPage, dpr);
-      k = Math.min(k, Math.min(core.T.maxSbsWidth, lim) / cw, lim / ch);
+      k = Math.min(k, Math.min(core.T.maxSbsWidth, lim) / cw, lim / ch, Math.sqrt(core.T.maxSbsArea / (cw * ch))); // core fitEyes' caps, one factor
     }
     const want = k / kPage;
     if (Math.abs(want - (st.scale || 1)) > 1e-3) setScale(st, want);
@@ -698,7 +698,7 @@ function dxrBabylon(core) {
     try { eng.resize(); } catch (e) { warnOnce('bjs-scale', 'could not resize the store for the eyes', e); }
     st.stats.resizes++;
     info(`store ${realW(st.canvas)}x${realH(st.canvas)}: x${s.toFixed(3)} the page's (hardware scaling ${eng._hardwareScalingLevel.toFixed(3)}, the page's ${st.hw0}) — ` +
-      (s < 1 ? `the side-by-side width limit is ${core.T.maxSbsWidth}` : "the element's device pixels"));
+      (s < 1 ? `the side-by-side width limit is ${core.T.maxSbsWidth} (area ${core.T.maxSbsArea})` : "the element's device pixels"));
   }
   function unScale(st) {
     if (!st.scale) return;

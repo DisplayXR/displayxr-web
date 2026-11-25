@@ -156,7 +156,17 @@ function dxrPlayCanvas(core) {
   function wrapDevice(st) {
     const dev = st.dev;
     const orig = dev.setResolution;
-    st.setRes = (w, h) => { st.depth++; try { orig.call(dev, w, h); } finally { st.depth--; } };
+    // WebGPU: what the engine has encoded so far for this frame is submitted first. We resize from
+    // postrender (the flip, the stand-down), i.e. mid-frame: the canvas's current texture, which this
+    // frame's passes draw into, is destroyed by the canvas resize, and the engine's own submit at
+    // frameEnd then failed validation ("Destroyed texture [D3DImageBacking_…WebGPUSwapBufferProvider]
+    // used in a submit", at every conversion: #319). Submitted before the resize, the work is valid.
+    st.setRes = (w, h) => {
+      if (dev.isWebGPU && typeof dev.submit === 'function' && (realW(st.canvas) !== w || realH(st.canvas) !== h)) {
+        try { dev.submit(); } catch (e) { warnOnce('pc-gpu-submit', 'could not submit the frame before a resize', e); }
+      }
+      st.depth++; try { orig.call(dev, w, h); } finally { st.depth--; }
+    };
     dev.setResolution = function (w, h) {
       if (!st.active || st.depth > 0) { if (!st.active) { st.L.w = w; st.L.h = h; } return orig.call(dev, w, h); }
       st.L.w = w; st.L.h = h;

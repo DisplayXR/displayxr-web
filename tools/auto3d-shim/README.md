@@ -99,7 +99,7 @@ the v0.3 single-depth migration); `window.__dxrAuto3DTestCfg` is read only there
 | file | owns |
 |---|---|
 | `sentinel.js` | `dxrSentinel(cfg, cap)`: the DisplayXR check, the marker, `S.intrinsics` (built-ins snapshotted before page scripts: `attachShadow`, `showPopover`, `elementsFromPoint`, the canvas `width`/`height` and `Element.id` descriptors), the `navigator.xr.requestSession` wrapper (a page that asks for `inline-3d` / `immersive-*` owns XR; our own requests use `S.xrRequest`), **engine detection** (`__THREE_DEVTOOLS__`, the `getContext` wrap, the PlayCanvas routes incl. the parse-time canvas observer, the Babylon.js `_gl` / `_context` constructor trap and `BABYLON.EngineStore`), the page's `<meta>` opt-out (`S.optedOut()`), `S.settle(canvas)` (a canvas went live: the PlayCanvas search stops unless another canvas has a WebGL context) and `S.disarm()` (the core stands down for good: every trap and poll off, for good), and the **lazy** core: `cap.loadCore()` only when an engine is found (three.js: inside the listener for its first `register` / `observe` event; PlayCanvas: when an app is found; Babylon.js: when an engine is found, inside its constructor on the trap route). On a page with no engine the core is never parsed. |
-| `core.js` | `dxrCore(cfg, cap, S)`: everything that is not about one engine. **Document state:** one inline-3D session per document, standing down for good when the page owns XR; `site` (this document's copy of the host's decision, depths, rig, convScale) and `on()`. **Lifecycle:** activate → armed → flip on the page's next draw → per-session-frame → stand; `turnOff(st, reason)` (fade to flat, out-cover, staged stand) shared by the site switch and the frame-rate guard. **Sizing:** the side-by-side (SBS) rule (the SBS store = the element's full device size, each eye half of it, whatever store the page keeps; each axis capped on its own: 3072 wide, and the GL limits; see [Tuning](#tuning-keys-v052)) and the `canvas.width` virtualisation helper. **Rig builder:** the camera rig by default, the display rig on `Ctrl+Alt+P` (see [Rigs](#rigs-camera-by-default-display-on-ctrlaltp)), pushed every frame. **Convergence:** the page's explicit target when it has one, else the estimator (below). **Covers and depth fade:** an `<img>` still of the last mono frame over the canvas for 1.2 s after the layer (the `firstWoven` hold, [woven-canvas rules](../../docs/woven-canvas-rules.md) rule 5), a depth fade in after it and out before a turn-off, and an `<img>` out-cover read back from WebGL for the 3D→2D swap (see [Transitions](#transitions-covers-and-the-depth-fade)). **Turn-off order:** mono frame first, layer released after it is committed (below). **Control:** `ctl` (`status`, `setEnabled(on, {remember})`, `setRig`, `setDepth`, `nudgeFocus(-1\|0\|+1)`, `reset`, `onChange`), shared by the chip and the dev hotkeys, and `notify()`, which fans every change out to the chip, the dev HUD and `cap.report`. Tuning constants (`T`) are overridable only from `cfg.test` in dev. |
+| `core.js` | `dxrCore(cfg, cap, S)`: everything that is not about one engine. **Document state:** one inline-3D session per document, standing down for good when the page owns XR; `site` (this document's copy of the host's decision, depths, rig, convScale) and `on()`. **Lifecycle:** activate → armed → flip on the page's next draw → per-session-frame → stand; `turnOff(st, reason)` (fade to flat, out-cover, staged stand) shared by the site switch and the frame-rate guard. **Sizing:** the side-by-side (SBS) rule (the SBS store = the element's full device size, each eye half of it, whatever store the page keeps; capped by one factor for both axes: 3072 wide, the GL limits and the 5760² area cap, since v0.7.10; see [Tuning](#tuning-keys-v052)) and the `canvas.width` virtualisation helper. **Rig builder:** the camera rig by default, the display rig on `Ctrl+Alt+P` (see [Rigs](#rigs-camera-by-default-display-on-ctrlaltp)), pushed every frame. **Convergence:** the page's explicit target when it has one, else the estimator (below). **Covers and depth fade:** an `<img>` still of the last mono frame over the canvas for 1.2 s after the layer (the `firstWoven` hold, [woven-canvas rules](../../docs/woven-canvas-rules.md) rule 5), a depth fade in after it and out before a turn-off, and an `<img>` out-cover read back from WebGL for the 3D→2D swap (see [Transitions](#transitions-covers-and-the-depth-fade)). **Turn-off order:** mono frame first, layer released after it is committed (below). **Control:** `ctl` (`status`, `setEnabled(on, {remember})`, `setRig`, `setDepth`, `nudgeFocus(-1\|0\|+1)`, `reset`, `onChange`), shared by the chip and the dev hotkeys, and `notify()`, which fans every change out to the chip, the dev HUD and `cap.report`. Tuning constants (`T`) are overridable only from `cfg.test` in dev. |
 | `surface.js` | `dxrSurface(core)`: the per-graphics-API **surface** seam (v0.6.0, see [WebGPU](#webgpu-v060)). `core.surfaces.gl(gl)` / `core.surfaces.gpu({ device, context, flush, alphaMode })` build the object an adapter returns from `ad.surface(st)`: `kind`, `limit()`, `flush()`, `readEye(st, target)`, `readFrame(st, target)`, `async`, `toClip(projGL, out)`. The GL read-back (`readGlEye`) lives here, unchanged |
 | `guard.js` | `dxrGuard(core)`: the frame-rate guard (see [The guard](#the-frame-rate-guard-the-gl-clamp-reduced-motion)). Hooks: `draw` (the page's 2D rate, from the top of `considerActivation`; also the re-measure after a trip with no baseline), `onFlip`, `tick`, `tripped` (`statusOf` → `'guard'`), `measuring` (`statusOf` → `'converting'`) |
 | `chip.js` | `dxrChip(ctl, S)`: the "3D" chip and its menu (see [The chip](#the-3d-chip)). Uses only `ctl` and `S.intrinsics`; the core calls `frame(st)` per session frame and exposes it as `core.chip` (`__dxrAuto3D.chip()` in dev). While the site is off the core still qualifies a **candidate** canvas (`considerCandidate`) so offer mode has something to offer 3D on |
@@ -644,9 +644,9 @@ pixels (`CreatePickingRayToRef` divides the pointer's CSS px by the hardware sca
   aliasing, and the sphere read flat (its relief is a pixel or two of disparity at that size). The
   same page at DPR 2 in the harness (`bjs-dpr2`) now converts at 2560 × 1440 for a 1280 × 720 CSS
   canvas, hardware scaling 0.5, and `scene.pick` at the canvas centre still hits the sphere there.
-- **Never below the page's own density;** capped by the zero-copy width (`maxSbsWidth`, 3072) and the
-  context's limits the same way (uniformly: the eye's aspect is kept, where the core caps each axis on
-  its own). Harness case `bjs-cap`: 1024 × 576 from 1280 × 720.
+- **Never below the page's own density;** capped by the zero-copy width (`maxSbsWidth`, 3072), the
+  context's limits and the area cap (`maxSbsArea`) the same way (uniformly: the eye's aspect is kept, as
+  the core does since v0.7.10). Harness case `bjs-cap`: 1024 × 576 from 1280 × 720.
 - **A fullscreen GUI laid out in pixels** (an `AdvancedDynamicTexture` on a scene layer, without
   `adjustToEngineHardwareScalingLevel` or an ideal size) keeps the page's density: its controls are
   sized in store pixels and would shrink by the same factor (`bjs-gui`). State: `pixelGui`.
@@ -965,7 +965,9 @@ woven tile is **not yet judged on the panel** (see [Verified](#verified-and-what
   document: report `'guard'`, nothing saved.
 - **GL clamp.** The SBS store fits the zero-copy width cap (3072) **and** the context's own limits
   (`MAX_TEXTURE_SIZE`, `MAX_RENDERBUFFER_SIZE`, `MAX_VIEWPORT_DIMS`, read once per canvas): a 2×-wide
-  store is over those on many Android GPUs. Each axis is capped on its own (v0.5.2).
+  store is over those on many Android GPUs) **and** Chromium's drawing-buffer area cap (`maxSbsArea`,
+  5760², past which the browser silently draws a smaller buffer). Since v0.7.10 one factor scales both
+  axes (v0.5.2 to v0.7.9 capped each axis on its own; see [Eye size](#tuning-keys-v052)).
 - **Reduced motion.** Under `prefers-reduced-motion: reduce` the depth fade is 1 ms, never 0:
   `rampMs` 0 skips the turn-off's out-cover and the raw side-by-side flash comes back (risk R5).
   Followed live (`change` listener).
@@ -996,6 +998,7 @@ dev build only.
 | `eyeScale` | 0.5 | per-eye width / the element's device width (before v0.5.2: of the page's store) |
 | `maxEyeDpr` | 3 | the device-pixel ratio the eye is sized at, at most |
 | `maxSbsWidth` | 3072 | the SBS store's width cap (browser-pvt#24), then the GL limits |
+| `maxSbsArea` | 5760² | the SBS store's area cap (Chromium's WebGL `kMaxArea`, as `@displayxr/inline3d`'s `MAX_DRAWING_BUFFER_AREA`) (v0.7.10) |
 | `coverMaxMs` | 5000 | the join cover's longest hold; also the "no display" threshold |
 | `openSceneMode` | `'fixed'` | open scenes (no target, no bounded subject): `'fixed'` focus at real scale, or `'percentile'` (the 0.5.3 room rule) |
 | `openSceneConvM` | 2 | `'fixed'`: the focus distance in front of the page camera, in scene units read as metres |
@@ -1007,10 +1010,14 @@ dev build only.
 the page's own store (Spark hello-world keeps a 1038-px store on a 1038-px CSS canvas on a 2.5×
 panel: its eyes were 519×703, "a little low res"; now 1298×1758, the same as a three.js page at
 `setPixelRatio(2.5)`). The SBS store is the element's full device size: two eyes side by side at
-half width each. Each axis is then capped on its own, the width to `maxSbsWidth` / 2 per eye and
-the GL limits, the height to the GL limits: the eye's aspect is not kept (it is squeezed
-horizontally by design, the weave un-squeezes), so a width cap never costs height (a joint scale
-cost ~40 % of the pixels on the panel). The page keeps reading its own mono store, and `restore()` puts it back. A canvas
+half width each. **Caps (v0.7.10): one factor for both axes**, the smallest of `maxSbsWidth` / 2 per
+eye, the GL limit on each axis and `maxSbsArea` (`core.fitEyes`), so the eye keeps the SBS aspect and
+its store pixels keep their shape (the weave still un-squeezes the half-width eye, as uncapped). v0.5.2
+to v0.7.9 capped each axis on its own, so a width cap never cost height; on the 8K panel at 300 % a
+maximised window (2560 × 1305 CSS, eye 3840 × 3915 wanted) then got **1536 × 3915**: store pixels 2.5×
+taller than wide and 2.5× the pixels the width allows, which arrival.space could not afford (#319). It
+now gets 1536 × 1566 (SBS 3072 × 1566). A window that fits under the caps is unchanged. The Babylon
+adapter applies the same caps through its hardware scaling level. The page keeps reading its own mono store, and `restore()` puts it back. A canvas
 with no CSS size (laid out at its store size) gets its current used width / height pinned inline
 while converted (the same box), and unpinned after.
 
@@ -1378,7 +1385,12 @@ near / far) keeps the GL matrix. three's `WebGPURenderer` driver does the same, 
   re-creates its back buffer when `getCurrentTexture()` comes back another size, so the existing
   `setResolution` wrapper works unchanged and `GPUCanvasContext.configure` is never re-called. The
   engine's WebGPU `maxPixelRatio` (1 by default) shapes only the page's mono store; the SBS store is
-  sized by the core from the element's device pixels.
+  sized by the core from the element's device pixels. **Mid-frame resize (v0.7.10):** the flip and the
+  stand-down resize from `postrender`, before the engine's `frameEnd` submit; the canvas resize
+  destroys the current texture that frame's passes draw into, so that submit failed validation at every
+  conversion (`Destroyed texture [Texture "D3DImageBacking_D3DSharedImage_WebGPUSwapBufferProvider_…"]
+  used in a submit`, #319). The adapter now calls the engine's own `device.submit()` before it resizes
+  (the same call the cover read-back uses); headless on arrival.space: 3 warnings per run before, 0 after.
 - **Finding the app.** On WebGPU the context always exists before the AppBase constructor reads the
   canvas id (`createGraphicsDevice` → `initWebGpu` → `getContext('webgpu')`, then `new AppBase(canvas)`).
   The sentinel arms a canvas on its first `getContext('webgpu')` exactly as on a WebGL context, so a

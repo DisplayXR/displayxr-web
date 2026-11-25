@@ -58,6 +58,7 @@ function dxrCore(cfg, cap, S) {
     eyeScale: 0.5,      // per-eye width / element DEVICE width: the SBS store is the element's full device size, each eye squeezed to half width (a 2-view lenticular resolves about half anyway; the weave un-squeezes)
     maxEyeDpr: 3,       // the device-pixel ratio the eye is sized at, at most
     maxSbsWidth: 3072,  // browser-pvt#24: wider SBS canvases drop off the zero-copy weave path
+    maxSbsArea: 5760 * 5760, // Chromium's WebGL drawing-buffer area cap (kMaxArea): past it the buffer is silently scaled down while canvas.width keeps the value (@displayxr/inline3d MAX_DRAWING_BUFFER_AREA)
     minCssPx: 120,      // smaller canvases stay flat (icons, thumbnails)
     holdMs: 1200,       // keep the cover this long after the layer exists (woven-canvas rules, rule 5)
     coverMaxMs: 5000,   // ... but never longer than this, stereo or not (R6: a display with nobody seated)
@@ -291,13 +292,16 @@ function dxrCore(cfg, cap, S) {
   // maxEyeDpr) × eyeScale (0.5), eyeH = CSS height × the same ratio, i.e. the SBS store is the
   // element's full device size (hello-world: eye 1298x1758, as a three.js page at setPixelRatio(2.5)).
   // The page keeps seeing its own mono store (the adapters virtualise it; restore() puts it back).
-  // With no layout box (not rendered), the page's store stands in. Each axis is then capped on its
-  // own — the width by the zero-copy cap (maxSbsWidth / 2 per eye) and the context's limits, the height
-  // by the context's limits (surface.limit(): WebGL's MAX_TEXTURE_SIZE / MAX_RENDERBUFFER_SIZE /
-  // MAX_VIEWPORT_DIMS, WebGPU's device maxTextureDimension2D; a 2× wide store is over them on many
-  // Android GPUs).
-  // The eye's aspect is NOT kept: it is squeezed horizontally by design and the weave un-squeezes it,
-  // so capping the width never costs height (panel, 2026-09-28: a joint scale cost ~40 % of the pixels).
+  // With no layout box (not rendered), the page's store stands in.
+  // Then ONE factor for both axes (v0.7.10; the eye keeps the SBS aspect, its store pixels keep their
+  // shape): the smallest of the zero-copy width cap (maxSbsWidth / 2 per eye), the context's limits on
+  // each axis (surface.limit(): WebGL's MAX_TEXTURE_SIZE / MAX_RENDERBUFFER_SIZE / MAX_VIEWPORT_DIMS,
+  // WebGPU's device maxTextureDimension2D; a 2× wide store is over them on many Android GPUs) and
+  // Chromium's drawing-buffer area cap (maxSbsArea). Before v0.7.10 each axis was capped on its own,
+  // so a capped width kept the full height: on an 8K panel at 300 % a maximised window got eyes of
+  // 1536x3915, store pixels 2.5× taller than wide and 2.5× the pixels the width allows (#319,
+  // arrival.space). The Babylon adapter sizes by the same rule (one factor through its hardware
+  // scaling level).
   function realSizeFor(st) {
     const L = st.L, c = st.canvas;
     const cw = c.clientWidth, ch = c.clientHeight;
@@ -310,8 +314,17 @@ function dxrCore(cfg, cap, S) {
       if (sf) st.lim = sf.limit(); // cached per canvas: a context's limits do not change
     }
     const lim = T.glLimit > 0 ? T.glLimit : st.lim || Infinity;
-    eyeW = Math.max(2, Math.min(eyeW, Math.floor(Math.min(T.maxSbsWidth, lim) / 2)));
-    eyeH = Math.max(2, Math.min(eyeH, Math.floor(lim)));
+    return fitEyes(eyeW, eyeH, lim);
+  }
+  // The eye pair wanted (eyeW x eyeH each, side by side) fitted by one factor into the width cap, the
+  // limit on each axis and the area cap; floored, so it never rounds back over a cap.
+  function fitEyes(eyeW, eyeH, lim) {
+    const maxW = Math.min(T.maxSbsWidth, lim);
+    const s = Math.min(1, maxW / (2 * eyeW), lim / eyeH, Math.sqrt(T.maxSbsArea / (2 * eyeW * eyeH)));
+    if (s < 1) {
+      eyeW = Math.max(2, Math.min(Math.floor(eyeW * s + 1e-9), Math.floor(maxW / 2)));
+      eyeH = Math.max(2, Math.min(Math.floor(eyeH * s + 1e-9), Math.floor(lim)));
+    }
     return { eyeW, eyeH, W: 2 * eyeW, H: eyeH };
   }
   // The page's view of canvas.width / height stays the mono store it would have made. Reads and
@@ -1363,7 +1376,7 @@ function dxrCore(cfg, cap, S) {
     registerEngine(name) { if (!engines.includes(name)) engines.push(name); },
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
     newState, noteFlat, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
-    realSizeFor, virtualizeCanvas, unvirtualizeCanvas,
+    realSizeFor, fitEyes, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, pivotOffset, eyePose, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, surfaces, surfaceOf, readGlEye: surfaces.readGlEye,
     rigMode, depthOf, convSource, convText, rampK, flatNote, statusOf, setEnabled,

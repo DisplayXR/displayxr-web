@@ -159,3 +159,15 @@ shot): PASS / REVIEW / FLAT (with the reason) / NONE / ERROR per example, ~15 s 
 `results/<date>-pc-examples-<tag>.json`, written after every example (`--resume` continues). Captures
 (`--keep`, `KEEP_DIR`) are never committed. 2026-11-10: v0.7.3 vs v0.7.4, see `../README.md`
 ("Verified").
+
+## 2D vs 3D frame cost of one page (`profile-2d-3d.mjs`, a measurement, not a gate)
+
+`node profile-2d-3d.mjs [--webgpu] [--url U] [--dist <dir>] [--cpu]` loads one page (default
+arrival.space) at a panel-sized viewport (2560 × 1305 CSS at DPR 3, a maximised window on the 8K panel
+at 300 %) with vsync and the frame-rate limit off, converts it with a built bundle in dev mode (the
+frame-rate guard off), and alternates 2D and 3D on the same page (`__dxrAuto3D.set('enabled', …)`),
+printing per phase the engine's draw rate (`postrender` events over wall time), `app.tick` CPU ms, draw calls,
+the store and eye size, and the engine's GPU profiler (WebGPU: per pass). `--dist` points it at another
+build for an A/B (e.g. the previous release's `dist/` from `git show`); `--cpu` adds a CDP CPU profile.
+A streaming page's own rate moves a lot from run to run: compare alternated runs, and read the GPU
+frame time next to the frame rate. PlayCanvas pages only (it reads `window.pc.app`).
