@@ -9,8 +9,8 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ### Fixed — lift: a black Gaussians scene is reported, not opened (web#341)
 
-- When the frame handed to the runtime's Gaussians converter was black (a grab of a
-  hardware-decoded video on Windows), Explore opened a scene of black splats. The native result is
+- When the runtime's Gaussians converter was handed a black frame (a runtime readback without
+  its keyed mutex, runtime #2830), Explore opened a scene of black splats. The native result is
   now checked: when 99 % of its splats are darker than 0.08 luminance (read from `f_dc_*` by name,
   any PLY layout) `generateLift` rejects with `NativeLiftError` code `black` and the chip says
   "3D failed: the frame came out black". Explore stays on offer for the next frame.

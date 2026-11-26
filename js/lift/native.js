@@ -523,8 +523,8 @@ export function createNativeGaussiansLift(opts = {}) {
         // +z, y down). A header that names no convention means that — NOT explore's own 'opengl'
         // default, under which a +z scene sits behind the camera and explore draws solid black.
         if (!meta.axes && !meta.convention) meta.axes = 'opencv';
-        // A scene whose every splat is black came from a black frame (web#341: the browser's grab of
-        // a hardware-decoded video read back black). Say so rather than open an empty black scene.
+        // A scene whose every splat is black came from a black frame (web#341: a runtime readback
+        // without its keyed mutex, runtime #2830). Say so rather than open an empty black scene.
         const col = plyColourStats(u8);
         if (col && col.p99 < BLACK_SCENE_LUMA) {
           throw new NativeLiftError(
