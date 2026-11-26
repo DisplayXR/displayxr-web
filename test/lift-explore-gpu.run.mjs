@@ -1,6 +1,7 @@
 // Runs test/lift-explore-gpu.html (the explore renderer's stereo stability on PlayCanvas) in
 // headless Chrome and exits non-zero on a failure. Not part of `npm test` (it needs a GPU browser):
 //   CHROME=/path/to/chrome PUPPETEER_CORE=/dir/whose/node_modules/has/puppeteer-core node test/lift-explore-gpu.run.mjs
+// ANGLE=<backend> picks Chrome's ANGLE backend (default metal, a Mac; d3d11 on Windows).
 // The page imports playcanvas from jsDelivr (the samples' pin, 2.22.3). SHOT=<file.png> saves the canvas.
 import http from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -24,7 +25,7 @@ const puppeteer = createRequire(join(process.env.PUPPETEER_CORE || root, 'x.js')
 const browser = await puppeteer.launch({
   executablePath: process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: 'new',
-  args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--no-first-run'],
+  args: [`--use-angle=${process.env.ANGLE || 'metal'}`, '--enable-gpu', '--ignore-gpu-blocklist', '--no-first-run'],
 });
 let pass = false;
 try {
@@ -36,6 +37,8 @@ try {
   if (process.env.SHOT) {
     const url = await page.evaluate(() => window.__shot && window.__shot());
     if (url) await writeFile(process.env.SHOT, Buffer.from(url.split(',')[1], 'base64'));
+    const mid = await page.evaluate(() => window.__shotMid && window.__shotMid());
+    if (mid) await writeFile(process.env.SHOT.replace(/\.png$/i, '') + '.assemble.png', Buffer.from(mid.split(',')[1], 'base64'));
   }
 } finally {
   await browser.close();

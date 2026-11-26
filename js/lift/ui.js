@@ -28,7 +28,7 @@ const CSS = `
   transition:opacity .15s ease,visibility 0s linear .15s}
 .label{white-space:nowrap;padding-right:4px;font-variant-numeric:tabular-nums}
 .label[hidden]{display:none}
-.label.waiting::before{content:"";display:inline-block;width:9px;height:9px;margin-right:6px;
+.label.waiting::before,.label.busy::before{content:"";display:inline-block;width:9px;height:9px;margin-right:6px;
   vertical-align:-1px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;
   animation:dxrspin .8s linear infinite}
 @keyframes dxrspin{to{transform:rotate(360deg)}}
@@ -237,6 +237,7 @@ export function createChip(root, actions, opts = {}) {
     const wait = waiting && state === 'live';
     label.textContent = wait ? WAITING_LABEL : busy && note ? note : busy && progress != null ? `${base} ${Math.round(progress * 100)}%` : busy ? `${base}…` : flash || base;
     label.classList.toggle('waiting', wait);
+    label.classList.toggle('busy', busy && !wait); // the same spinner while a scene is generated
     const L = chipLayout(state, { kind: actions.kind, canDownload: !!actions.onDownload, waiting, canExplore, exploreReason });
     label.hidden = !L.label;
     bExplore.hidden = !L.explore;

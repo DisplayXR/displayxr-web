@@ -19,11 +19,32 @@
 // reveal ("the photo inflates into depth"); s = gain at rest is setDepthGain. The same function the
 // Spark renderer ran as a dyno graph. λ keeps each splat on its own ray from `o`, so the engine's
 // sort (by ORIGINAL centres) stays a valid back-to-front order.
+//
+// ASSEMBLE (uLiftA, 0 -> 1; >= 1 = off, the exact baseline): the arrival the viewer can see. Every
+// splat is a particle with its own start time: it appears as a dot away from its place and flies
+// home, the centre of the picture first. Keys and paths read the splat's ORIGINAL world centre
+// and uLiftA only, never a screen input, so both eyes of a woven tile see the same particle in the
+// same place (docs/splat-effects.md, "the one rule"). uLiftARmax = the picture's half diagonal as
+// a tangent (image units), which sizes both the ordering and the scatter.
 export const LIFT_MODIFY_VS = /* glsl */ `
 uniform float uLiftS;
 uniform vec3 uLiftO;
 uniform float uLiftD;
 uniform float uLiftFade;
+uniform float uLiftA;
+uniform float uLiftARmax;
+float gLiftLp = 1.0;
+float liftHash(vec3 c, float s) {
+  return fract(sin(dot(c, vec3(12.9898, 78.233, 37.719)) + s) * 43758.5453);
+}
+// A splat's own progress through the assemble (0 = not launched, 1 = home). Keyed on its ORIGINAL
+// world centre only: where it sits in the picture (centre first) plus a per-splat random part.
+float liftArrive(vec3 c) {
+  if (uLiftA >= 1.0) return 1.0;
+  float k = clamp(length(c.xy) / max(-c.z, 1e-3) / max(uLiftARmax, 1e-3), 0.0, 1.0);
+  k = mix(k, liftHash(c, 1.0), 0.35);
+  return clamp((uLiftA - k * 0.6) / 0.4, 0.0, 1.0);
+}
 float liftLambda(vec3 c) {
   float t = -c.z;
   float ot = -uLiftO.z;
@@ -33,13 +54,28 @@ float liftLambda(vec3 c) {
   return (tFlat - ot) / dt;
 }
 void modifySplatCenter(inout vec3 center) {
+  vec3 c0 = center;
   center = uLiftO + (center - uLiftO) * liftLambda(center);
+  gLiftLp = liftArrive(c0);
+  if (gLiftLp < 1.0) {
+    // Away from home by e, eased out: sideways in the picture, and only ever FARTHER than home
+    // (never toward the viewer: a particle in front of the scene is an uncomfortable disparity).
+    float e = (1.0 - gLiftLp) * (1.0 - gLiftLp);
+    float t = max(-center.z, 1e-3);
+    vec2 dir = vec2(liftHash(c0, 2.0), liftHash(c0, 3.0)) - 0.5;
+    center.xy += dir * (1.2 * uLiftARmax * t * e);
+    center.z -= t * 0.3 * e * liftHash(c0, 4.0);
+  }
 }
 void modifySplatRotationScale(vec3 originalCenter, vec3 modifiedCenter, inout vec4 rotation, inout vec3 scale) {
   scale *= liftLambda(originalCenter);
+  // A dot while it flies, its own size over the last stretch: the engine sorts by ORIGINAL
+  // centres, so a splat away from home blends out of order, and a dot overlaps almost nothing.
+  float lp = liftArrive(originalCenter);
+  if (lp < 1.0) scale *= mix(0.12, 1.0, smoothstep(0.55, 1.0, lp));
 }
 void modifySplatColor(vec3 center, inout vec4 color) {
-  color.a *= uLiftFade;
+  color.a *= uLiftFade * smoothstep(0.0, 0.2, gLiftLp);
 }
 `;
 

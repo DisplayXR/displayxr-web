@@ -83,9 +83,10 @@ export interface LiftOptions {
    * lands at `pivotTargetM` (default 2.0 m) when it is more than 25 % off (the neutral image is
    * unchanged; parallax scales by pivot/target); `always` / `off` for A/B. `eyes` `nominal`
    * (default) normalises the runtime's eye separation to 63 mm; `tracked` takes the eye positions
-   * as metres.
+   * as metres. `reveal` is how the scene arrives: `assemble` (default) flies the splats in as
+   * particles that settle into the picture, `inflate` is the short depth-only reveal.
    */
-  explore?: { pivotTargetM?: number; comfort?: 'auto' | 'always' | 'off'; eyes?: 'nominal' | 'tracked' };
+  explore?: { pivotTargetM?: number; comfort?: 'auto' | 'always' | 'off'; eyes?: 'nominal' | 'tracked'; reveal?: 'assemble' | 'inflate' };
   /**
    * The browser's conversion stack (docs/lift.md § Vendor modules). `auto` (default): when
    * {@link liftCapabilities} reports `native` and the element is a `<video>`/`<img>`, the BROWSER

@@ -81,6 +81,8 @@ const pc = {
 
 /** Default reveal (inflate) duration, ms — the gallery's REVEAL_MS. */
 export const REVEAL_MS = 1400;
+/** Default duration of the assemble reveal (fadeIn's `assemble`), ms. */
+export const ASSEMBLE_MS = 1100;
 /** Depth kept at the START of the reveal, about the pivot. Not 0: a perfectly flat cloud has no
  *  depth ORDER, so the back-to-front composite goes arbitrary (gallery measured MAE 27 vs 2.6). */
 export const FLAT_RESIDUAL = 0.05;
@@ -93,6 +95,7 @@ const MAX_DT_S = 0.1;
 export const PLAYCANVAS_TESTED = '2.22.3';
 
 const easeOutCubic = (x) => 1 - (1 - x) ** 3;
+const easeInOutSine = (x) => 0.5 - 0.5 * Math.cos(Math.PI * x);
 const DEG = Math.PI / 180;
 
 let byteSeq = 0;
@@ -317,6 +320,16 @@ export async function createExplore(o) {
   const U = { s: NaN, ox: NaN, oy: NaN, oz: NaN, fade: NaN };
   const oVec = new Float32Array(3);
   material.setParameter('uLiftD', rig.dPivot);
+  // The assemble reveal (LIFT_MODIFY_VS): 1 = off. Its scale is the picture's half diagonal.
+  material.setParameter('uLiftARmax', Math.hypot(rig.halfW, rig.halfH) / rig.dPivot);
+  let assembleA = NaN;
+  const setAssemble = (a) => {
+    if (a === assembleA) return;
+    assembleA = a;
+    material.setParameter('uLiftA', a);
+    material.update();
+  };
+  setAssemble(1);
   const setUniforms = (s, ox, oy, oz, fadeMul) => {
     if (s === U.s && ox === U.ox && oy === U.oy && oz === U.oz && fadeMul === U.fade) return;
     U.s = s; U.ox = ox; U.oy = oy; U.oz = oz; U.fade = fadeMul;
@@ -330,6 +343,7 @@ export async function createExplore(o) {
 
   let depthGain = Number.isFinite(o.depthGain) ? o.depthGain : 1;
   let reveal = o.startFlat ? { t0: Infinity, ms: REVEAL_MS } : null; // null = done
+  let assemble = null; // { t0, ms } while the particles fly in; null = done
   let depthS = 1;
   let depthO = { x: 0, y: 0, z: 0 };
   const setDepth = (p, originWorld) => {
@@ -390,6 +404,13 @@ export async function createExplore(o) {
   };
 
   const updateReveal = (t, mid) => {
+    if (assemble) {
+      const x = Math.min(1, Math.max(0, t - assemble.t0) / assemble.ms);
+      if (x >= 1) {
+        assemble = null;
+        setAssemble(1);
+      } else setAssemble(easeInOutSine(x));
+    }
     if (!reveal) return;
     const x = Number.isFinite(reveal.t0) ? Math.min(1, Math.max(0, t - reveal.t0) / reveal.ms) : 0;
     // Centre of projection = the viewer's head, in WORLD (= the capture frame): the head is in
@@ -545,13 +566,25 @@ export async function createExplore(o) {
      *            would read as depth collapsing and regrowing).
      *   opacity  a linear 0 → 1 ramp over whatever is underneath (never cleared meanwhile).
      *            Default ON on a shared context / from hidden, OFF standalone.
-     * Returns a Promise that resolves when the fade (the longer of the two) has finished.
+     *   assemble the splats fly in as particles and settle into the picture, centre first, over
+     *            `opts.assembleMs` (default ASSEMBLE_MS). OFF by default; when on, the scene is at
+     *            its full depth from the start (no inflate) unless `inflate` is stated.
+     * Returns a Promise that resolves when the fade (the longest of them) has finished.
      */
     fadeIn(ms = REVEAL_MS, opts = {}) {
-      const dur = Math.max(1, ms);
-      const inflate = opts.inflate ?? !shared;
+      const asm = opts.assemble === true;
+      const asmMs = asm ? Math.max(1, Number.isFinite(opts.assembleMs) ? opts.assembleMs : ASSEMBLE_MS) : 0;
+      const dur = Math.max(1, ms, asmMs);
+      const inflate = opts.inflate ?? (!shared && !asm);
       const opacity = opts.opacity ?? (shared || hidden);
       hidden = false;
+      if (asm) {
+        assemble = { t0: performance.now(), ms: asmMs };
+        setAssemble(0);
+      } else {
+        assemble = null;
+        setAssemble(1);
+      }
       if (inflate) {
         reveal = { t0: performance.now(), ms: dur };
         setDepth(0);
@@ -560,7 +593,7 @@ export async function createExplore(o) {
         fade?.resolve();
         fade = null;
         setOpacity(1);
-        return new Promise((resolve) => setTimeout(resolve, inflate ? dur : 0));
+        return new Promise((resolve) => setTimeout(resolve, inflate || asm ? dur : 0));
       }
       fade?.resolve();
       return new Promise((resolve) => {

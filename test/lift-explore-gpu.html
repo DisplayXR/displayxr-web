@@ -157,6 +157,43 @@ check(Math.abs(L.cy - H / 2) <= 1.5 && Math.abs(R.cy - H / 2) <= 1.5, 'neutral p
 check(Math.abs(L.tl - L.tr) <= 1 && Math.abs(R.tl - R.tr) <= 1, 'neutral pose: level top edge in both eyes (no shear)');
 check(Math.abs((L.cx - W / 4) + (R.cx - W / 4)) <= 1.5 && L.cx > R.cx, 'neutral pose: horizontal disparity symmetric about the eye centroid');
 
+// The ASSEMBLE reveal (fadeIn's `assemble`): the splats fly in as particles and settle. Mid-way the
+// picture is visibly not the settled one, the scene is never drawn in front of where it settles
+// (a particle is only ever farther than home), and at the end the frame is the rest frame again,
+// bit for bit (uLiftA >= 1 is the exact baseline).
+const grab = () => { const p = new Uint8Array(W * H * 4); gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, p); return p; };
+const ASM_MS = 900;
+ex.fadeIn(1, { assemble: true, assembleMs: ASM_MS, opacity: false });
+const tA = performance.now();
+let mid = null, midAt = 0;
+while (performance.now() - tA < ASM_MS + 250) {
+  frame();
+  const el = performance.now() - tA;
+  if (!mid && el > ASM_MS * 0.45) { mid = grab(); midAt = el; }
+  await raf();
+}
+for (let i = 0; i < 4; i++) { frame(); await raf(); }
+frame();
+const after = grab();
+let midDiff = 0, endDiff = 0, redMid = 0, redRest = 0;
+for (let o = 0; o < rest.length; o += 4) {
+  if (Math.abs(mid[o] - rest[o]) + Math.abs(mid[o + 1] - rest[o + 1]) + Math.abs(mid[o + 2] - rest[o + 2]) > 24) midDiff++;
+  if (after[o] !== rest[o] || after[o + 1] !== rest[o + 1] || after[o + 2] !== rest[o + 2]) endDiff++;
+  if (mid[o] > 180 && mid[o + 1] < 90 && mid[o + 2] < 90) redMid++;
+  if (isRed(o)) redRest++;
+}
+const total = rest.length / 4;
+log(`assemble: mid frame at ${Math.round(midAt)} ms of ${ASM_MS}: ${(100 * midDiff / total).toFixed(1)} % of pixels differ from rest; box pixels ${redMid} mid vs ${redRest} at rest`);
+check(midDiff / total > 0.1, 'assemble: mid-way the picture is visibly being assembled (> 10 % of pixels differ from rest)');
+check(redMid > 0 && redMid < redRest, 'assemble: the centre of the picture is arriving first (some of the box is home mid-way, not all)');
+check(endDiff === 0, `assemble: the settled frame is the rest frame exactly (${endDiff} pixels differ)`);
+window.__shotMid = () => {
+  const c2 = document.createElement('canvas'); c2.width = W; c2.height = H;
+  const ctx = c2.getContext('2d'); const img = ctx.createImageData(W, H);
+  for (let y = 0; y < H; y++) img.data.set(mid.subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4);
+  ctx.putImageData(img, 0, 0); return c2.toDataURL();
+};
+
 window.__shot = () => { // shots[0] as a PNG (readPixels rows are bottom-up)
   const c2 = document.createElement('canvas'); c2.width = W; c2.height = H;
   const ctx = c2.getContext('2d'); const img = ctx.createImageData(W, H);
