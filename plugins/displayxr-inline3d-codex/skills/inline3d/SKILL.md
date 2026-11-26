@@ -28,6 +28,11 @@ the buffer, clamp it to the device, frame the subject on the glass, and validate
 three or PlayCanvas: use PlayCanvas for models and splats (the default, the most tested path); use
 three when the page already is a three.js app (`addScene` + `EyeCamera`, see
 `docs/porting-three-js-apps.md`).
+An **animated character** (a rigged glTF that idles, hops, waves, reacts): `addScene` + `EyeCamera`
+with three's `GLTFLoader` and `THREE.AnimationMixer` (`mixer.update(dt)` in your per-frame update,
+which runs for both the 3D and the 2D path). Play the clips the file actually has (list
+`gltf.animations` names; a model rarely has every gesture the user named, so pick the nearest clip,
+such as a jump for "say hi", and say so). `addModel` does not drive clips.
 
 ## 2. Pick the rig by what the user moves
 
@@ -165,10 +170,25 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
   drop legacy calls. The checker scrolls the page and reports chrome that passes over a tile.
 - HUD text and values: HTML beside or over the tile, readable size, not drawn into the 3D scene.
 
+**Input: tap, pointer, tracked hands.** Taps, clicks and drags are ordinary pointer events on the
+canvas, in 3D and 2D alike: `canvas.addEventListener('pointerdown', …)`. There are no controllers and
+no `select` events. **Tracked hands** (DisplayXR Browser 1.8.0+ on Windows with a hand tracker; none
+anywhere else, so always give the same action a tap too) come from `@displayxr/inline3d/hands`
+(import-map entry `…/inline3d@1.60.2/js/inline3d-hands.js`; types in `hands.d.ts`):
+- a model or splat: `addModel(wall, canvas, url, { hands: true })` (pinch to turn, two pinches to zoom);
+- your own scene: `watchHands(wall, (f) => { const h = f.right || f.left; … })` after `addScene`.
+  Each frame gives `f.left` / `f.right` (null when not seen), with `wrist`, `thumbTip`, `indexTip`,
+  `joint(name)` and `palmLength`, in metres in the rig frame (the eye views' frame: x right, y up, z
+  toward the viewer). "Hold up your hand" = a hand appears (`h && !hadHand`); follow it with
+  `h.wrist[0]`; a pinch = `PinchDetector` on the thumb-to-index distance.
+  `f.gate` is `'available'` or why hands are withheld (`'camera-rig'`, `'not-fullscreen'`,
+  `'scaled-rig'`, …): use a display rig. The checker simulates no hands, so a PASS says nothing
+  about the hand path: say so, and ask the user to try it on the display.
+
 ## 6. Pins (exact versions, no `^`)
 
-`@displayxr/inline3d` **1.60.1**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
-range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.60.1/js/inline3d.js`,
+`@displayxr/inline3d` **1.60.2**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
+range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.60.2/js/inline3d.js`,
 `https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs`,
 `https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js`. If a newer SDK is installed, its
 `CHANGELOG.md` says what changed; prefer the installed version's docs over this list.
@@ -176,7 +196,7 @@ range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr
 ## 7. Before you say done: run the checker
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.7 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.8 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
 ```
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;
