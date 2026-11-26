@@ -50,7 +50,7 @@ export default function cases({ P, NEW }) {
     rigCase('rig-auto-room', 'mesh room, camera inside (surrounded): automatic camera rig', 'three-walk.html?scene=room&cam=still', 'camera', 'open scene|surrounded',
       { until: 'R.openLatched && S.rigMode === "camera"', ms: 12000 }),
     // A walk hint at decision time (FirstPersonControls' lookAt 100 ahead is a target, but the controls say walk).
-    rigCase('rig-auto-fpc', 'FirstPersonControls (a lookAt target every frame): the walk hint keeps the camera rig', 'three-walk.html?scene=field&cam=fpc', 'camera', 'walk|open scene'),
+    rigCase('rig-auto-fpc', 'FirstPersonControls (a lookAt target every frame): the walk hint keeps the camera rig', 'three-walk.html?scene=field&cam=fpc', 'camera', 'walk|open scene', { lines: 1 }),
     // The user's choice wins and nothing is decided automatically.
     rigCase('rig-choice-camera', 'OrbitControls target, but the site chose the camera rig: no automatic rig', 'three-orbit.html', 'camera', null, { cfg: { rig: 'camera' }, lines: 0 }),
     rigCase('rig-choice-display', 'model on a floor (estimator), the site chose the display rig: no automatic rig', 'three-walk.html?scene=model&cam=still', 'display', null, { cfg: { rig: 'display' }, lines: 0 }),
