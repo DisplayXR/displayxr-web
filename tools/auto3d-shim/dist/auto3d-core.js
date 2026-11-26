@@ -317,7 +317,7 @@ function dxrCore(cfg, cap, S) {
     const dr = depthRangeFor(st);
     st.near = dr.near; st.far = dr.far;
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
-    st.rigScale = null; st.rigScaleWait = null; // a new activation decides the rig's scale again (setScaleOnce)
+    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; // a new activation decides the rig's scale again (setScaleOnce)
     estimateConvergence(st, true);
     st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
     buildRig(st, ad.rigFov(st));
@@ -708,12 +708,13 @@ function dxrCore(cfg, cap, S) {
         else { rig = 'display'; why = `object on a turntable (target: ${st.conv.via || 'the page'})`; }
       }
     }
-    setAutoRig(rig, why);
+    setAutoRig(rig, why, !st.rigDecided);
+    st.rigDecided = true;
   }
-  function setAutoRig(rig, why) {
+  function setAutoRig(rig, why, first) {
     const was = site.rig;
     site.rig = rig;
-    info(`style: ${rig === 'display' ? 'Object on the glass (display rig)' : 'Scene camera (camera rig)'}, automatic: ${why}`);
+    if (was !== rig || first) info(`style: ${rig === 'display' ? 'Object on the glass (display rig)' : 'Scene camera (camera rig)'}, automatic: ${why}`);
     if (was !== rig) notify();
   }
   function scaleReady(st) { if (!st.cover && !st.coverForced && rampK(st) < 1 && !st.ramp && !st.releasing) startRamp(st, 1); }
