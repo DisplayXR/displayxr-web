@@ -129,6 +129,7 @@ function onFrame(views, layer) {
 async function start() {
   const wall = await createInline3D();
   if (!wall.supported) return start2D('no inline 3D here');
+  viewInfo = wall.displayInfo || null; // last read on this origin, or null; refined below
   sizeBuffer(true); // size before registering (woven-canvas rule 4)
   const handle = wall.addScene(canvas, onFrame, {
     virtualDisplayHeight: VIRTUAL_DISPLAY_HEIGHT,
