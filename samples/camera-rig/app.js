@@ -155,7 +155,7 @@ canvas.addEventListener('pointercancel', endDrag);
 // sceneBufferSize: per eye, window device px x the display's view scale (what a native app
 // renders), else CSS box x dpr capped at 2, fitted to the GL limits and the browser's area cap.
 let sbsMode = false;
-let viewInfo = null; // handle.getDisplayInfo(), once woven
+let viewInfo = null; // wall.displayInfo at boot, then handle.getDisplayInfo() once woven
 function sizeToCanvas(cssW = canvas.clientWidth || 640, cssH = canvas.clientHeight || 360) {
   const s = sceneBufferSize(canvas, { sbs: sbsMode, viewScale: sbsMode ? viewInfo : null, cssWidth: cssW, cssHeight: cssH });
   renderer.setSize(s.width, s.height, false);
@@ -431,7 +431,10 @@ function dropCover() {
     return;
   }
   sbsMode = true;
-  sizeToCanvas();   // size BEFORE registering
+  // The display's view scale, synchronously: the last read on this origin, or null on a first
+  // visit (then the read below fills it in). So the first woven frame is already sized right.
+  viewInfo = wall.displayInfo;
+  sizeToCanvas();   // size BEFORE registering, in this task — never after an await or a later rAF
   // The FIRST rig is passed at construction rather than pushed after: the layer's very first
   // located frame is then already on the app's camera, so the scene never shows one frame of
   // default framing on the way in.

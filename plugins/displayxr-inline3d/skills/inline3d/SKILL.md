@@ -28,6 +28,11 @@ the buffer, clamp it to the device, frame the subject on the glass, and validate
 three or PlayCanvas: use PlayCanvas for models and splats (the default, the most tested path); use
 three when the page already is a three.js app (`addScene` + `EyeCamera`, see
 `docs/porting-three-js-apps.md`).
+An **animated character** (a rigged glTF that idles, hops, waves, reacts): `addScene` + `EyeCamera`
+with three's `GLTFLoader` and `THREE.AnimationMixer` (`mixer.update(dt)` in your per-frame update,
+which runs for both the 3D and the 2D path). Play the clips the file actually has (list
+`gltf.animations` names; a model rarely has every gesture the user named, so pick the nearest clip,
+such as a jump for "say hi", and say so). `addModel` does not drive clips.
 
 ## 2. Pick the rig by what the user moves
 
@@ -117,8 +122,23 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
       `onLayerLost: viewer.onLayerLost`; `addSplat` / `addModel` / `addPlayer` handle it themselves.
 - [ ] **Nothing opaque above the canvas**; backgrounds and black go *under* it. Never overlap two
       woven canvases (hide the lower one with `display: none`).
-- [ ] **Buffer = 2 × eye width**: `addScene` pages size it themselves (2× the box aspect, devicePixelRatio
-      ≤ 2, every side ≤ 4096 for tablets) and draw into `gl.drawingBufferWidth/Height`. three.js:
+- [ ] **Size before the first woven frame** (1.59.0+): the store is already side-by-side when the layer
+      delivers its first frame. Size it in the same task as `addScene`, never after an `await` or in a
+      later `requestAnimationFrame`. Take the first size from `wall.displayInfo` (sync; may be `null` or
+      `cached: true`, both fine), then refine once `handle.getDisplayInfo()` resolves:
+      `let viewInfo = wall.displayInfo; size(); const handle = wall.addScene(…);
+      handle.getDisplayInfo().then((i) => { viewInfo = i; size(); })`. A store still shaped for flat on
+      those frames gives each eye half the scene; the SDK warns once (`[inline3d] this woven scene
+      canvas's store is …`) and holds `firstWoven` until it is right, but never resizes it for you.
+- [ ] **Buffer = 2 × eye width, from `sceneBufferSize`** (core, 1.58.0+): an `addScene` page sizes its
+      canvas with `sceneBufferSize(canvas, { sbs, viewScale: sbs ? viewInfo : null })` (set
+      `canvas.width/height`, or `renderer.setSize(s.width, s.height, false)`, only when they change;
+      camera aspect from `s.eyeWidth / s.eyeHeight`), never `clientWidth × devicePixelRatio × 2`. Per eye
+      it is window device px × the runtime's view scale (dpr ≤ 2 without one), fitted to the GL limits
+      and the browser's drawing-buffer area cap. Hand-rolled on an 8K panel at 300% it asks for
+      15360×4320; the browser silently shrinks the buffer, the eyes land off-centre and one eye shows
+      both images. The SDK's `the browser clamped this canvas's drawing buffer` warning is that bug.
+      Draw into `gl.drawingBufferWidth/Height`. three.js:
       `renderer.setPixelRatio(1)` when you use `getViewport()`.
 - [ ] **Validate before you clear**: skip the clear when `views.length < 2` or a viewport is `null`;
       repaint the last good frame. Copy `XRViewport` / `XRView` fields by name (their fields are
@@ -150,10 +170,25 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
   drop legacy calls. The checker scrolls the page and reports chrome that passes over a tile.
 - HUD text and values: HTML beside or over the tile, readable size, not drawn into the 3D scene.
 
+**Input: tap, pointer, tracked hands.** Taps, clicks and drags are ordinary pointer events on the
+canvas, in 3D and 2D alike: `canvas.addEventListener('pointerdown', …)`. There are no controllers and
+no `select` events. **Tracked hands** (DisplayXR Browser 1.8.0+ on Windows with a hand tracker; none
+anywhere else, so always give the same action a tap too) come from `@displayxr/inline3d/hands`
+(import-map entry `…/inline3d@1.60.2/js/inline3d-hands.js`; types in `hands.d.ts`):
+- a model or splat: `addModel(wall, canvas, url, { hands: true })` (pinch to turn, two pinches to zoom);
+- your own scene: `watchHands(wall, (f) => { const h = f.right || f.left; … })` after `addScene`.
+  Each frame gives `f.left` / `f.right` (null when not seen), with `wrist`, `thumbTip`, `indexTip`,
+  `joint(name)` and `palmLength`, in metres in the rig frame (the eye views' frame: x right, y up, z
+  toward the viewer). "Hold up your hand" = a hand appears (`h && !hadHand`); follow it with
+  `h.wrist[0]`; a pinch = `PinchDetector` on the thumb-to-index distance.
+  `f.gate` is `'available'` or why hands are withheld (`'camera-rig'`, `'not-fullscreen'`,
+  `'scaled-rig'`, …): use a display rig. The checker simulates no hands, so a PASS says nothing
+  about the hand path: say so, and ask the user to try it on the display.
+
 ## 6. Pins (exact versions, no `^`)
 
-`@displayxr/inline3d` **1.57.1**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
-range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.57.1/js/inline3d.js`,
+`@displayxr/inline3d` **1.60.2**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
+range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.60.2/js/inline3d.js`,
 `https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs`,
 `https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js`. If a newer SDK is installed, its
 `CHANGELOG.md` says what changed; prefer the installed version's docs over this list.
@@ -161,7 +196,7 @@ range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr
 ## 7. Before you say done: run the checker
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.4 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.8 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
 ```
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;

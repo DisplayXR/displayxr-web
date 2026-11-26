@@ -42,6 +42,13 @@ await step('check_url refuses localhost', async () => {
   if (!r.isError) throw new Error('expected an error');
 });
 if (withChecks) {
+  // Poly Pizza's Cloudflare refuses this server's datacenter IPs: the asset check must retry on the worker.
+  await step('check_asset_url (CDN that refuses servers, worker fallback)', async () => {
+    const r = await finish(await call('check_asset_url', { url: 'https://static.poly.pizza/34eed102-48f0-43dd-bc6f-ef7a6dfddfbb.glb' }));
+    const t = r.content[0].text;
+    if (/HTTP 403/.test(t)) throw new Error(t);
+    return t.split('\n').pop();
+  });
   await step('check_url (public sample)', async () => {
     const r = await finish(await call('check_url', { url: SAMPLE }));
     return r.content[0].text.split('\n').filter((l) => /verdict|FAIL|WARN/.test(l)).join(' | ');

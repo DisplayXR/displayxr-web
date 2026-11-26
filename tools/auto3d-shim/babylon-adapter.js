@@ -22,7 +22,7 @@
 // engine does not know about: Babylon picks in store pixels (CreatePickingRayToRef: pointer CSS px /
 // hardware scaling level, against getRenderWidth()), so the store must stay what engine.resize() makes
 // of the level. Capped by the zero-copy width (maxSbsWidth, 3072), the context's limits and the area cap
-// (maxSbsArea) with one factor, as the core does (fitEyes, v0.7.10). A fullscreen GUI laid out in pixels keeps the page's density (it
+// (maxSbsArea) with one factor, as the core does (fitEyes, v0.7.11). A fullscreen GUI laid out in pixels keeps the page's density (it
 // would shrink), and a page that sizes its store itself (not engine.resize()) is left as it is.
 //
 // Handedness: the runtime's poses and projections are GL's (right-handed, the eye looks down -Z, clip

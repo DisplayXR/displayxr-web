@@ -62,7 +62,7 @@ function dxrGuard(core) {
     }).observe({ type: 'resource', buffered: true });
   } catch (e) { /* no Resource Timing: the readyState test alone */ }
   const loading = (t) => document.readyState !== 'complete' || (lastResourceEnd > 0 && t - lastResourceEnd < T.guardLoadQuietMs);
-  api.loading = loading; // also the core's scale decision (v0.7.10): it waits for a quiet page
+  api.loading = loading; // also the core's scale decision (v0.7.11): it waits for a quiet page
 
   // A hidden page runs no frames (or throttled ones): whatever was measured around it is not the
   // conversion's cost. Start over, 2D ring included.

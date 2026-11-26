@@ -393,7 +393,7 @@ the runtime's recommended view scale**.
 ```js
 import { sceneBufferSize } from '@displayxr/inline3d';
 
-let viewInfo = null; // handle.getDisplayInfo(), once the layer is live (null until then: fine)
+let viewInfo = wall.displayInfo; // 1.59.0+: the last read on this origin, or null (fine)
 function sizeSBS() {
   const s = sceneBufferSize(canvas, { sbs: woven, viewScale: viewInfo, renderScale });
   const el = renderer.domElement;
@@ -402,9 +402,20 @@ function sizeSBS() {
   appCam.aspect = s.eyeWidth / s.eyeHeight; appCam.updateProjectionMatrix();
   replayLastGood();                                           // repaint NOW, not next frame
 }
-// after addScene():
+woven = true; sizeSBS();               // same task as addScene(), BEFORE its first frame
+const handle = wall.addScene(canvas, onXRFrame, { onResize: sizeSBS /* … */ });
 handle.getDisplayInfo().then((info) => { viewInfo = info; sizeSBS(); }).catch(() => {});
 ```
+
+**Size before the first woven frame.** The store must already be side-by-side when the layer
+delivers its first frame: size it in the same task as `addScene`, never after an `await` or in a
+later `requestAnimationFrame`. A store that is still shaped for flat (1:1 to the box) on those
+frames gives each eye half the scene, which reads as a broken 3D effect for the first moments of
+the app. The SDK checks the shape every stereo frame (1.59.0+): it warns once (`[inline3d] this
+woven scene canvas's store is …`), says in one `console.debug` line how many frames were wrong
+once it is right, and holds `firstWoven` until it is right, so a cover released on `firstWoven`
+hides those frames (capped: `reason: 'store-capped'` four holds in). It never resizes your store.
+A later step from the cached to the live view scale changes resolution only, never the image.
 
 **Why not `clientWidth × devicePixelRatio × 2`.** It is what a tablet forgives and a big panel
 does not. Measured on an 8K panel at 300% scaling (dpr 3, DisplayXR Browser 1.10.6): a full-screen

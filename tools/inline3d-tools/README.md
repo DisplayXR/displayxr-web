@@ -9,7 +9,7 @@ same operations. [`AGENTS.md`](AGENTS.md) is the matching authoring checklist fo
 Needs Node ≥ 18. `check` also needs a local Chrome or Chromium. Always run an **exact version**:
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.4 <command> ...
+npx -y @displayxr/inline3d-tools@0.1.8 <command> ...
 ```
 
 ## CLI
@@ -47,7 +47,7 @@ environment only and are redacted from every tool result.
 ### Claude Code
 
 ```sh
-claude mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.4 mcp
+claude mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.8 mcp
 ```
 
 or in a project's `.mcp.json`:
@@ -57,7 +57,7 @@ or in a project's `.mcp.json`:
   "mcpServers": {
     "inline3d-tools": {
       "command": "npx",
-      "args": ["-y", "@displayxr/inline3d-tools@0.1.4", "mcp"]
+      "args": ["-y", "@displayxr/inline3d-tools@0.1.8", "mcp"]
     }
   }
 }
@@ -77,7 +77,7 @@ needs you to approve running it outside the sandbox. In `~/.codex/config.toml` (
 ```toml
 [mcp_servers.inline3d-tools]
 command = "npx"
-args = ["-y", "@displayxr/inline3d-tools@0.1.4", "mcp"]
+args = ["-y", "@displayxr/inline3d-tools@0.1.8", "mcp"]
 # cwd = "/path/to/your/project"   # relative paths in tool calls resolve here
 startup_timeout_sec = 30          # first run downloads the package (default 10)
 tool_timeout_sec = 180            # a page check takes 10-60 s; generation can take minutes (default 60)
@@ -85,11 +85,11 @@ tool_timeout_sec = 180            # a page check takes 10-60 s; generation can t
 # env_vars = ["MESHY_API_KEY", "TRIPO_API_KEY", "OPENAI_API_KEY"]
 ```
 
-or `codex mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.4 mcp`. The
+or `codex mcp add inline3d-tools -- npx -y @displayxr/inline3d-tools@0.1.8 mcp`. The
 [`displayxr-inline3d-codex` plugin](https://github.com/DisplayXR/displayxr-web/tree/main/plugins/displayxr-inline3d-codex)
 sets the server up for you in Codex.
 
-**Fetch the package once before the first Codex session:** `npx -y @displayxr/inline3d-tools@0.1.4 --version`.
+**Fetch the package once before the first Codex session:** `npx -y @displayxr/inline3d-tools@0.1.8 --version`.
 Codex starts MCP servers when a session starts and can stop one before a cold `npx` download
 finishes. The interrupted download leaves a broken entry in npm's `_npx` cache (`node_modules`
 without a `package.json`), and from then on the server fails at every start with
@@ -109,7 +109,7 @@ In `~/.cursor/mcp.json` (all projects) or `.cursor/mcp.json` (one project):
   "mcpServers": {
     "inline3d-tools": {
       "command": "npx",
-      "args": ["-y", "@displayxr/inline3d-tools@0.1.4", "mcp"]
+      "args": ["-y", "@displayxr/inline3d-tools@0.1.8", "mcp"]
     }
   }
 }
@@ -151,7 +151,7 @@ forwarding). Never paste a key into an agent chat.
 ## check
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.4 check <url | dir | page.html> [--root <dir>] [--max-texture 4096] [--json] [--out report.json]
+npx -y @displayxr/inline3d-tools@0.1.8 check <url | dir | page.html> [--root <dir>] [--max-texture 4096] [--json] [--out report.json]
 ```
 
 Needs Node ≥ 18 and a local Chrome (`CHROME=/path/to/chrome` overrides the default location). It

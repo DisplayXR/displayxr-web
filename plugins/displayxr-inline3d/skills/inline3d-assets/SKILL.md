@@ -14,19 +14,29 @@ Tools, in the order to reach for them:
 
 | Tool | When | Install |
 |---|---|---|
-| `inline3d-tools assets` | always, last | `npx -y @displayxr/inline3d-tools@0.1.4 assets` (exact pin, from npm; Node only) |
+| `inline3d-tools assets` | always, last | `npx -y @displayxr/inline3d-tools@0.1.8 assets` (exact pin, from npm; Node only) |
 | glTF-Transform CLI | glTF/GLB in, glTF/GLB out: inspect, resize, compress, simplify, centre | `npx -y @gltf-transform/cli@4.3.0` (pinned; nothing installed globally) |
 | Blender (headless) | any other format (FBX, OBJ, STL, PLY, DAE, .blend), units/axis fixes, heavy decimation | **only if already installed**; never install it |
-| `inline3d-tools gen` | no asset exists and the user wants one generated | `npx -y @displayxr/inline3d-tools@0.1.4 gen`; needs the user's own API key in the environment; every call is paid and needs the user's yes |
+| `inline3d-tools gen` | no asset exists and the user wants one generated | `npx -y @displayxr/inline3d-tools@0.1.8 gen`; needs the user's own API key in the environment; every call is paid and needs the user's yes |
 
 ## 1. Get it
 
 In order of preference:
 
 1. **The user's own asset** (in the project, or a path they gave). Record it:
-   `npx -y @displayxr/inline3d-tools@0.1.4 gen provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
-2. **A library asset with a clear licence** (CC0 / CC-BY, e.g. the Khronos glTF sample models,
-   Poly Haven). Record the URL, author and licence; CC-BY needs visible credit on the page.
+   `npx -y @displayxr/inline3d-tools@0.1.8 gen provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
+2. **A library asset with a clear licence** (CC0 / CC-BY). Record the URL, author and licence;
+   CC-BY needs visible credit on the page (credit CC0 too, it costs nothing). Where to look:
+   - **Poly Pizza** (`https://poly.pizza`, low-poly, many CC0 and **rigged and animated** characters
+     and animals by Quaternius: dinosaurs, pets, people, robots). Search it with
+     `https://poly.pizza/api/search/<word>` (JSON: `title`, `creator`, `licence`, `url`); the
+     model page `https://poly.pizza<url>` carries the GLB as `https://static.poly.pizza/<uuid>.glb`
+     (CORS open, loads straight into a page). Example: T-Rex by Quaternius, CC0,
+     `https://static.poly.pizza/34eed102-48f0-43dd-bc6f-ef7a6dfddfbb.glb` (336 KB; clips Idle, Walk,
+     Run, Jump, Attack, Death).
+   - **Khronos glTF sample models** (`https://github.com/KhronosGroup/glTF-Sample-Assets`, served
+     from `raw.githubusercontent.com`): test and showcase models (Fox is rigged and animated).
+   - **Poly Haven** (`https://polyhaven.com`): CC0 props, textures and HDRIs, no characters.
 3. **A placeholder you build** (primitives in three.js/PlayCanvas) when nothing fits and the user
    did not ask for generation. Say so in your notes.
 4. **Generation**, only when the user asked for it or agreed. See §4.
@@ -54,7 +64,7 @@ fetches decoders from a CDN). Other fixes: `$GT simplify in.glb out.glb --ratio 
 **Anything else (Blender, if present).** Detect it, don't install it:
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.4 assets prep in.fbx out.glb [--metres 0.01] [--decimate 0.5] [--blender <path>]
+npx -y @displayxr/inline3d-tools@0.1.8 assets prep in.fbx out.glb [--metres 0.01] [--decimate 0.5] [--blender <path>]
 ```
 
 It looks for Blender (`--blender`, `$BLENDER`, `PATH`, the default install location), never installs
@@ -71,8 +81,8 @@ helmet is ~0.3 m, not 2 m).
 ## 3. Check it (before the page uses it)
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.4 assets out.glb            # tablet budget (default)
-npx -y @displayxr/inline3d-tools@0.1.4 assets out.glb --target desktop
+npx -y @displayxr/inline3d-tools@0.1.8 assets out.glb            # tablet budget (default)
+npx -y @displayxr/inline3d-tools@0.1.8 assets out.glb --target desktop
 ```
 
 It reports: missing external files, decoders the page must provide, triangles (both eyes draw
@@ -87,7 +97,7 @@ skill §7): the asset check is about the file, the page check about how it is sh
 ## 4. Generate it (optional, paid, the user's keys)
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.4 gen providers     # which adapters have a key (names only)
+npx -y @displayxr/inline3d-tools@0.1.8 gen providers     # which adapters have a key (names only)
 ```
 
 Adapters: `meshy` and `tripo` (text-to-3d, image-to-3d → GLB), `openai` (image → PNG, for
@@ -108,7 +118,7 @@ textures, posters and backdrops). Each reads its key from the environment (`MESH
   shippable.
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.4 gen run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
+npx -y @displayxr/inline3d-tools@0.1.8 gen run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
 ```
 
 ## 5. ASSETS.md

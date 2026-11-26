@@ -5,6 +5,106 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## 1.60.2 — 2026-11-26
+
+### Fixed — lift: a black Gaussians scene is reported, not opened (web#341)
+
+- When the runtime's Gaussians converter was handed a black frame (a runtime readback without
+  its keyed mutex, runtime #2830), Explore opened a scene of black splats. The native result is
+  now checked: when 99 % of its splats are darker than 0.08 luminance (read from `f_dc_*` by name,
+  any PLY layout) `generateLift` rejects with `NativeLiftError` code `black` and the chip says
+  "3D failed: the frame came out black". Explore stays on offer for the next frame.
+- `js/lift/native.js` gains `plyColourStats(u8)` and `BLACK_SCENE_LUMA` (internal; not re-exported from `./lift`).
+
+### Fixed — lift: Explore no longer hangs when the runtime's Gaussians converter fails (web#341)
+
+- With a Gaussians converter installed but unable to load, Explore paused the video and then
+  waited for minutes: caps list `gaussians` for any installed converter, ready or not, and the
+  browser reads a failed job as not-ready until its own 180 s deadline. The native Gaussians wait
+  is now bounded (`NATIVE_GAUSSIANS_TIMEOUT_MS`, 90 s) and ends in a `timeout` error. The chip
+  counts the wait ("Making 3D… 12s") so it never looks frozen.
+- After the runtime's converter fails or times out, the chip flashes why and keeps Explore
+  greyed out with the reason as its tooltip. `canExplore` reads false and `explore()` emits a
+  non-fatal `unavailable` error. The block lifts after 60 s (`EXPLORE_RETRY_MS`), or at once
+  when the browser reports that converter ready.
+- `liftCapabilities()` passes through an optional `gaussiansState: {state, reason?}` for
+  browsers that report the Gaussians task's own readiness. `failed` greys Explore out, and any
+  other state lifts the block. No browser sends it yet.
+- A page-supplied lift provider is untouched.
+
+## 1.60.1 — 2026-11-25
+
+### Fixed — lazy mode: a display read right after add*() no longer fails
+
+- With `createInline3D()`'s default `lazy: true`, a tile has no layer until the viewport observer
+  first reports it on screen, a few ms after `add*()` returns. `handle.getDisplayInfo()` (and the
+  other layer reads) made in that gap rejected with "needs a live weave layer", although the layer
+  came up immediately after. That is the call site docs/porting-three-js-apps.md §4 recommends, so a
+  lazy page could never refine its store from the view scale, and 1.59.0's store-shape guard then
+  held firstWoven to its cap. A read made before the first report now waits for it (capped like the
+  first-frame wait): on screen it answers, off screen it rejects as before. Found by the
+  inline3d-tools checker on the starter template.
+
+## 1.60.0 — 2026-11-25
+
+### Fixed — the store-shape guard (1.59.0) misfired on a display whose views halve the width only
+
+- On a display with recommendedViewScaleX / Y = 0.5 / 1 (a 2x1 stereo mode at 960x1080 per view on a
+  1920x1080 panel) the correct side-by-side store is exactly box-shaped, and 1.59.0 warned that it was
+  "still shaped for FLAT" and held firstWoven. The check now expects each eye tile to have the box
+  aspect times the display's recommendedViewScaleX / Y, and does not judge a layer that can report
+  its display until the SDK has read it. A cached display info (another page's) also allows the
+  panel-aspect shape, so a stale cache never fires it. Found by the inline3d-tools checker's fake
+  panel. Leia SR displays (0.5 x 0.5) were not affected.
+
+
+### Added — `@displayxr/inline3d/lift` ("Convert to 3D", experimental, preview tier)
+
+- **The lift module lands on main** (was the `feat/lift` branch, displayxr-web#289). `lift(element, opts)`
+  converts a `<video>` or `<img>` in place in the DisplayXR Browser: the runtime's conversion stack does
+  the work (live conversion, and Gaussians for Explore), `js/lift/native.js` is the only provider, and
+  no model or ONNX Runtime ships with the SDK. A video gets a chip (Explore / Exit; ↓ SOG while
+  exploring); Explore turns the paused frame into a Gaussian scene with a bounded drag orbit, rendered by
+  the PlayCanvas splat viewer. Types in `lift.d.ts`; guides in `docs/lift.md`, `docs/lift-explore.md`
+  and `docs/lift-builtin.md`. `tools/lift-builtin` (`npm run build:lift-builtin`) builds the browser's
+  built-in bundle. This replaces the placeholder `js/lift/index.js`, so `./call/full` now gets a real
+  `lift` (2D participants can be lifted where a converter exists).
+- The chip shows Explore only when a converter makes Gaussians, and re-reads the converter caps when
+  the browser re-reports the lift state READY (#341).
+
+## 1.59.0 — 2026-11-24
+
+### Added — `wall.displayInfo` (synchronous display info)
+
+- The last `getDisplayInfo()` answer this document read, else the one the last page on this
+  origin read (a frozen copy of the six numeric fields, `cached: true`, in `localStorage`), else
+  `null`. The SDK now reads the display itself on the first live layer, and concurrent reads on
+  one layer share one browser call. A display read needs a layer that has delivered a frame, so
+  this is how a page sizes its FIRST woven frames at the view scale:
+  `sceneBufferSize(canvas, { sbs: true, viewScale: wall.displayInfo })` in the same task as
+  `addScene`. The hello-cube and camera-rig samples do.
+
+### Fixed — the first woven frames of a wrong-shaped scene store
+
+- Every stereo frame, a page-sized scene canvas (`addScene` without `bufferClamped`) is checked:
+  each eye tile (`getViewport`) must have the canvas box's aspect. A store still shaped for flat
+  on the first woven frames (sized after an `await` or in a later rAF) gave each eye half the
+  scene until the page caught up. The SDK warns once, reports the count of wrong frames in one
+  `console.debug` line when it is right, and never resizes the store.
+- `firstWoven` waits while the store is wrong and runs its hold from when it became right (with
+  `wovenState`, a 'woven' read counts only `WOVEN_STATE_LAG_FRAMES` frames after the fix). Capped
+  at four holds: `woven: true, reason: 'store-capped'`.
+- Docs (porting §4, llms.txt): size the store before the first woven frame, in the same task as
+  `addScene`.
+
+## 1.58.1 — 2026-11-24
+
+### Fixed — `sceneBufferSize` ignores `viewScale` for the flat store (`sbs: false`)
+
+The recommended view scale belongs to the 3D mode (half the width per eye on a Leia panel). A page
+that kept passing it after falling back to 2D got a flat canvas at half resolution. The mono store
+is now always the full window (CSS box × devicePixelRatio ≤ 2), whatever `viewScale` says.
+
 ## 1.58.0 — 2026-11-24
 
 ### Added — `sceneBufferSize(canvas, opts)` sizes an `addScene` canvas the way a native app does (core)

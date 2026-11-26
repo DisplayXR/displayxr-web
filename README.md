@@ -200,6 +200,23 @@ flash, and releasing a poster on `handle.firstWoven`. A page that swaps content 
 carousel, a catalogue): [`docs/content-lifecycle-rules.md`](docs/content-lifecycle-rules.md).
 Three.js glue (an off-axis `EyeCamera`) in [`js/inline3d-three.js`](js/inline3d-three.js).
 
+## Convert to 3D (`./lift`, experimental)
+
+`lift(element)` turns an ordinary `<video>` or `<img>` into 3D in place: a playing video is
+converted live by the DisplayXR runtime (through the DisplayXR Browser); on *Explore* (or for a still)
+the frame is lifted once into a Gaussian scene you can orbit by dragging. The conversion is the
+runtime's: the SDK carries no model, no ONNX Runtime and no in-page converter, and `lift()` rejects
+(`NativeLiftError`, `unavailable`) where the runtime offers none.
+
+```js
+import { lift } from '@displayxr/inline3d/lift';
+const h = await lift(document.querySelector('video'));
+```
+
+The explore view needs the optional peer `playcanvas` (the PlayCanvas splat viewer), and a lifted
+scene downloads as a `.sog` with its camera block (`handle.downloadSog()`). Everything — options,
+the provider contract, the runtime wire formats and known issues — is in [`docs/lift.md`](docs/lift.md).
+
 ## What's here
 
 ```
@@ -213,6 +230,8 @@ samples/
   model/              a glTF mesh, a mesh+splat scene, and a Draco-COMPRESSED glTF (PlayCanvas; ?engine=three)
   player/             a media player — SDK transport (play/pause/seek/mute), one call, built on
                       addVideo; default (SBS) and format:'mono' side by side
+  lift/               "Convert to 3D": a video lifted live, and explorable when paused; a photo lifted
+                      to an explorable scene (the runtime converts: open it in the DisplayXR Browser)
   composition/        the 14-case 2D/3D overlap matrix — demo AND standing hardware regression
                       surface; red cases ship red (see samples/README.md)
 vendor/draco/         three's Draco decoder, served for samples/model (compressed glTF needs it)
@@ -239,6 +258,7 @@ js/
   inline3d-player.js  preview: addPlayer() — a media player window built on addVideo (stereo
                       paint, display modes and the fallback are inherited) + an SDK transport bar;
                       attachPlayer() — the same player on a PlayCanvas splat handle's setVideo
+  lift/               experimental: lift() — "Convert to 3D" (./lift): native.js (the runtime's converter), providers/, explore
 docs/
   authoring-inline-3d.md   the authoring guide
   authoring-motion-and-effects.md

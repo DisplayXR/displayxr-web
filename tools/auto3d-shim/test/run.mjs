@@ -220,7 +220,7 @@ async function runCase(browser, base, c) {
     // A WebGPU page reads back EMPTY once its frame is presented: it supplies window.__grabFrame(),
     // which draws one frame and reads it in its drawing task (pages/pc-webgpu-*.html).
     const grab = () => page.evaluate(() => window.__grabFrame ? window.__grabFrame() : new Promise((res) => requestAnimationFrame(() => setTimeout(() => {
-      const src = document.querySelector('canvas:not([data-dxr-auto3d-cover])');
+      const src = window.__fakeXRCanvas ? window.__fakeXRCanvas() : document.querySelector('canvas:not([data-dxr-auto3d-cover])');
       const w = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width').get.call(src);
       const h = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height').get.call(src);
       const c2 = document.createElement('canvas'); c2.width = w; c2.height = h;
@@ -291,7 +291,7 @@ async function runCase(browser, base, c) {
         const oc = window.__outCover, w = 128, h = 72;
         const img = new Image(); img.src = oc.src; await img.decode();
         const px = (src) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(src, 0, 0, w, h); return g.getImageData(0, 0, w, h).data; };
-        let mono = document.querySelector('canvas:not([data-dxr-auto3d-cover])');
+        let mono = window.__fakeXRCanvas ? window.__fakeXRCanvas() : document.querySelector('canvas:not([data-dxr-auto3d-cover])');
         if (window.__grabFrame) { const g = await window.__grabFrame(); mono = new Image(); mono.src = g.png; await mono.decode(); } // WebGPU: read in the drawing task
         const a = px(img), b = px(mono);
         const lum = (d, i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
@@ -307,7 +307,7 @@ async function runCase(browser, base, c) {
     }
     // A page that renders on demand is asked for one repaint by the restore; read what is on the canvas now.
     const g = await page.evaluate(() => window.__grabFrame ? window.__grabFrame() : new Promise((res) => requestAnimationFrame(() => setTimeout(() => {
-      const src = document.querySelector('canvas'); const c2 = document.createElement('canvas'); c2.width = src.width; c2.height = src.height;
+      const src = window.__fakeXRCanvas ? window.__fakeXRCanvas() : document.querySelector('canvas'); const c2 = document.createElement('canvas'); c2.width = src.width; c2.height = src.height;
       const x = c2.getContext('2d', { willReadFrequently: true }); x.drawImage(src, 0, 0);
       const d = x.getImageData(0, 0, c2.width, c2.height).data; let s = ''; for (let i = 0; i < d.length; i += 32768) s += String.fromCharCode.apply(null, d.subarray(i, i + 32768));
       res({ w: c2.width, h: c2.height, b64: btoa(s) });
@@ -322,8 +322,10 @@ async function runCase(browser, base, c) {
     } catch { again = false; }
     after.reenable = { again, ms: Date.now() - t1, ...(await page.evaluate(() => ({ sessions: window.__fakeXR.sessions.length, frozen: !!window.__frozen, pageFrames: window.__pageFrames ?? null }))) };
   }
+  // #339: what the browser held each time a layer was created (the go-live of every activation).
+  const goLive = c.commits ? await page.evaluate(() => window.__fakeXR.layers.map((l) => ({ store: l.storeAtCreate, committed: l.committedAtCreate }))) : null;
   await ctx.close();
-  return { c, ok, ms: Date.now() - t0, state, hud, fake, pixels, log, after, display, probe, stall: stall || { from: NaN, ms: 0 } };
+  return { c, ok, ms: Date.now() - t0, state, hud, fake, pixels, log, after, display, probe, goLive, stall: stall || { from: NaN, ms: 0 } };
 }
 
 // Is a small (128x72) committed frame a side-by-side pair? The fake's skew shifts the right half
@@ -359,6 +361,16 @@ function rawPairAtClose(close) {
   const res = frames.map((f) => pairResidual(snapPx(f)));
   const bad = res.map((e, i) => ({ i, e, covered: frames[i].covered })).filter((f) => f.e < cut && !f.covered);
   return { frames: frames.length, bad, pairBase, monoBase, discriminates: pairBase < 0.7 * monoBase || !isFinite(monoBase), atClose: res[0] };
+}
+
+// #339, the go-live in the commit model: new XRDisplayLayer() reaches the browser ahead of the task's
+// commit and an old canvas is joined at once, so the frame committed before each layer is the first
+// one the browser can weave. It must be the side-by-side store, under the cover: a mono frame there
+// is woven as a pair (each eye half the picture, twice as wide: one stretched frame on the panel).
+function goLiveCommitted(layers) {
+  const okOne = (l) => l.committed && l.committed.covered && l.committed.w === l.store.w && l.committed.h === l.store.h;
+  const one = (l) => (l.committed ? `${l.committed.w}x${l.committed.h} ${l.committed.covered ? 'covered' : 'UNCOVERED'}` : 'nothing committed') + ` vs store ${l.store.w}x${l.store.h}`;
+  return { n: layers.length, bad: layers.filter((l) => !okOne(l)).length, detail: layers.map(one).join(' | ') };
 }
 
 // ------------------------------------------------------------ assertions
@@ -424,7 +436,7 @@ function check(r, results) {
   const rig = fake.lastRig || {};
   const d = R.convergence;
   // An open scene's fixed focus is at REAL scale: metersToVirtual 1 (depth 0.5 = the real IPD: ipd/parallax 1).
-  // v0.7.10: m2v is set once per activation from the distance the scale was decided at (R.scale.d), then
+  // v0.7.11: m2v is set once per activation from the distance the scale was decided at (R.scale.d), then
   // frozen; the convergence (diopters) stays live.
   const m2v = R.convergenceSource === 'fixed' ? 1 : (0.5 * ((R.rigScale && R.rigScale.d) || d)) / 0.5;
   const rigOk = rig.type === 'camera' && Math.abs(rig.verticalFov - (c.fovDeg * Math.PI) / 180) < 1e-6 && Math.abs(rig.convergenceDiopters - 1 / d) < 1e-3 * (1 / d) &&
@@ -446,7 +458,7 @@ function check(r, results) {
       const m = mae(other.pixels.px, pixels.px);
       t(`parity with case ${c.parityOf} (byte-identical frame)`, m === 0, `MAE ${m.toFixed(3)}, ${diffCount(other.pixels.px, pixels.px)} bytes differ of ${pixels.px.length}`);
       const oR = other.state.renderers.find((x) => x.active);
-      // v0.7.10: the scale is set once and frozen (m2v from the distance it was decided at), and the
+      // v0.7.11: the scale is set once and frozen (m2v from the distance it was decided at), and the
       // estimator samples faster until then, so the scale fields and the convergence's last digits no
       // longer match the pre-split script, which followed every estimate: compared without the two
       // scale fields, convergence within 1 %.
@@ -484,7 +496,7 @@ function check(r, results) {
   }
   if (c.displayAfter) {
     const D = r.display, g = D && D.rig, S = D && D.state.renderers.find((x) => x.active);
-    // v0.7.10: the scale distance (rigScale.d, frozen once decided) sets m2v and the display portal.
+    // v0.7.11: the scale distance (rigScale.d, frozen once decided) sets m2v and the display portal.
     const sd = (R) => (R && R.rigScale && R.rigScale.d) || (R && R.convergence);
     const dd = S ? sd(S) : NaN, fov = (c.fovDeg * Math.PI) / 180;
     const want = 2 * dd * Math.tan(fov / 2);
@@ -518,6 +530,11 @@ function check(r, results) {
     t('depth stored per site PER RIG: localStorage and a reload give camera 0.4, display 0.8', rl && near(rl.depths.camera, 0.4) && near(rl.depths.display, 0.8) && st.depths && near(st.depths.camera, 0.4) && near(st.depths.display, 0.8) && !('depth' in st),
       `stored ${D && D.again.stored}; after reload ${JSON.stringify(rl)}`);
   }
+  if (c.commits && r.goLive) {
+    const g = goLiveCommitted(r.goLive);
+    if (c.goLiveExpect === 'mono') t("A/B (bindAfterCommit false, v0.7.9's order): the frame committed before each new layer is the page's mono picture, uncovered: the check sees #339", g.n >= 1 && g.bad === g.n, g.detail);
+    else t('go-live: the frame committed before each new layer is the side-by-side store under the cover (commit model, #339)', g.n >= 1 && g.bad === 0, g.detail);
+  }
   // c.unstableBytes: a case's documented allowance (bjs-vp: one pixel steps 1 LSB once as reading starts, then stays bit-stable).
   t('frame stable across two reads' + (c.unstableBytes ? ` (≤ ${c.unstableBytes} bytes)` : ''), diffCount(pixels.px, pixels.px2) <= (c.unstableBytes || 0), `${diffCount(pixels.px, pixels.px2)} bytes differ`);
   if (c.alsoCheck) c.alsoCheck(r, t, HELPERS, R); // a case's own assertions ON TOP of the generic ones
@@ -537,6 +554,8 @@ function checkFlip(r, t, A) {
   const L = r.fake.layers;
   t('each perspective phase is a fresh session + layer (released on ortho)', L.length >= 3 && L.slice(0, -1).every((l) => l.closedAt !== null), `layers ${L.length}, closed ${L.filter((l) => l.closedAt !== null).length}`);
   t('so each fresh layer gets the full join-window cover', L.length >= 2 && L.every((l) => l.coverAtCreate), `cover up at layer creation: ${L.map((l) => l.coverAtCreate).join(', ')}`);
+  const gl = goLiveCommitted(L.map((l) => ({ store: l.storeAtCreate, committed: l.committedAtCreate })));
+  t('go-live: the frame committed before each new layer is the side-by-side store under the cover (commit model, #339)', gl.n >= 2 && gl.bad === 0, gl.detail);
   const rps = r.fake.closes.map(rawPairAtClose);
   t('camera switch: no raw side-by-side frame once each layer is closed (commit model)', rps.length >= 2 && rps.every((x) => x.discriminates && x.bad.length === 0),
     rps.map((x) => `at close ${x.atClose.toFixed(2)} (pair ${x.pairBase.toFixed(2)}, mono ${x.monoBase.toFixed(2)}), raw pairs [${x.bad.map((b) => b.i).join(', ')}]`).join(' | '));
@@ -547,7 +566,7 @@ function checkFlip(r, t, A) {
 // What a case's own run() / check() / alsoCheck() may use. Case hooks: before(page) runs before
 // page.goto; probe (a page function) is evaluated right after settling (r.probe); alsoCheck(r, t, h, R)
 // adds assertions after the generic 'convert' ones (R = the active renderer).
-const HELPERS = { sleep: (ms) => new Promise((r) => setTimeout(r, ms)), lum, mae, diffCount, bestShift, pairResidual, rawPairAtClose, W, H };
+const HELPERS = { sleep: (ms) => new Promise((r) => setTimeout(r, ms)), lum, mae, diffCount, bestShift, pairResidual, rawPairAtClose, goLiveCommitted, W, H };
 
 // ------------------------------------------------------------ main
 const only = process.argv.slice(2);

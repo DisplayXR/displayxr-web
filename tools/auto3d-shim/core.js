@@ -63,9 +63,10 @@ function dxrCore(cfg, cap, S) {
     holdMs: 1200,       // keep the cover this long after the layer exists (woven-canvas rules, rule 5)
     coverMaxMs: 5000,   // ... but never longer than this, stereo or not (R6: a display with nobody seated)
     releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
+    bindMaxMs: 500,     // go-live: create the layer this long after the flip at the latest, pair drawn or not (#339)
     rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
-    scaleSamples: 3,    // the rig's scale (m2v) is set ONCE per activation (v0.7.10): from this many consecutive estimator samples ...
+    scaleSamples: 3,    // the rig's scale (m2v) is set ONCE per activation (v0.7.11): from this many consecutive estimator samples ...
     scaleSpread: 0.1,   // ... within this fraction of their median, on a quiet page (no resource for guardLoadQuietMs) ...
     scaleMaxWaitMs: 8000, // ... or from what there is this long after the flip (a page that never stops loading). Flat until then.
     // OPEN scenes (no target, and every sampled bound holds the camera: a room-scale splat world, a
@@ -95,6 +96,7 @@ function dxrCore(cfg, cap, S) {
     gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
     pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
     pcPostEffects: true, // TEST ONLY (A/B): false keeps a PlayCanvas camera with legacy post effects (camera.postEffects) 2D; 'unsplit' converts it with ONE chain over the pair (v0.7.9 runs the chain per eye)
+    bindAfterCommit: true, // TEST ONLY (A/B): false creates the layer in the flip task, as v0.7.9 did (one stretched frame at go-live on the panel, #339)
     pcCameraFrame: true, // TEST ONLY (A/B): false leaves a PlayCanvas CameraFrame UNSPLIT under xrViews (both views through one post chain over the pair)
     chainMirror: true,   // TEST ONLY (A/B): false skips the three.js post-chain mirror probe (a chain that flips the picture left-right is then drawn pseudoscopic); 'force' draws every chain's eyes mirrored, whatever the probe found (dev, live: __dxrAuto3D.set('chainMirror', 'force'))
     pcTaaJitter: true,  // TEST ONLY (A/B): false applies no TAA jitter to the eye projections of a split CameraFrame
@@ -263,7 +265,7 @@ function dxrCore(cfg, cap, S) {
   function newState(engine, canvas, ad) {
     const st = {
       engine, canvas, ad,
-      active: false, pending: false, armed: null, tries: 0, nextTry: 0, lastWhy: null, flatReason: null,
+      active: false, pending: false, armed: null, binding: null, tries: 0, nextTry: 0, lastWhy: null, flatReason: null,
       session: null, ref: null, layer: null, layerAt: 0, rig: { position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } },
       V: [0, 1].map(() => ({ proj: new Float32Array(16), pose: new Float32Array(16) })),
       haveViews: false, near: NaN, far: NaN, R: null,
@@ -296,11 +298,11 @@ function dxrCore(cfg, cap, S) {
   // element's full device size (hello-world: eye 1298x1758, as a three.js page at setPixelRatio(2.5)).
   // The page keeps seeing its own mono store (the adapters virtualise it; restore() puts it back).
   // With no layout box (not rendered), the page's store stands in.
-  // Then ONE factor for both axes (v0.7.10; the eye keeps the SBS aspect, its store pixels keep their
+  // Then ONE factor for both axes (v0.7.11; the eye keeps the SBS aspect, its store pixels keep their
   // shape): the smallest of the zero-copy width cap (maxSbsWidth / 2 per eye), the context's limits on
   // each axis (surface.limit(): WebGL's MAX_TEXTURE_SIZE / MAX_RENDERBUFFER_SIZE / MAX_VIEWPORT_DIMS,
   // WebGPU's device maxTextureDimension2D; a 2× wide store is over them on many Android GPUs) and
-  // Chromium's drawing-buffer area cap (maxSbsArea). Before v0.7.10 each axis was capped on its own,
+  // Chromium's drawing-buffer area cap (maxSbsArea). Before v0.7.11 each axis was capped on its own,
   // so a capped width kept the full height: on an 8K panel at 300 % a maximised window got eyes of
   // 1536x3915, store pixels 2.5× taller than wide and 2.5× the pixels the width allows (#319,
   // arrival.space). The Babylon adapter sizes by the same rule (one factor through its hardware
@@ -465,31 +467,25 @@ function dxrCore(cfg, cap, S) {
     st.rigScale = null; st.rigScaleWait = null; // a new activation decides the rig's scale again (setScaleOnce)
     estimateConvergence(st, true);
     st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
-    const rig = buildRig(st, ad.rigFov(st));
-    try {
-      // T.noLayer is TEST ONLY: everything but the weave binding, so a 2D instance shows the raw pair.
-      st.layer = T.noLayer ? null : new XRDisplayLayer(st.session, st.canvas, HAS_RIG ? { viewRig: { ...rig } } : { virtualDisplayHeight: 0.24 });
-    } catch (e) {
-      warnOnce('layer', 'new XRDisplayLayer() failed — staying 2D', e);
-      stand(st, 'XRDisplayLayer refused the canvas');
-      st.nextTry = Infinity;
-      return;
-    }
-    st.layerAt = now(); st.coverDropAt = 0;
+    buildRig(st, ad.rigFov(st));
+    st.layer = null; st.layerAt = 0; st.coverDropAt = 0;
     st.stereo0 = st.stats.stereo; st.coverForced = false; // this activation's first stereo frame (status, forced cover)
-    guard.onFlip(st);
-    st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store (drew())
+    st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store after the layer (drew())
     st.displayOk = null;
     st.lastTwoAt = 0; st.noDisplay = false; st.nd = false; st.eyesOn = false; st.twoRun = 0; st.shortRun = 0;
     st.rampK = T.rampMs > 0 ? 0 : 1; st.ramp = null; // flat under the cover; fades in once it drops
     if (!st.cover && st.rampK < 1) startRamp(st, 1);
-    if (st.layer && !T.fakeViews) probeDisplay(st, st.layer); // fakeViews (tests) run where there is no display on purpose
     if (T.noLayer) {
-      // TEST ONLY: no layer means no session frames, so seed the fake eyes here and lift the cover
-      // on a timer — the canvas then shows the raw side-by-side pair a 2D instance can screenshot.
+      // TEST ONLY: everything but the weave binding, so a 2D instance shows the raw pair. No layer means
+      // no session frames, so seed the fake eyes here and lift the cover on a timer — the canvas then
+      // shows the raw side-by-side pair a 2D instance can screenshot.
+      st.layerAt = now();
+      guard.onFlip(st);
       if (T.fakeViews) { fakeViews(st); st.haveViews = true; }
       setTimeout(() => dropCover(st), T.holdMs);
     }
+    else if (T.bindAfterCommit === false) { makeLayer(st); if (!st.active) return; } // TEST ONLY: v0.7.9's order
+    else bindLayer(st); // once the side-by-side store and the cover are committed (#339)
     const session = st.session;
     const loop = (t, f) => {
       if (!st.active || st.session !== session) return;
@@ -502,6 +498,41 @@ function dxrCore(cfg, cap, S) {
     info(`live on ${desc(st.canvas)}: SBS ${st.R.W}x${st.R.H} (eye ${st.R.eyeW}x${st.R.eyeH}), rig ${HAS_RIG ? rigMode() : 'display (no setViewRig)'},`,
       `convergence ${st.conv.d.toPrecision(3)} units (${convText(st)}), depth ${depthOf()}`);
     st.convLogged = { d: st.conv.d, src: st.conv.src, via: st.conv.via }; st.convPrev = st.conv.d;
+    notify();
+  }
+  // The layer is created only once the side-by-side store AND the go-live cover have been COMMITTED:
+  // a frame drawn on the SBS store, then two animation frames (#339). new XRDisplayLayer() reaches the
+  // browser on its own channel, ahead of the task's commit (as layer.close() does at the stand), and a
+  // canvas the page has had for a while is joined at once. Created in the flip task, the browser could
+  // weave the frame committed before it: the page's MONO picture, with no cover over it yet. Woven as a
+  // pair, each eye got half of it at twice the width: one horizontally stretched frame on the panel at
+  // go-live (three.js keyframes, the PlayCanvas car configurator). Until then the session runs and the
+  // adapter draws the flat pair under the cover; the cover hold, the no-views timer and the guard all
+  // count from the layer, as before. A page that draws nothing gets its layer after bindMaxMs anyway.
+  function bindLayer(st) {
+    const session = st.session, b = (st.binding = { drawn: false, frames: 0, at: now() });
+    const step = () => {
+      if (st.binding !== b) return;
+      if (!st.active || st.session !== session) { st.binding = null; return; }
+      if ((b.drawn && ++b.frames >= 2) || now() - b.at >= T.bindMaxMs) { st.binding = null; makeLayer(st); return; }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+  function makeLayer(st) {
+    const rig = buildRig(st, st.ad.rigFov(st));
+    try {
+      st.layer = new XRDisplayLayer(st.session, st.canvas, HAS_RIG ? { viewRig: { ...rig } } : { virtualDisplayHeight: 0.24 });
+    } catch (e) {
+      warnOnce('layer', 'new XRDisplayLayer() failed — staying 2D', e);
+      stand(st, 'XRDisplayLayer refused the canvas');
+      st.nextTry = Infinity;
+      return;
+    }
+    st.layerAt = now(); st.coverDropAt = 0;
+    guard.onFlip(st);
+    st.drawnAt = 0; // the no-views timer starts at the first draw / replay on the SBS store from here
+    if (!T.fakeViews) probeDisplay(st, st.layer); // fakeViews (tests) run where there is no display on purpose
     notify();
   }
   // Back to 2D. Two orders:
@@ -524,7 +555,7 @@ function dxrCore(cfg, cap, S) {
     if (st.releasing) { release(st); return; } // a second stand while one is staged: finish it now
     const was = st.active || st.pending || !!st.armed;
     const wasLive = st.active; // only a live canvas was resized to the SBS store
-    st.active = false; st.pending = false; st.armed = null;
+    st.active = false; st.pending = false; st.armed = null; st.binding = null;
     st.haveViews = false;
     const staged = !!(opts && opts.staged) && wasLive && !!st.layer && !!st.session && st.canvas.isConnected;
     if (staged) {
@@ -554,7 +585,11 @@ function dxrCore(cfg, cap, S) {
     if (st.session) { const s = st.session; st.session = null; try { s.end().catch(() => {}); } catch (e) { /* ignore */ } }
   }
   // The adapter drew (or replayed) a frame on the live SBS store: starts the no-views timer once.
-  function drew(st) { if (st.active && !st.drawnAt) st.drawnAt = now(); }
+  function drew(st) {
+    if (!st.active) return;
+    if (st.binding) st.binding.drawn = true; // the SBS store holds a pair: the layer may follow (bindLayer)
+    else if (!st.drawnAt) st.drawnAt = now();
+  }
   // The adapter's mono frame after a staged stand has been drawn (PlayCanvas draws it on its next tick).
   function monoDrawn(st) { if (st.releasing) st.releasing.drawn = true; }
   function release(st) {
@@ -744,7 +779,7 @@ function dxrCore(cfg, cap, S) {
       if (!st.shortRun) st.shortRun = t;
       if (st.eyesOn && t - st.shortRun >= T.eyesOffMs) st.eyesOn = false;
     }
-    const nd = st.active && !T.noLayer && (st.displayOk === false || (!st.lastTwoAt && T.coverMaxMs > 0 && t - st.layerAt > T.coverMaxMs));
+    const nd = st.active && !T.noLayer && (st.displayOk === false || (!st.lastTwoAt && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt > T.coverMaxMs));
     if (nd !== st.nd) {
       st.nd = nd;
       if (nd) info(`no 2-view frame in the ${T.coverMaxMs} ms since the layer: 3D display not available to this window (another browser instance holding it?) — flat until one arrives`);
@@ -841,7 +876,7 @@ function dxrCore(cfg, cap, S) {
       // business, applied by the adapters when they compose the eyes (eyePose).
       // Its scale IS the portal (the runtime's m2v = virtualDisplayHeight / the canvas's physical
       // height, and the eyes sit at the viewer's offset × m2v from it), so the whole portal is placed
-      // at the frozen scale distance (v0.7.10): it no longer follows a moving estimate.
+      // at the frozen scale distance (v0.7.11): it no longer follows a moving estimate.
       const r = st.rigs.display;
       r.position.x = r.position.y = 0; r.position.z = -ds;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
@@ -878,7 +913,7 @@ function dxrCore(cfg, cap, S) {
     // metersToVirtual grows with the distance the scale was decided at: the depth budget is then the
     // same for a 10 cm product and a 150 m airliner (what a display rig gives an authored page), and
     // comfort = ipd × m2v × diopters × 0.5 = the camera rig's depth while the convergence is still
-    // where the scale was set. FROZEN for the activation (scaleDistance, v0.7.10): the convergence
+    // where the scale was set. FROZEN for the activation (scaleDistance, v0.7.11): the convergence
     // (diopters, above) keeps following the estimate / target, m2v does not, so the eyes never move
     // relative to the page camera when the estimate does.
     rig.metersToVirtual = (depthOf('camera') * ds) / 0.5;
@@ -889,7 +924,7 @@ function dxrCore(cfg, cap, S) {
   }
   // The camera rig's convergence plane (live: it follows the estimate / target).
   const rigDistance = (st) => Math.max(1e-6, (st.conv.d || 1) * site.convScale);
-  // The SCALE distance (v0.7.10, David: "if we ever use m2v it cannot change, the scale is set once and
+  // The SCALE distance (v0.7.11, David: "if we ever use m2v it cannot change, the scale is set once and
   // we'd better get it right"): the distance the rig's scale was decided at (setScaleOnce), times the
   // user's Focus. It sets the camera rig's metersToVirtual (∝ it) and the whole display rig (its portal
   // distance and height, hence the runtime's m2v). Frozen for the activation: only the user's Focus /
@@ -1020,7 +1055,7 @@ function dxrCore(cfg, cap, S) {
   // at real scale (buildRig), as legacy WebXR did (David's call, 2026-09-28; T.openSceneMode
   // 'percentile' restores the 0.5.3 room rule instead); else (2) the scene estimator on what is in
   // view (an object viewer: the camera outside every bound).
-  // OPEN LATCHES (v0.7.10, #319): once a state's scene has been open it stays 'fixed: open scene' for
+  // OPEN LATCHES (v0.7.11, #319): once a state's scene has been open it stays 'fixed: open scene' for
   // the rest of that state (the canvas, this document), bounded props in view or not. arrival.space
   // has ~400 meshes (props, signs, portals) inside its splat world: before, any one in view made the
   // scene "bounded" and the source flipped between the estimator (m2v ∝ d) and the fixed rig every
@@ -1132,7 +1167,7 @@ function dxrCore(cfg, cap, S) {
   // out (optional), T.openSceneMode 'fixed' only: out.open = true when the scene is OPEN: the camera
   // stands inside a WORLD, i.e. a splat volume holds it (cb's isSplat: a PlayCanvas gsplat's bound) or
   // it stands among a volume's pieces (three.js Spark: `among`); bounded props in view do not veto it
-  // (v0.7.10, #319: arrival.space's ~400 meshes inside its splat world did). A bound that holds the
+  // (v0.7.11, #319: arrival.space's ~400 meshes inside its splat world did). A bound that holds the
   // camera but is NOT a splat volume (a floor plane, a skybox / dome mesh, a room mesh) makes the scene
   // open only when nothing bounded is in view, as before: an object viewer on a 40-unit floor (harness
   // case a) is still an object viewer. The caller then uses the fixed focus (and latches it), and
@@ -1310,14 +1345,14 @@ function dxrCore(cfg, cap, S) {
       if (st.coverForced && st.stats.stereo > (st.stereo0 || 0)) { st.coverForced = false; if (st.rampK < 1 && !st.ramp && st.rigScale) startRamp(st, 1); }
       return;
     }
-    if (!cv.out && t - st.layerAt >= T.holdMs && st.stats.stereo > 0) {
+    if (!cv.out && st.layerAt > 0 && t - st.layerAt >= T.holdMs && st.stats.stereo > 0) {
       dropCover(st); // a hard cut, never a fade: the picture under it is flat (rampK 0) and fades in from here
       st.coverDropAt = t; // the frame-rate guard's warm-up counts from here
       info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms)`);
       if (st.rampK < 1 && st.rigScale) startRamp(st, 1); // else it fades in once the scale is set (scaleReady)
       return;
     }
-    if (!cv.out && T.coverMaxMs > 0 && t - st.layerAt >= T.coverMaxMs) {
+    if (!cv.out && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt >= T.coverMaxMs) {
       // R6: a display is there (displayOk) but nobody is tracked, so no stereo frame ever comes and the
       // cover would stay up forever. Drop it anyway: with no views the pair under it is flat (both eyes
       // on the page camera), i.e. the mono picture, and the chip shows amber. rampK stays 0 until the

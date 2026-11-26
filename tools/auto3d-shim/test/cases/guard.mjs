@@ -165,7 +165,7 @@ export default function cases({ P, NEW, MARKS }) {
     id, name, url: P + url, shim: NEW, cfg: { glLimit: 512, ...(extra || {}) }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen',
     alsoCheck(r, t, h, R) {
       const [ew, eh] = R.eye; // unclamped: eye 640x720 (the 1280x720 CSS canvas at DPR 1, half width)
-      // One factor for both axes since v0.7.10 (the width's 512 / 1280 = 0.4; before: each axis on its own, eye 256x512).
+      // One factor for both axes since v0.7.11 (the width's 512 / 1280 = 0.4; before: each axis on its own, eye 256x512).
       t('glLimit 512: one factor for both axes (SBS width 512 / 1280 = 0.4 -> eye 256x288, store 512x288)', ew === 256 && eh === 288 && R.real[0] === 512 && R.real[1] === 288,
         `store ${R.real.join('x')}, eye ${ew}x${eh}`);
     },

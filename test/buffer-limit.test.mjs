@@ -349,3 +349,9 @@ test('clampEyeBuffer: the browser area cap (measured 8K: 15360x4320 drawn at 108
   // The measured unclamped case stays unclamped.
   assert.equal(clampEyeBuffer(3804, 2001, lim).clamped, false);
 });
+
+test('sceneBufferSize: the view scale never shrinks the mono (2D) store', () => {
+  const info = { recommendedViewScaleX: 0.5, recommendedViewScaleY: 0.5 };
+  const r = withDpr(2, () => sceneBufferSize({ clientWidth: 1000, clientHeight: 500 }, { gl: limitsGl(16384), viewScale: info, sbs: false }));
+  assert.deepEqual([r.width, r.height, r.viewScale], [2000, 1000, null]);
+});

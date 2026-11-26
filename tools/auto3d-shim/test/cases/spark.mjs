@@ -76,7 +76,7 @@ export default function cases({ P, NEW }) {
       } },
     // No lookAt, the lattice 7 units ahead: the estimator finds the SplatMesh's centre (before the
     // splat bounds it saw nothing and fell back to 5.00).
-    // The camera rig in ESTIMATOR mode (an object viewer: the camera outside every bound). v0.7.10: the
+    // The camera rig in ESTIMATOR mode (an object viewer: the camera outside every bound). v0.7.11: the
     // scale (m2v = depth × d / 0.5, d where the scale was decided) is set ONCE and frozen; the
     // convergence keeps following the estimate. The viewer's head sits 0.61 m off (fake headM, scaled by
     // m2v as the runtime does): the eyes sit head × m2v from the page camera (0.61 × 7 ≈ 4.3 units here),
@@ -124,7 +124,7 @@ export default function cases({ P, NEW }) {
       } },
     // ... and with T.convRoomPercentile 0.5 on top: the weighted MEDIAN (8.06).
     { id: 'spark-room-percentile-p50', name: 'Spark splats, camera inside the mesh, percentile mode, convRoomPercentile 0.5: the weighted median (8)', url: P + 'three-spark.html?room=1&mode=percentile&p=0.5', shim: NEW, cfg: { openSceneMode: 'percentile', convRoomPercentile: 0.5 }, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady' },
-    // v0.7.10 (#319): a bounded prop in view no longer ends an open scene, and open LATCHES. arrival.space
+    // v0.7.11 (#319): a bounded prop in view no longer ends an open scene, and open LATCHES. arrival.space
     // has ~400 meshes (props, signs, portals) inside its splat world: the source flipped between the
     // estimator and the fixed rig as the viewer walked, and the depth kept changing on the panel.
     // A bounded subject appears inside the open scene 1 s after the fixed focus (a model loading into a

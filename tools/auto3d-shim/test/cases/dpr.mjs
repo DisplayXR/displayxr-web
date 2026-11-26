@@ -17,7 +17,7 @@ export default function cases({ P, NEW }) {
         t("after the turn-off the store is the page's own again (600x400)", a && a.w === 600 && a.h === 400, a ? `${a.w}x${a.h}` : 'n/a');
       },
     },
-    // v0.7.10 (#319): the caps scale BOTH axes by one factor, so the eye's store pixels keep their
+    // v0.7.11 (#319): the caps scale BOTH axes by one factor, so the eye's store pixels keep their
     // shape. A maximised window on an 8K panel at 300 % (2560x1305 CSS) wanted eye 3840x3915 and got
     // 1536x3915 (the width capped, the height not): 2.5x the pixels the width allows, store pixels 2.5x
     // taller than wide. Emulated at DPR 3 on a 1280x720 viewport: eye 1920x2160 wanted, the 3072 cap

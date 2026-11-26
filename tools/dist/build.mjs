@@ -40,7 +40,11 @@ const entries = [{ entryPoints: [resolve(root, 'tools/dist/call-entry.js')], out
 const liftIndex = resolve(root, 'js/lift/index.js');
 const liftSrc = existsSync(liftIndex) ? readFileSync(liftIndex, 'utf8') : '';
 const hasLift = /\bexport\s*\{[^}]*\blift\b/.test(liftSrc) || /\bexport\s+(async\s+)?function\s+lift\b/.test(liftSrc);
-if (hasLift) entries.push({ entryPoints: [liftIndex], outfile: resolve(outdir, 'lift.js') });
+// `playcanvas` stays EXTERNAL, as it is for the ESM package (a peer dependency): CI and publish
+// install no engine, and inlining one would make this chunk ~2 MB. A CDN page that uses lift's
+// Explore maps the bare specifier with an import map (docs/lift.md); the browser's built-in bundle
+// (tools/lift-builtin) carries its own PlayCanvas slice and is unaffected.
+if (hasLift) entries.push({ entryPoints: [liftIndex], outfile: resolve(outdir, 'lift.js'), external: ['playcanvas'] });
 
 for (const e of entries) {
   await build({ ...common, ...e });

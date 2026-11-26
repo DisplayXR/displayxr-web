@@ -99,7 +99,7 @@ the v0.3 single-depth migration); `window.__dxrAuto3DTestCfg` is read only there
 | file | owns |
 |---|---|
 | `sentinel.js` | `dxrSentinel(cfg, cap)`: the DisplayXR check, the marker, `S.intrinsics` (built-ins snapshotted before page scripts: `attachShadow`, `showPopover`, `elementsFromPoint`, the canvas `width`/`height` and `Element.id` descriptors), the `navigator.xr.requestSession` wrapper (a page that asks for `inline-3d` / `immersive-*` owns XR; our own requests use `S.xrRequest`), **engine detection** (`__THREE_DEVTOOLS__`, the `getContext` wrap, the PlayCanvas routes incl. the parse-time canvas observer, the Babylon.js `_gl` / `_context` constructor trap and `BABYLON.EngineStore`), the page's `<meta>` opt-out (`S.optedOut()`), `S.settle(canvas)` (a canvas went live: the PlayCanvas search stops unless another canvas has a WebGL context) and `S.disarm()` (the core stands down for good: every trap and poll off, for good), and the **lazy** core: `cap.loadCore()` only when an engine is found (three.js: inside the listener for its first `register` / `observe` event; PlayCanvas: when an app is found; Babylon.js: when an engine is found, inside its constructor on the trap route). On a page with no engine the core is never parsed. |
-| `core.js` | `dxrCore(cfg, cap, S)`: everything that is not about one engine. **Document state:** one inline-3D session per document, standing down for good when the page owns XR; `site` (this document's copy of the host's decision, depths, rig, convScale) and `on()`. **Lifecycle:** activate → armed → flip on the page's next draw → per-session-frame → stand; `turnOff(st, reason)` (fade to flat, out-cover, staged stand) shared by the site switch and the frame-rate guard. **Sizing:** the side-by-side (SBS) rule (the SBS store = the element's full device size, each eye half of it, whatever store the page keeps; capped by one factor for both axes: 3072 wide, the GL limits and the 5760² area cap, since v0.7.10; see [Tuning](#tuning-keys-v052)) and the `canvas.width` virtualisation helper. **Rig builder:** the camera rig by default, the display rig on `Ctrl+Alt+P` (see [Rigs](#rigs-camera-by-default-display-on-ctrlaltp)), pushed every frame. **Convergence:** the page's explicit target when it has one, else the estimator (below). **Covers and depth fade:** an `<img>` still of the last mono frame over the canvas for 1.2 s after the layer (the `firstWoven` hold, [woven-canvas rules](../../docs/woven-canvas-rules.md) rule 5), a depth fade in after it and out before a turn-off, and an `<img>` out-cover read back from WebGL for the 3D→2D swap (see [Transitions](#transitions-covers-and-the-depth-fade)). **Turn-off order:** mono frame first, layer released after it is committed (below). **Control:** `ctl` (`status`, `setEnabled(on, {remember})`, `setRig`, `setDepth`, `nudgeFocus(-1\|0\|+1)`, `reset`, `onChange`), shared by the chip and the dev hotkeys, and `notify()`, which fans every change out to the chip, the dev HUD and `cap.report`. Tuning constants (`T`) are overridable only from `cfg.test` in dev. |
+| `core.js` | `dxrCore(cfg, cap, S)`: everything that is not about one engine. **Document state:** one inline-3D session per document, standing down for good when the page owns XR; `site` (this document's copy of the host's decision, depths, rig, convScale) and `on()`. **Lifecycle:** activate → armed → flip on the page's next draw → per-session-frame → stand; `turnOff(st, reason)` (fade to flat, out-cover, staged stand) shared by the site switch and the frame-rate guard. **Sizing:** the side-by-side (SBS) rule (the SBS store = the element's full device size, each eye half of it, whatever store the page keeps; capped by one factor for both axes: 3072 wide, the GL limits and the 5760² area cap, since v0.7.11; see [Tuning](#tuning-keys-v052)) and the `canvas.width` virtualisation helper. **Rig builder:** the camera rig by default, the display rig on `Ctrl+Alt+P` (see [Rigs](#rigs-camera-by-default-display-on-ctrlaltp)), pushed every frame. **Convergence:** the page's explicit target when it has one, else the estimator (below). **Covers and depth fade:** an `<img>` still of the last mono frame over the canvas for 1.2 s after the layer (the `firstWoven` hold, [woven-canvas rules](../../docs/woven-canvas-rules.md) rule 5), a depth fade in after it and out before a turn-off, and an `<img>` out-cover read back from WebGL for the 3D→2D swap (see [Transitions](#transitions-covers-and-the-depth-fade)). **Turn-off order:** mono frame first, layer released after it is committed (below). **Control:** `ctl` (`status`, `setEnabled(on, {remember})`, `setRig`, `setDepth`, `nudgeFocus(-1\|0\|+1)`, `reset`, `onChange`), shared by the chip and the dev hotkeys, and `notify()`, which fans every change out to the chip, the dev HUD and `cap.report`. Tuning constants (`T`) are overridable only from `cfg.test` in dev. |
 | `surface.js` | `dxrSurface(core)`: the per-graphics-API **surface** seam (v0.6.0, see [WebGPU](#webgpu-v060)). `core.surfaces.gl(gl)` / `core.surfaces.gpu({ device, context, flush, alphaMode })` build the object an adapter returns from `ad.surface(st)`: `kind`, `limit()`, `flush()`, `readEye(st, target)`, `readFrame(st, target)`, `async`, `toClip(projGL, out)`. The GL read-back (`readGlEye`) lives here, unchanged |
 | `guard.js` | `dxrGuard(core)`: the frame-rate guard (see [The guard](#the-frame-rate-guard-the-gl-clamp-reduced-motion)). Hooks: `draw` (the page's 2D rate, from the top of `considerActivation`; also the re-measure after a trip with no baseline), `onFlip`, `tick`, `tripped` (`statusOf` → `'guard'`), `measuring` (`statusOf` → `'converting'`) |
 | `chip.js` | `dxrChip(ctl, S)`: the "3D" chip and its menu (see [The chip](#the-3d-chip)). Uses only `ctl` and `S.intrinsics`; the core calls `frame(st)` per session frame and exposes it as `core.chip` (`__dxrAuto3D.chip()` in dev). While the site is off the core still qualifies a **candidate** canvas (`considerCandidate`) so offer mode has something to offer 3D on |
@@ -135,14 +135,14 @@ chip's Focus nearer / farther) has scaled it (`convergenceVia` names the target'
 `camera.lookAt`, or `open scene`).
 
 **Convergence, three tiers** (David's call for open scenes, 2026-09-28; the open rule and its latch
-v0.7.10, #319):
+v0.7.11, #319):
 
 1. **The page's target** (above), when there is one and the camera is looking at it.
 2. **The estimator** (below) on what is in view, when the camera is outside every sampled bound (an
    object viewer: a model, a SplatMesh seen from outside).
 3. **An open scene** (no target, and the camera stands inside a world: a sampled bound holds it, or it
    stands among a volume's pieces: a World Labs / Marble world, an arrival.space space, a sky + floor).
-   **Bounded props in view do not veto it** (v0.7.10; before, any one sent the scene back to the
+   **Bounded props in view do not veto it** (v0.7.11; before, any one sent the scene back to the
    estimator, and arrival.space, ~400 meshes inside its splat world, flipped between `estimator` and
    `fixed` as the viewer walked: the depth kept changing, and the estimator's m2v lifted the eyes metres
    above the page camera). **Open latches:** once a canvas's scene has been open it stays `fixed: open
@@ -164,7 +164,7 @@ v0.7.10, #319):
    farther`). It does not act on it: **Focus nearer / farther** (`Ctrl+Alt+9` / `0`, or the chip) is the
    escape, and scales the fixed focus at real scale.
 
-   Before v0.7.10 a subject that appeared later (a model that loads into the world) took over
+   Before v0.7.11 a subject that appeared later (a model that loads into the world) took over
    (`fixed` -> `estimator`), and back when it left the view; the latch ends that. The fixed
    focus is constant: it snaps rather than eases. `T.openSceneMode = 'percentile'` restores the 0.5.3
    room rule (below) instead of the fixed focus, for an A/B on the panel:
@@ -221,6 +221,22 @@ browser cannot join it and shows the page's pixels (mono) rather than weave it. 
 still up at turn-off stays until the release. Leaving for good (the page asked for inline-3D /
 WebXR itself, the canvas or document is going away) still releases at once: the page needs the
 session back.
+
+**Going live: the layer after the commit (v0.7.10, #339).** The flip (the page's mono frame just
+drawn) puts the go-live cover up, resizes the store to the side-by-side size and starts the session,
+but `new XRDisplayLayer()` waits until a frame has been drawn on the side-by-side store and two
+animation frames have passed, i.e. until the pair and the cover are **committed** (at most `bindMaxMs`
+500 ms after the flip, for a page that draws nothing). Through v0.7.9 the layer was created in the
+flip task. Like `layer.close()`, it reaches the browser on its own channel, ahead of the task's commit,
+and a canvas the page has had for a while is joined at once, so the browser could weave the frame
+committed before it: the page's mono picture, with no cover yet. Woven as a pair, each eye got half of
+it at twice the width: one horizontally stretched frame on the panel as the canvas went 3D (DisplayXR
+Browser 1.10.6: three.js `webgl_animation_keyframes` 2 of 5 switches, the PlayCanvas car configurator
+now and then). Until the layer exists the adapter draws the flat pair under the cover; the cover hold,
+the no-eyes timer and the frame-rate guard count from the layer, as before. Harness: the commit model
+records the frame committed before each layer, on the canvas that goes live (`a-golive`, `b-golive`,
+`a-golive-decoy`; every `commits` case).
+`T.bindAfterCommit = false` (TEST ONLY) restores the old order.
 
 **Re-enabling a page that draws on demand.** `Ctrl+Alt+3` back on asks each adapter for one frame
 (`wake`): three.js replays the page's last mono frame through the wrapped renderer, PlayCanvas sets
@@ -652,7 +668,7 @@ pixels (`CreatePickingRayToRef` divides the pointer's CSS px by the hardware sca
   canvas, hardware scaling 0.5, and `scene.pick` at the canvas centre still hits the sphere there.
 - **Never below the page's own density;** capped by the zero-copy width (`maxSbsWidth`, 3072), the
   context's limits and the area cap (`maxSbsArea`) the same way (uniformly: the eye's aspect is kept, as
-  the core does since v0.7.10). Harness case `bjs-cap`: 1024 × 576 from 1280 × 720.
+  the core does since v0.7.11). Harness case `bjs-cap`: 1024 × 576 from 1280 × 720.
 - **A fullscreen GUI laid out in pixels** (an `AdvancedDynamicTexture` on a scene layer, without
   `adjustToEngineHardwareScalingLevel` or an ideal size) keeps the page's density: its controls are
   sized in store pixels and would shrink by the same factor (`bjs-gui`). State: `pixelGui`.
@@ -972,7 +988,7 @@ woven tile is **not yet judged on the panel** (see [Verified](#verified-and-what
 - **GL clamp.** The SBS store fits the zero-copy width cap (3072) **and** the context's own limits
   (`MAX_TEXTURE_SIZE`, `MAX_RENDERBUFFER_SIZE`, `MAX_VIEWPORT_DIMS`, read once per canvas): a 2×-wide
   store is over those on many Android GPUs) **and** Chromium's drawing-buffer area cap (`maxSbsArea`,
-  5760², past which the browser silently draws a smaller buffer). Since v0.7.10 one factor scales both
+  5760², past which the browser silently draws a smaller buffer). Since v0.7.11 one factor scales both
   axes (v0.5.2 to v0.7.9 capped each axis on its own; see [Eye size](#tuning-keys-v052)).
 - **Reduced motion.** Under `prefers-reduced-motion: reduce` the depth fade is 1 ms, never 0:
   `rampMs` 0 skips the turn-off's out-cover and the raw side-by-side flash comes back (risk R5).
@@ -1004,10 +1020,10 @@ dev build only.
 | `eyeScale` | 0.5 | per-eye width / the element's device width (before v0.5.2: of the page's store) |
 | `maxEyeDpr` | 3 | the device-pixel ratio the eye is sized at, at most |
 | `maxSbsWidth` | 3072 | the SBS store's width cap (browser-pvt#24), then the GL limits |
-| `maxSbsArea` | 5760² | the SBS store's area cap (Chromium's WebGL `kMaxArea`, as `@displayxr/inline3d`'s `MAX_DRAWING_BUFFER_AREA`) (v0.7.10) |
+| `maxSbsArea` | 5760² | the SBS store's area cap (Chromium's WebGL `kMaxArea`, as `@displayxr/inline3d`'s `MAX_DRAWING_BUFFER_AREA`) (v0.7.11) |
 | `coverMaxMs` | 5000 | the join cover's longest hold; also the "no display" threshold |
-| `openSceneMode` | `'fixed'` | open scenes (no target, the camera inside a world; latched, v0.7.10): `'fixed'` focus at real scale, or `'percentile'` (the 0.5.3 room rule) |
-| `scaleSamples` / `scaleSpread` / `scaleMaxWaitMs` | 3 / 0.1 / 8000 | the rig's scale is decided once per activation: from this many consistent estimates within this spread, on a quiet page, or after this long (v0.7.10) |
+| `openSceneMode` | `'fixed'` | open scenes (no target, the camera inside a world; latched, v0.7.11): `'fixed'` focus at real scale, or `'percentile'` (the 0.5.3 room rule) |
+| `scaleSamples` / `scaleSpread` / `scaleMaxWaitMs` | 3 / 0.1 / 8000 | the rig's scale is decided once per activation: from this many consistent estimates within this spread, on a quiet page, or after this long (v0.7.11) |
 | `openSceneConvM` | 2 | `'fixed'`: the focus distance in front of the page camera, in scene units read as metres |
 | `openSceneRealDepth` | 0.5 | `'fixed'`: the camera-rig depth that means the viewer's real IPD (`ipdFactor` 1); less scales it down linearly |
 | `convRoomPercentile` | 0.7 | `'percentile'`: the percentile of the in-view apparent-size-weighted depths; `'fixed'`: only the scale-sanity note |
@@ -1017,7 +1033,7 @@ dev build only.
 the page's own store (Spark hello-world keeps a 1038-px store on a 1038-px CSS canvas on a 2.5×
 panel: its eyes were 519×703, "a little low res"; now 1298×1758, the same as a three.js page at
 `setPixelRatio(2.5)`). The SBS store is the element's full device size: two eyes side by side at
-half width each. **Caps (v0.7.10): one factor for both axes**, the smallest of `maxSbsWidth` / 2 per
+half width each. **Caps (v0.7.11): one factor for both axes**, the smallest of `maxSbsWidth` / 2 per
 eye, the GL limit on each axis and `maxSbsArea` (`core.fitEyes`), so the eye keeps the SBS aspect and
 its store pixels keep their shape (the weave still un-squeezes the half-width eye, as uncapped). v0.5.2
 to v0.7.9 capped each axis on its own, so a width cap never cost height; on the 8K panel at 300 % a
@@ -1096,7 +1112,7 @@ a structural reason (WebGPU, post effects, several cameras), the HUD shows that 
 
 ### Rigs: camera by default, display on Ctrl+Alt+P
 
-**The scale is set once (v0.7.10, David: "if we ever use m2v it cannot change, the scale is set once and
+**The scale is set once (v0.7.11, David: "if we ever use m2v it cannot change, the scale is set once and
 we'd better get it right").** A rig's scale puts the eyes at the viewer's head offset × m2v from the
 page camera, so a scale that follows the estimate moves the eyes through the scene as the viewer walks
 (arrival.space on the panel, #319: page camera at y 1.23, eyes at y 6.8). So, per activation:
@@ -1224,10 +1240,10 @@ running), so the rig is always sampled at the configured depth.
 | `spark-room` | `three-spark.html?room=1`: no `lookAt`, the camera inside the mesh (lattice 8 ahead + a sparse 15-unit shell of large splats around the camera): an open scene | as `a`, convergence exactly 2 from `fixed` (via `open scene`), rig at real scale: `metersToVirtual` 1, ipd = parallax = 1 at depth 0.5 |
 | `spark-room-percentile` | the same page, cfg `openSceneMode: 'percentile'` | convergence 8.6 ± 5 % from the `estimator` (the 0.5.3 room rule, 70th percentile: the back of the lattice; the weighted median gave 8.06, the r²-weighted centroid 10.4) |
 | `spark-room-percentile-p50` | the same, plus cfg `convRoomPercentile: 0.5` | convergence 8 ± 5 % (the weighted median: the key is live) |
-| `spark-room-subject` | `three-spark.html?room=1`, a 0.4-unit box added 3 units ahead 1 s after settling | v0.7.10: `fixed` (2, m2v 1, latched) before AND 5 s after the box, no settle line (≤ 0.7.9: `estimator` after, converging on the box) |
-| `spark-room-props` | `three-spark.html?room=1&subject=1`: the box in view from the start | open with a bounded prop in view: `fixed`, convergence 2 (v0.7.10) |
-| `spark-room-latch` | `three-spark.html?room=1`, fake head offset (0, 0.1, 0.6) m, then `__leaveRoom()` (camera 40 back, outside every bound) | `fixed` 2, latched, m2v 1, eye 0 within 0.7 of the page camera before AND 4 s after (v0.7.10) |
-| `spark-est-head` | `three-spark.html?at=7`, the same head offset, then a 3-unit box 3 ahead | estimator scale set once (d 7, m2v 7, logged once); eye 0 at head × m2v (4.3) from the camera; the box moves the convergence > 5 %, m2v stays one value over 4 s, the eye never farther than head × m2v (v0.7.10) |
+| `spark-room-subject` | `three-spark.html?room=1`, a 0.4-unit box added 3 units ahead 1 s after settling | v0.7.11: `fixed` (2, m2v 1, latched) before AND 5 s after the box, no settle line (≤ 0.7.9: `estimator` after, converging on the box) |
+| `spark-room-props` | `three-spark.html?room=1&subject=1`: the box in view from the start | open with a bounded prop in view: `fixed`, convergence 2 (v0.7.11) |
+| `spark-room-latch` | `three-spark.html?room=1`, fake head offset (0, 0.1, 0.6) m, then `__leaveRoom()` (camera 40 back, outside every bound) | `fixed` 2, latched, m2v 1, eye 0 within 0.7 of the page camera before AND 4 s after (v0.7.11) |
+| `spark-est-head` | `three-spark.html?at=7`, the same head offset, then a 3-unit box 3 ahead | estimator scale set once (d 7, m2v 7, logged once); eye 0 at head × m2v (4.3) from the camera; the box moves the convergence > 5 %, m2v stays one value over 4 s, the eye never farther than head × m2v (v0.7.11) |
 | `e-postfx-view0` | `three-postfx.html?view=identity`: the chain, its camera kept at `setViewOffset(w, h, 0, 0, w, h)` (the sandworm page at rest), an unlit magenta marker at (0, 1.5, 3) | as `a`, plus the marker's height in the left eye = the page's own projection of it (`window.__expectNdcY`, ± 0.02 NDC). The fake skews x only, so without the view both halves are equally wrong and only this check sees it. Fails before v0.6.3: never converts, with the sandworm page's 2D line |
 | `e-postfx-shift` | `?view=shift`: a kept lens shift, 12 % of the height down | as `e-postfx-view0` (marker at 0.515; 0.275 without the view) |
 | `e-postfx-crop` | `?view=crop`: a kept 2× crop, off centre | as `e-postfx-view0` (marker at −0.051; 0.275 without the view), the pair shift doubled: 128 px (`pairShift` 0.2) |
@@ -1258,6 +1274,9 @@ running), so the rig is always sampled at the configured depth.
 | `b-late` | `pc-mesh.html?stallMs=2500`: the page draws nothing for 2.5 s once the layer exists; the fake has no eyes until 3.2 s and no display API; `noViewsMs` 1.5 s | converts with ONE layer and no false no-eyes stand-down (the timer starts at the first draw, ~2.5 s in) |
 | `b-noviews` | `pc-mesh.html`, no eyes ever, no display API, `noViewsMs` 1.5 s | back to 2D (layer closed) 1.5-2.5 s after the FIRST DRAW, with the reason in the console: the timer still fires |
 | `b-flip` | `pages/pc-flip.html`: one camera alternating perspective / orthographic every 2 s | 2D in each ortho phase, 3D in each perspective phase, a fresh session + layer each time with the full cover (the behaviour documented above), no raw pair at any close |
+| `a-golive` / `b-golive` | three.js keyframes / PlayCanvas meshes, `maxSbsWidth` 1024 (the store 1024 wide on a 1280 page, as 3072 on a 3840 panel), commit model | as `a` / `b`, plus the go-live (#339): the frame committed before the layer is the side-by-side store (1024 × 720), under the cover |
+| `a-golive-ab` / `b-golive-ab` | the same, `bindAfterCommit: false` (TEST ONLY: the layer in the flip task, v0.7.9) | the frame committed before the layer is the page's mono picture (1280 × 720), uncovered: the check sees the bug |
+| `a-golive-decoy` / `a-golive-decoy-ab` | `a-golive` / `a-golive-ab` with a 96 × 48 2D canvas (a logo) ahead of the 3D one in the DOM (`?decoy=1`) | as `a-golive` / `a-golive-ab`: the go-live check and the pixel reads use the canvas that goes live, not the page's first (a harness that read the first canvas compared the 96 × 48 logo with the store) |
 | `c` | `pages/pc-gsplat.html`: `ports_25.sog` (from the gallery repo's `public/bench/`; `SOG_DIR` to override), `window.app` | as `b`, plus the footprint shader patched; convergence = 2.5 bounding radii ± 5 % |
 | `d` | the SDK's `samples/splat/?engine=playcanvas&url=/bench/ports_25.sog` | the shim stands down: `foreign` set, no session of its own, nothing converted, the HUD says so, no `app found` line after the stand-down |
 | `d-pc` | `pc-mesh.html?xrFirst=1`: the page asks for `inline-3d` before its app exists | as `d`; fails without v0.5.4 (the app's constructor loaded the core, which stood down, and the same find then took the app on: `PlayCanvas app found` after `standing down`) |
@@ -1335,7 +1354,12 @@ the fake takes a 128×72 copy of the bound canvas: the frame this document commi
 modelled as reaching the browser at once, so the frame committed before it, and the next few, are
 what the browser shows unwoven; none may be a side-by-side pair unless the cover is up. It is a
 model of the browser, not the browser: it catches an ordering that closes before the mono frame is
-committed, and says nothing about the real compositor's timing.
+committed, and says nothing about the real compositor's timing. The same holds at go-live (v0.7.10):
+while no layer is open every canvas on the page is watched, each on its own (`committedBy`), and every
+`commits` case asserts that the frame committed on the layer's canvas before each `new XRDisplayLayer()`
+is the side-by-side store under the cover (`committedAtCreate`). The pixel reads use the canvas last
+bound to a layer (`window.__fakeXRCanvas()`), so a page with a smaller canvas ahead of its 3D one reads
+the right one (`a-golive-decoy`).
 
 **WebGPU cases** carry `webgpu: true`; when the browser has no WebGPU adapter they are **skipped**
 with a loud line (the startup line names the adapter, or why there is none). Chrome 154 headless on
@@ -1414,7 +1438,7 @@ near / far) keeps the GL matrix. three's `WebGPURenderer` driver does the same, 
   re-creates its back buffer when `getCurrentTexture()` comes back another size, so the existing
   `setResolution` wrapper works unchanged and `GPUCanvasContext.configure` is never re-called. The
   engine's WebGPU `maxPixelRatio` (1 by default) shapes only the page's mono store; the SBS store is
-  sized by the core from the element's device pixels. **Mid-frame resize (v0.7.10):** the flip and the
+  sized by the core from the element's device pixels. **Mid-frame resize (v0.7.11):** the flip and the
   stand-down resize from `postrender`, before the engine's `frameEnd` submit; the canvas resize
   destroys the current texture that frame's passes draw into, so that submit failed validation at every
   conversion (`Destroyed texture [Texture "D3DImageBacking_D3DSharedImage_WebGPUSwapBufferProvider_…"]
@@ -1751,7 +1775,7 @@ Open after the device run (not fixed here):
   environment and the area lights' highlights, which are view-dependent and correctly per eye (as they are
   in life); with a clear coat and low roughness they differ a lot, which crosstalk makes tiring. Not a bug.
 
-**Headless, v0.7.10 (arrival.space too slow in 3D on the 8K panel, #319: one factor for both eye axes,
+**Headless, v0.7.11 (arrival.space too slow in 3D on the 8K panel, #319: one factor for both eye axes,
 WebGPU submit before a mid-frame resize), Windows, ANGLE D3D11 + WebGPU (RTX 3080).** Measured with
 `corpus/profile-2d-3d.mjs` (one page, 2D and 3D toggled in place, 2560 × 1305 CSS at DPR 3 = the panel's
 maximised window, vsync and the frame-rate limit off, the guard off), `arrival.space/16538486_8412`.
@@ -1763,10 +1787,10 @@ maximised window, vsync and the frame-rate limit off, the guard off), `arrival.s
   waiting on the GPU (`uniformMatrix4fv`, `viewport`), not the adapter. So the page's own cost does not
   explain the panel's 3D at 7-9 fps against 2D at 34 on WebGPU; what differs there is the browser's weave
   of the canvas, not measurable headless. Fewer store pixels is what this side can give it.
-- **Before / after** (v0.7.9's committed `dist/` against v0.7.10's, alternated, two runs each, two 6 s
+- **Before / after** (v0.7.9's committed `dist/` against v0.7.11's, alternated, two runs each, two 6 s
   3D phases per run; the 2D rows are the page's own and only show the streaming noise):
 
-  | backend | v0.7.9: 3D store, fps, GPU ms | v0.7.10: 3D store, fps, GPU ms | 2D fps (both) |
+  | backend | v0.7.9: 3D store, fps, GPU ms | v0.7.11: 3D store, fps, GPU ms | 2D fps (both) |
   |---|---|---|---|
   | WebGL2 | 3072 × 3915: 30.5-41.5 fps, GPU 30-57 ms | 3072 × 1566: 49-63 fps, GPU 19-27 ms | 14-27 |
   | WebGPU | 3072 × 3915: 24-32 fps, GPU 32-43 ms | 3072 × 1566: 29-49 fps (3 of 4 phases 42-49), GPU 20-36 ms | 18-29 |
@@ -1780,7 +1804,7 @@ maximised window, vsync and the frame-rate limit off, the guard off), `arrival.s
   (`corpus/results/2026-11-25-pc-examples-v0.7.10.json`). The two that changed are run-to-run noise:
   `loaders/glb` (PASS → REVIEW `shift 64 != 32`, the known flip) and `demos/car-showcase` (REVIEW
   `still converting` → NONE), each re-run twice with `--only`: PASS and REVIEW, as in v0.7.9.
-- **Open world + scale once (second change in this PR, from David's panel pass on v0.7.10).** On the
+- **Open world + scale once (second change in this PR, from David's panel pass on v0.7.11).** On the
   panel the depth kept changing on arrival.space: the source flipped between `estimator` (2.56, and
   10.3 on WebGPU after 63 s) and `fixed: open scene`, because any of the space's meshes in view vetoed
   the open scene; and in estimator mode m2v = depth × d / 0.5 put the eyes at the head offset × m2v,
@@ -1796,12 +1820,31 @@ maximised window, vsync and the frame-rate limit off, the guard off), `arrival.s
   flip itself is covered by the harness cases (`spark-room-props`, `-subject`, `-latch`), not this walk.
   Harness after this change: **219 run, 2 skipped, all green** (3 new cases + `spark-est-head`).
   PlayCanvas examples (`corpus/results/2026-11-25-pc-examples-v0.7.10-latch.json`): PASS 211, REVIEW 28,
-  FLAT 36, NONE 1, ERROR 1; against the first v0.7.10 run the only change is `loaders/glb` (REVIEW ->
+  FLAT 36, NONE 1, ERROR 1; against the first v0.7.11 run the only change is `loaders/glb` (REVIEW ->
   PASS, its known flip).
-- **Not verified: the panel.** For the tester, maximised on the 8K panel, WebGL2 and `?webgpu=1`: the log
-  says `SBS 3072x1566 (eye 1536x1566)`; the 3D frame rate and whether the guard still trips; that the
-  picture is still sharp enough (2.5× fewer rows than v0.7.9; a joint scale was judged a loss on
-  2026-09-28, on another page); no `Destroyed texture` line at conversion.
+- **Panel (8K Dell, DisplayXR Browser, dev extension), 2026-11-25.** arrival.space WebGL2 and `?webgpu=1`:
+  3D at 35-51 fps (6-9 before), no guard trip, no `Destroyed texture`. With the open latch: the log keeps
+  `fixed: open scene` with one `scale set: m2v 1 (open scene)` line through two 8-minute runs (the old build
+  flipped to `estimator` at ~63 s); David walked it: no sky lift, no depth drift ("perfect now").
+
+**v0.7.10 (#339: one stretched frame at go-live; the layer now follows the committed side-by-side store,
+"Going live" under [Architecture](#architecture-a-sentinel-one-core-one-adapter-per-engine)), Windows:**
+- **Panel.** Leia 15.6" 4K, DisplayXR Browser 1.10.6 with its built-in auto-3D off and the dev extension,
+  bundle 2.9.41 (runtime 2.70.3, Leia SR plug-in 2.23.4), LeiaSR 1.39.0+3697. The stretched frame shows
+  when a page goes 3D while it is still loading (a reload; the browser's own Ctrl+Shift+3 reloads too):
+  the flip task's commit comes late and the layer gets there first. The PlayCanvas car configurator,
+  reloaded: on nearly every reload on v0.7.9, none in 20 on v0.7.10 (the runtime logged 20 go-lives).
+  three.js keyframes did not show it on this box on v0.7.9 (10 dev-hotkey switches, 10 reloads; 2 of 5
+  Ctrl+Shift+3 switches in the 2026-11-24 dry run) nor on v0.7.10 (5 reloads). `Ctrl+Alt+3` on a page
+  that has finished loading commits at once, so it rarely shows there.
+- **Headless.** 6 new cases (`test/cases/golive.mjs`: `a-golive`, `b-golive`, `a-golive-decoy` and their
+  `-ab` controls, which see the mono frame with `bindAfterCommit: false`), plus the go-live check on every
+  `commits` case (`a-kill`, `b-kill`, `b-flip`, `bjs-cap`). The `-decoy` pair puts a small 2D canvas ahead
+  of the 3D one: the commit model and the pixel reads follow the canvas that goes live (with the first
+  canvas, `a-golive-decoy` compared the 96 × 48 logo with the store and failed). Full run: 219 run,
+  2 skipped (`c` / `d`: no `ports_25.sog`), 216 pass. `bjs-global`, `bjs-ss-late` and `a-legacy` fail on
+  this box on main as well. An earlier run had `pc-cf-webgpu` fail once on its TAA read (two reads in one
+  frame); it passes 3 of 3 alone and passed in the full run.
 
 **Headless, v0.7.9 (PlayCanvas legacy post effects per eye, #319), Windows, ANGLE D3D11 + WebGPU
 (RTX 3080):** 14 new cases in `test/cases/pc-posteffects.mjs` (table above), page `pages/pc-postfx.html`.

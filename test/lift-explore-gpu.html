@@ -1,0 +1,168 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lift explore — stereo stability (GPU)</title>
+<script type="importmap">
+{ "imports": { "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.22.3/build/playcanvas.mjs" } }
+</script>
+<canvas id="c" width="960" height="360" style="width:480px;height:360px"></canvas>
+<pre id="o"></pre>
+<script type="module">
+// The explore renderer's stereo stability, on the PlayCanvas engine (run with
+// test/lift-explore-gpu.run.mjs, headless Chrome). The panel finding it guards (Spark, 2026-09-25):
+// with a real two-eye session the DISOCCLUDED (hidden-layer) regions blinked between black and
+// filled frame to frame. Here, on a shared WebGL2 context with a DIBR stand-in drawn first (the
+// product's shape), two eyes on a FIXED asymmetric pair — the viewer 0.10 m ABOVE the tile, eyes
+// 63 mm apart, off-axis projections built the way the runtime's Leia rig reports them (Kooima onto
+// the tile; P[9] ≈ −0.9) — are rendered for 10 consecutive frames after the sort has settled:
+//   · every pixel of both eye viewports must be identical frame to frame (no alternation);
+//   · the region behind the near box that the right eye sees past its edge (layer 1) is filled
+//     (not the black clear) in every frame.
+// The orbit is held at +10° so the hidden layer is actually exposed.
+import { createExplore } from '../js/lift/explore.js';
+
+const out = document.getElementById('o');
+const log = (s) => { console.log(s); out.textContent += s + '\n'; };
+let fails = 0;
+const check = (ok, msg) => { if (!ok) { fails++; log('FAIL ' + msg); } else log('ok   ' + msg); };
+
+// ── a two-layer image-aligned lift: a near box (1.2 m) in front of a wall (3 m) ──────────────
+function synth(W, H) {
+  const f = W / 2 / Math.tan(30 * Math.PI / 180);
+  const N = W * H * 2, data = new Float32Array(N * 17);
+  let i = 0;
+  const put = (dx, dy, t, c) => {
+    const o = (i++) * 17, fp = t / f;
+    data[o] = dx * t; data[o + 1] = dy * t; data[o + 2] = -t;
+    for (let k = 0; k < 3; k++) data[o + 6 + k] = (c[k] - 0.5) / 0.28209479177387814;
+    data[o + 9] = Math.log(0.98 / 0.02);
+    data[o + 10] = data[o + 11] = Math.log(fp * 0.75); data[o + 12] = Math.log(fp * 0.15);
+    data[o + 13] = 1;
+  };
+  for (let v = 0; v < H; v++) for (let u = 0; u < W; u++) {
+    const dx = (u + 0.5 - W / 2) / f, dy = -(v + 0.5 - H / 2) / f;
+    const wall = (Math.floor(u / 8) + Math.floor(v / 8)) & 1 ? [0.2, 0.5, 0.8] : [0.8, 0.8, 0.3];
+    const inBox = Math.abs(dx * 1.2) < 0.18 && Math.abs(dy * 1.2) < 0.18;
+    if (inBox) { put(dx, dy, 1.2, [0.9, 0.2, 0.2]); put(dx, dy, 3, wall); }
+    else { put(dx, dy, 3, wall); put(dx, dy, 3.03, wall); }
+  }
+  const props = ['x','y','z','nx','ny','nz','f_dc_0','f_dc_1','f_dc_2','opacity','scale_0','scale_1','scale_2','rot_0','rot_1','rot_2','rot_3'];
+  const hb = new TextEncoder().encode(`ply\nformat binary_little_endian 1.0\nelement vertex ${N}\n${props.map((p) => `property float ${p}\n`).join('')}end_header\n`);
+  const ply = new Uint8Array(hb.length + data.byteLength); ply.set(hb); ply.set(new Uint8Array(data.buffer), hb.length);
+  return { ply, meta: { focalPx: f, pivotZ: -2, w: W, h: H, layers: 2, axes: 'opengl' } };
+}
+
+// ── the runtime's views: Kooima off-axis onto a 0.18 × 0.10 m tile, viewer 0.60 m out, 0.10 m up ─
+// (The eye POSITIONS sit 0.10 m up, as reported; the projection's vertical skew is pinned to the
+// P[9] ≈ −0.91 measured on the test box. explore builds its own frustum from the positions — the
+// photo's camera rig — so the matrices are carried only because a real view has them.)
+const TILE_W = 0.179, TILE_H = 0.1006, EZ = 0.6, EY = 0.10, IPD = 0.063, n = 0.05, fr = 100;
+const EY_P = 0.91 * TILE_H / 2;
+const kooima = (ex) => {
+  const l = (-TILE_W / 2 - ex) * n / EZ, r = (TILE_W / 2 - ex) * n / EZ, b = (-TILE_H / 2 - EY_P) * n / EZ, t = (TILE_H / 2 - EY_P) * n / EZ;
+  return new Float32Array([2 * n / (r - l), 0, 0, 0, 0, 2 * n / (t - b), 0, 0, (r + l) / (r - l), (t + b) / (t - b), -(fr + n) / (fr - n), -1, 0, 0, -2 * fr * n / (fr - n), 0]);
+};
+const canvas = document.getElementById('c');
+const mk = (eye, s) => ({ eye, projectionMatrix: kooima(s * IPD / 2), transform: { position: { x: s * IPD / 2, y: EY, z: EZ } } });
+const views = [mk('left', -1), mk('right', 1)];
+log(`P[9] (left) = ${views[0].projectionMatrix[9].toFixed(3)}`);
+const layer = { getViewport: (v) => ({ x: v.eye === 'left' ? 0 : canvas.width / 2, y: 0, width: canvas.width / 2, height: canvas.height }) };
+
+// ── a DIBR stand-in on the SAME context, drawn first each frame (program + VAO + unit-1 texture
+//    bound, blend off, scissor toggled — the state live-dibr.js leaves) ────────────────────────
+const gl = canvas.getContext('webgl2', { alpha: true, antialias: false, premultipliedAlpha: true });
+const sh = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x); return x; };
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, '#version 300 es\nvoid main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); gl_Position = vec4(p*2.0-1.0,0,1); }'));
+gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, '#version 300 es\nprecision mediump float; out vec4 o; void main(){ o = vec4(0.1,0.6,0.1,1.0); }'));
+gl.linkProgram(prog);
+const vao = gl.createVertexArray();
+const underlay = () => {
+  gl.useProgram(prog); gl.bindVertexArray(vao); gl.disable(gl.BLEND); gl.disable(gl.DEPTH_TEST); gl.enable(gl.SCISSOR_TEST);
+  for (const v of views) { const vp = layer.getViewport(v); gl.viewport(vp.x, vp.y, vp.width, vp.height); gl.scissor(vp.x, vp.y, vp.width, vp.height); gl.drawArrays(gl.TRIANGLES, 0, 3); }
+  gl.disable(gl.SCISSOR_TEST); gl.bindVertexArray(null);
+};
+
+const { ply, meta } = synth(320, 240);
+const ex = await createExplore({ canvas, gl, ply, meta, clearAlpha: 1, orbit: { maxAngleDeg: 15, relax: false } });
+ex.fadeIn(1); // shared context: starts hidden; a 1 ms opacity ramp (resolves inside render())
+ex.setTarget(10, 0, { snap: true });
+const frame = () => { underlay(); ex.render({ views, layer }); };
+const raf = () => new Promise((r) => requestAnimationFrame(r));
+for (let i = 0; i < 60; i++) { frame(); await raf(); } // head tracker rest (12 frames) + sort settles
+
+const W = canvas.width, H = canvas.height;
+const px = new Uint8Array(W * H * 4);
+const shots = [];
+for (let i = 0; i < 10; i++) {
+  frame();
+  gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px); // same task as the draw: the buffer is intact
+  shots.push(px.slice());
+  await raf();
+}
+let maxDiff = 0, diffPx = 0;
+for (let i = 1; i < shots.length; i++) {
+  let d = 0;
+  for (let k = 0; k < px.length; k++) { const e = Math.abs(shots[i][k] - shots[0][k]); if (e) d++; if (e > maxDiff) maxDiff = e; }
+  diffPx = Math.max(diffPx, d);
+}
+check(maxDiff === 0, `10 consecutive stereo frames identical (max channel diff ${maxDiff}, ${diffPx} values differ)`);
+
+// The hidden layer: at +10° (turntable: near content slides RIGHT) the wall just LEFT of the box
+// — behind it at rest — is uncovered; there only layer 1 can be drawn. The box spans ±62 px about
+// each eye's centre (cover fit, 1.5× of the 320-px lift) and slides ~48 px, so probe the strip
+// x ∈ [c − 58, c − 20], c the eye centre. Every
+// probe must be wall, in every frame — not the black clear, not the green underlay, not the red box.
+let bad = 0, probed = 0;
+for (const s of shots) {
+  for (const x0 of [0, W / 2]) {
+    const c = x0 + W / 4;
+    for (let y = Math.floor(H * 0.42); y < Math.floor(H * 0.58); y += 3) {
+      for (let x = c - 58; x < c - 20; x += 3) {
+        const o = (y * W + x) * 4, r = s[o], g = s[o + 1], b = s[o + 2];
+        probed++;
+        const black = r + g + b < 30, box = r > 180 && g < 90 && b < 90, under = g > 140 && r < 40 && b < 40;
+        if (black || box || under) bad++; // (check edges blend blue/yellow, so no exact wall colour)
+      }
+    }
+  }
+}
+check(bad === 0, `disoccluded strip shows the hidden layer in every frame (${probed} probes, ${bad} not wall)`);
+// and the left/right eyes really differ (it is stereo, not one image twice)
+let lr = 0;
+for (let y = 0; y < H; y += 4) for (let x = 0; x < W / 2; x += 4) { const a = (y * W + x) * 4, b = a + (W / 2) * 4; lr += Math.abs(shots[0][a] - shots[0][b]); }
+check(lr > 0, `left and right eyes differ (Σ|L−R| = ${lr})`);
+// The SOURCE camera sits at the eye pair's centroid (the rest head), not on the tile's
+// straight-out axis: with the viewer 0.10 m above the tile, the neutral pose (orbit 0) must show the
+// box centred VERTICALLY in both eyes with a level top edge (no shear), and horizontally
+// symmetric about each eye's centre (left eye sees it shifted right, right eye left, equally).
+ex.setTarget(0, 0, { snap: true });
+for (let i = 0; i < 8; i++) { frame(); await raf(); }
+frame();
+const rest = new Uint8Array(W * H * 4);
+gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, rest);
+const isRed = (o) => rest[o] > 180 && rest[o + 1] < 90 && rest[o + 2] < 90;
+const boxOf = (x0) => {
+  let minX = 1e9, maxX = -1, minY = 1e9, maxY = -1;
+  for (let y = 0; y < H; y++) for (let x = x0; x < x0 + W / 2; x++) if (isRed((y * W + x) * 4)) {
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  // top edge height at the box's left and right quarter columns
+  const topAt = (x) => { for (let y = H - 1; y >= 0; y--) if (isRed((y * W + x) * 4)) return y; return -1; };
+  const q = Math.round((maxX - minX) / 4);
+  return { cx: (minX + maxX) / 2 - x0, cy: (minY + maxY) / 2, tl: topAt(minX + q), tr: topAt(maxX - q) };
+};
+const L = boxOf(0), R = boxOf(W / 2);
+log(`rest: left box c=(${L.cx.toFixed(1)}, ${L.cy.toFixed(1)}) top ${L.tl}/${L.tr}; right box c=(${R.cx.toFixed(1)}, ${R.cy.toFixed(1)}) top ${R.tl}/${R.tr}`);
+check(Math.abs(L.cy - H / 2) <= 1.5 && Math.abs(R.cy - H / 2) <= 1.5, 'neutral pose: box vertically centred in both eyes (source camera at the eye centroid)');
+check(Math.abs(L.tl - L.tr) <= 1 && Math.abs(R.tl - R.tr) <= 1, 'neutral pose: level top edge in both eyes (no shear)');
+check(Math.abs((L.cx - W / 4) + (R.cx - W / 4)) <= 1.5 && L.cx > R.cx, 'neutral pose: horizontal disparity symmetric about the eye centroid');
+
+window.__shot = () => { // shots[0] as a PNG (readPixels rows are bottom-up)
+  const c2 = document.createElement('canvas'); c2.width = W; c2.height = H;
+  const ctx = c2.getContext('2d'); const img = ctx.createImageData(W, H);
+  for (let y = 0; y < H; y++) img.data.set(shots[0].subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4);
+  ctx.putImageData(img, 0, 0); return c2.toDataURL();
+};
+log(fails ? `RESULT FAIL (${fails})` : 'RESULT PASS');
+log('DONE');
+</script>

@@ -7,7 +7,9 @@
      front of it, so the expected convergence distance is 8.
      Query parameters (defaults: the full window at devicePixelRatio):
        ?pr=N        a fixed pixel ratio (pr=1: a 1x page, e.g. Spark's hello-world, on a high-DPR display)
-       ?w=W&h=H     a fixed CSS size instead of the window -->
+       ?w=W&h=H     a fixed CSS size instead of the window
+       ?decoy=1     a small 2D canvas (a logo, under minCssPx) ahead of the 3D one in the DOM: the
+                    page's first canvas is not the one that goes 3D -->
 <html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three keyframes (test)</title>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block}</style>
 <script type="importmap">{ "imports": { "three": "/deps/three/three.module.js" } }</script>
@@ -24,6 +26,13 @@ renderer.setPixelRatio(PR());
 renderer.setSize(CW(), CH());
 renderer.shadowMap.enabled = true;
 renderer.autoClear = false;
+if (qs.has('decoy')) { // fixed over the top right corner, drawn once
+  const d = document.createElement('canvas'); d.width = 96; d.height = 48;
+  Object.assign(d.style, { position: 'fixed', right: '8px', top: '8px', width: '96px', height: '48px', zIndex: 1 });
+  const g = d.getContext('2d'); g.fillStyle = '#e0457b'; g.fillRect(0, 0, 96, 48);
+  g.fillStyle = '#fff'; g.font = 'bold 20px sans-serif'; g.fillText('LOGO', 20, 31);
+  document.body.appendChild(d);
+}
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
