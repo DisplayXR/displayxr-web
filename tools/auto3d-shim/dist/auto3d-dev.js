@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.7.10 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.11 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -489,7 +489,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.7.10'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.7.11'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -507,7 +507,7 @@ function dxrCore(cfg, cap, S) {
     bindMaxMs: 500,     // go-live: create the layer this long after the flip at the latest, pair drawn or not (#339)
     rampMs: 500,        // depth fades in after the cover drops, and back to flat before a turn-off swaps to 2D
     convTarget: true,   // prefer the page's explicit target (controls / lookAt) over the estimator
-    scaleSamples: 3,    // the rig's scale (m2v) is set ONCE per activation (v0.7.10): from this many consecutive estimator samples ...
+    scaleSamples: 3,    // the rig's scale (m2v) is set ONCE per activation (v0.7.11): from this many consecutive estimator samples ...
     scaleSpread: 0.1,   // ... within this fraction of their median, on a quiet page (no resource for guardLoadQuietMs) ...
     scaleMaxWaitMs: 8000, // ... or from what there is this long after the flip (a page that never stops loading). Flat until then.
     openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
@@ -1700,7 +1700,7 @@ function dxrGuard(core) {
     }).observe({ type: 'resource', buffered: true });
   } catch (e) { /* no Resource Timing: the readyState test alone */ }
   const loading = (t) => document.readyState !== 'complete' || (lastResourceEnd > 0 && t - lastResourceEnd < T.guardLoadQuietMs);
-  api.loading = loading; // also the core's scale decision (v0.7.10): it waits for a quiet page
+  api.loading = loading; // also the core's scale decision (v0.7.11): it waits for a quiet page
 
   document.addEventListener('visibilitychange', () => {
     for (const w of core.tracked) { const st = w.deref(); const s = st && g.get(st); if (s) { resetWindow(s); s.ring.length = 0; } }
