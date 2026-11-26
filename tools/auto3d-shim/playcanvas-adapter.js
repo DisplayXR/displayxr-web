@@ -376,6 +376,20 @@ function dxrPlayCanvas(core) {
       const l = lookAts.get(e);
       return l ? { x: l.x, y: l.y, z: l.z, via: 'entity.lookAt' } : null;
     },
+    // First-person / fly scripts on the camera entity (the open-scene walk signal, v0.7.12): a script
+    // whose registered name reads as one (fly-camera, first-person-camera, fps-controller, walk...).
+    walkControls(st) {
+      const e = st.cam && st.cam.entity;
+      const list = e && e.script && (e.script.scripts || e.script._scripts);
+      if (!Array.isArray(list)) return null;
+      for (const sc of list) {
+        if (!sc || sc.enabled === false) continue;
+        let name = '';
+        try { name = (sc.__scriptType && sc.__scriptType.__name) || (sc.constructor && (sc.constructor.__name || sc.constructor.scriptName)) || ''; } catch (err) { name = ''; }
+        if (/fly|first.?person|fps|walk|free.?cam/i.test(name)) return `script '${name}' on the camera`;
+      }
+      return null;
+    },
     flipIdle(st) { st.app.renderNextFrame = true; }, // flips on the postrender of that frame
     describe: (st) => ({
       page: { w: st.L.w, h: st.L.h, pr: 1 },

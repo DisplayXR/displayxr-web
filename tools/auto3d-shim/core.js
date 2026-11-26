@@ -74,6 +74,21 @@ function dxrCore(cfg, cap, S) {
     openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
     openSceneConvM: 2,      // 'fixed': converge this far in front of the page camera, scene units read as METRES (Marble worlds and most three.js scenes are metric)
     openSceneRealDepth: 0.5, // 'fixed': the camera-rig depth that means the viewer's REAL IPD (ipdFactor 1); less scales the eye separation down (0.25 halves it)
+    // OPEN is not only splats (v0.7.12): a camera that WALKS (pointer lock, first-person / fly controls, or
+    // free translation with turns about the camera itself) or one SURROUNDED by geometry latches it too.
+    openWalk: true,       // the walk signal (walkTick); false: off (A/B)
+    walkEveryFrames: 6,   // the motion classifier samples the page camera this often (session frames)
+    walkTravel: 0.5,      // ... walks when its translation NOT explained by a pivot reaches this × the scene's scale (min(convergence, the bounded items' extent)) ...
+    walkTurnDeg: 20,      // ... AND it has turned at least this much about a point near itself (|pivot| < walkPivotFrac × that scale): orbits, dollies, pans and turntables never do
+    walkPivotFrac: 0.25,
+    openSurround: true,   // the surround signal: inside the bounded items' union box with geometry on >= surroundSides of the 4 horizontal sides (a floor below does not count)
+    surroundSides: 3,
+    surroundRuns: 2,      // ... on this many consecutive estimates
+    // EYES ANCHORED ON THE PAGE CAMERA (v0.7.12, David: "keep the page's original camera; add only IPD +
+    // convergence"). The display's nominal viewer maps exactly onto the page camera; only the head's
+    // deviation from it is scaled (m2v) (anchorEyes). Camera rig only.
+    eyeAnchor: true,      // false: the runtime's views as they come (≤ 0.7.11), harness A/B
+    eyeLeanMax: 0.5,      // the scaled head deviation never exceeds this × the nearest surface in view (estimator / target scale only): leaning in cannot enter the model
     displayPivot: true, // display rig: the page's rotations pivot about the virtual display's centre (pivotOffset); false = the portal rides the page camera (0.5.4), harness A/B only
     convRoomPercentile: 0.7, // 'percentile' mode: converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance). 'fixed' mode reads it only for the scale-sanity note
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
@@ -251,7 +266,9 @@ function dxrCore(cfg, cap, S) {
   //                               reaches considerActivation without waiting for input
   //   target()                 -> the page's explicit convergence target in world space
   //                               ({ x, y, z, via }) or null (controls .target, an orbit script, lookAt)
-  //   describe()               -> { page, real } for state()
+  //   walkControls()?          -> OPTIONAL (v0.7.12): a string naming first-person / fly controls on the
+  //                               page camera (the open-scene walk signal), or null
+  //   describe()             -> { page, real } for state()
   //   surface()                -> the canvas's graphics-API SURFACE (surface.js): core.surfaces.gl(gl) or
   //                               core.surfaces.gpu({ device, context, flush, alphaMode }), or null while
   //                               there is none yet. It owns everything API-specific: the size limit, the
@@ -663,6 +680,7 @@ function dxrCore(cfg, cap, S) {
       const di = await ask('getDisplayInfo');
       const modes = await ask('getRenderingModes');
       if (di === undefined && modes === undefined) return; // no display API on this build: fall back to the eye timeout
+      if (di) st.di = di; // the nominal viewer and the panel's size (anchorEyes)
       if (di || (Array.isArray(modes) && modes.length)) { st.displayOk = true; return; }
     }
     if (st.layer !== layer) return;
@@ -713,6 +731,7 @@ function dxrCore(cfg, cap, S) {
       // COPIES: an XRView is valid only inside this callback (porting pitfall 9).
       for (let i = 0; i < 2; i++) { st.V[i].proj.set(views[i].projectionMatrix); st.V[i].pose.set(views[i].transform.matrix); }
       st.haveViews = true; st.stats.twoView++;
+      anchorEyes(st); // the nominal viewer on the page camera, the scaled lean clamped (camera rig; v0.7.12)
       // How far behind the page camera the runtime put the eyes (a display rig backs them off to the
       // nominal viewing distance): the far plane is pushed out by that much so nothing new clips.
       // The display rig's pivot (pivotOffset) moves the eyes by up to |t| more.
@@ -743,6 +762,7 @@ function dxrCore(cfg, cap, S) {
       // so it runs every 30 frames, as before — every 10 while the scale is still undecided (its
       // samples, setScaleOnce: a slow page would otherwise wait seconds per sample).
       if (!estimateConvergence(st, false, true) && st.stats.xrFrames % (st.rigScale ? 30 : 10) === 0) estimateConvergence(st, false);
+      if (!st.openLatched && st.stats.xrFrames % Math.max(1, T.walkEveryFrames | 0) === 0) walkTick(st);
       tickRamp(st, t);
       // Pushed every frame and before any draw: a rig drives the NEXT locate.
       if (HAS_RIG && st.layer) { try { st.layer.setViewRig(buildRig(st, ad.rigFov(st))); } catch (e) { warnOnce('rig', 'setViewRig failed', e); } }
@@ -1049,6 +1069,139 @@ function dxrCore(cfg, cap, S) {
     o[i][12] += t[0]; o[i][13] += t[1]; o[i][14] += t[2];
     return o[i];
   }
+  // ------------------------------------------------------------ open scenes beyond splats (v0.7.12)
+  // An open scene latches (fixed focus at real scale for the rest of the page) on ANY of:
+  //   (c) a splat volume holds the camera, or it stands inside a bound with nothing bounded in view
+  //       (estimateSubjectDistance, as in v0.7.11);
+  //   (b) SURROUNDED: inside the bounded items' union box with geometry spanning the camera's height
+  //       on >= T.surroundSides of its 4 horizontal sides, on T.surroundRuns consecutive estimates
+  //       (a mesh level, a room of separate walls). A model on a big floor is not: the floor encloses
+  //       the camera (never a side) and the model is on one side only (harness case a);
+  //   (a) the camera WALKS (walkSignal): pointer lock on the canvas, first-person / fly controls the
+  //       adapter recognises, or the page camera's motion over time.
+  // Logged once, naming the signal: `open scene: walk: pointer lock on the canvas — fixed focus for the rest of this page`.
+  function latchOpen(st, why) {
+    if (st.openLatched) return;
+    st.openLatched = true; st.openWhy = why; st.openByWalk = /^walk/.test(why);
+    info(`open scene: ${why} — fixed focus for the rest of this page`);
+  }
+  function walkTick(st) {
+    if (T.openWalk === false || st.openLatched || !st.active) return;
+    const why = walkSignal(st);
+    if (why) { latchOpen(st, `walk: ${why}`); estimateConvergence(st, false); }
+  }
+  // The motion classifier, conservative. Every T.walkEveryFrames session frames the page camera's
+  // change is split as pivotOffset does: a rotation about the point of its forward axis that moved
+  // least (an orbit's target, or the camera itself) plus the translation that pivot does not explain.
+  // A walk is BOTH: that unexplained translation summing to T.walkTravel x the scene's scale AND
+  // T.walkTurnDeg of turning about a point near the camera (|pivot| < T.walkPivotFrac x scale). An
+  // orbit (any radius, scripted turntables too) turns about a far pivot and leaves no translation; a
+  // dolly / zoom to a target, a pan and a scripted slide translate without turning; a cut (> 30 deg or
+  // > the scale in one sample: preset views, a camera switch) is skipped, not counted.
+  function walkSignal(st) {
+    try { const pl = document.pointerLockElement; if (pl && (pl === st.canvas || pl.contains(st.canvas))) return 'pointer lock on the canvas'; } catch (e) { /* ignore */ }
+    let c = null;
+    try { c = st.ad.walkControls ? st.ad.walkControls(st) : null; } catch (e) { c = null; }
+    if (c) return c;
+    let s = null;
+    try { s = st.ad.sampler(st); } catch (e) { s = null; }
+    if (!s || !s.cameraPose) return null;
+    const m = s.cameraPose, fl = Math.hypot(m[8], m[9], m[10]) || 1;
+    const p = [m[12], m[13], m[14]], f = [-m[8] / fl, -m[9] / fl, -m[10] / fl];
+    const scale = Math.min(st.conv.d > 0 ? st.conv.d : Infinity, st.sceneExtent > 0 ? st.sceneExtent : Infinity);
+    const W = st.walk;
+    const S = (st.walk = { p, f, travel: W ? W.travel : 0, turn: W ? W.turn : 0 });
+    if (!W || !isFinite(scale)) return null;
+    const dp = [p[0] - W.p[0], p[1] - W.p[1], p[2] - W.p[2]];
+    const u = [f[0] - W.f[0], f[1] - W.f[1], f[2] - W.f[2]];
+    const uu = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+    const ang = Math.acos(clamp(f[0] * W.f[0] + f[1] * W.f[1] + f[2] * W.f[2], -1, 1));
+    const sP = uu > 1e-12 ? -(dp[0] * u[0] + dp[1] * u[1] + dp[2] * u[2]) / uu : 0;
+    const tr = Math.hypot(dp[0] + sP * u[0], dp[1] + sP * u[1], dp[2] + sP * u[2]);
+    if (ang > Math.PI / 6 || Math.hypot(dp[0], dp[1], dp[2]) > scale) return null; // a cut
+    S.travel += tr;
+    if (ang > 1e-4 && Math.abs(sP) < (+T.walkPivotFrac || 0.25) * scale) S.turn += ang;
+    if (S.travel >= (+T.walkTravel || 0.5) * scale && S.turn >= ((+T.walkTurnDeg || 20) * Math.PI) / 180) {
+      return `the camera moved ${S.travel.toPrecision(3)} units and turned ${Math.round((S.turn * 180) / Math.PI)} deg about itself (scene scale ${scale.toPrecision(3)})`;
+    }
+    return null;
+  }
+
+  // ------------------------------------------------------------ eyes anchored on the page camera (v0.7.12)
+  // RULE (David): keep the page's original camera; add only IPD + convergence. The runtime's camera rig
+  // (XR_DXR_view_rig section 3, dxr_camera3d_compute_view) places an eye at m2v x (the eye relative to
+  // the CANVAS centre, z minus the nominal distance), its centre pulled toward the canvas axis by
+  // parallaxFactor. So with a tracked or nominal viewer the eyes sit m2v x pf x (nominal - canvas
+  // centre) off the page camera: the viewer's height above the window centre plus the canvas's offset
+  // on the panel, times m2v (arrival.space <= 0.7.10: eyes ~5.6 units above the page camera). Here the
+  // nominal viewer is mapped EXACTLY onto the page camera: that rest offset r is subtracted from both
+  // eyes, and each frustum is re-sheared for its new position so the screen window stays centred on
+  // the page camera's axis at the convergence distance (an eye at rest sees the author's frustum
+  // exactly; off-axis per eye, the convergence plane keeps zero disparity). Only the head's DEVIATION
+  // from nominal is left, scaled by m2v x pf as before; on an estimator / target scale it is clamped to
+  // T.eyeLeanMax x the nearest surface in view, so leaning in cannot carry the eyes into the model.
+  // Open (fixed) scenes keep the anchor (rest = page camera) without the clamp: at real scale the
+  // deviation is the viewer's real head motion. The display rig (a portal) is untouched.
+  // Needs XRDisplayInfo.nominalViewerPosition and the panel size (DisplayXR Browser patch 0221+);
+  // without them the views are used as they come (logged once).
+  function anchorEyes(st) {
+    st.anchor = null;
+    const rig = st.rig;
+    if (T.eyeAnchor === false || !rig || rig.type !== 'camera') return;
+    const nom = nominalOf(st);
+    if (!nom) return;
+    const m2v = rig.metersToVirtual > 0 ? rig.metersToVirtual : 1, pf = +rig.parallaxFactor || 0, invd = +rig.convergenceDiopters || 0;
+    const r = [m2v * pf * (nom.x - nom.cx), m2v * pf * (nom.y - nom.cy), 0];
+    const A = st.V[0].pose, Bp = st.V[1].pose;
+    const c = [(A[12] + Bp[12]) / 2, (A[13] + Bp[13]) / 2, (A[14] + Bp[14]) / 2];
+    const dev = [c[0] - r[0], c[1] - r[1], c[2] - r[2]];
+    const dl = Math.hypot(dev[0], dev[1], dev[2]);
+    let lim = Infinity;
+    if (st.conv.src !== 'fixed') {
+      const nr = Math.min(st.conv.d > 0 ? st.conv.d : Infinity, st.nearSurf > 0 ? st.nearSurf : Infinity);
+      if (isFinite(nr)) lim = (+T.eyeLeanMax || 0.5) * nr;
+    }
+    const k = dl > lim ? lim / dl : 1;
+    for (const V of st.V) {
+      const e = V.pose, P = V.proj;
+      const n = [dev[0] * k + e[12] - c[0], dev[1] * k + e[13] - c[1], dev[2] * k + e[14] - c[2]];
+      const a = 1 + e[14] * invd, b = 1 + n[2] * invd;
+      if (invd > 0 && a > 0.05 && b > 0.05) {
+        // dxr_offaxis_projection: tan = (ro -/+ shear.x) / (1 + shear.z), shear = eye x invd, so
+        // P[8] = -shear.x / ro, P[0] = (1 + shear.z) / ro (P[9], P[5] likewise on y).
+        const p0 = P[0], p5 = P[5];
+        P[8] -= ((n[0] - e[12]) * invd * p0) / a; P[9] -= ((n[1] - e[13]) * invd * p5) / a;
+        P[0] = (p0 * b) / a; P[5] = (p5 * b) / a;
+      }
+      e[12] = n[0]; e[13] = n[1]; e[14] = n[2];
+    }
+    st.anchor = { r, dev: dl, lim: isFinite(lim) ? lim : null, clamped: k < 1 };
+  }
+  // The nominal viewer and the canvas centre, in metres, display space (origin at the panel centre,
+  // +y up). The canvas centre is the page's own estimate of the rect the browser hands the runtime:
+  // window.screenX / Y + the browser chrome + the element's client rect (as the SDK's tileScreenRect;
+  // exact at 100 % page zoom), refreshed every 30 session frames (scroll, window moves).
+  function nominalOf(st) {
+    const di = st.di, nv = di && di.nominalViewerPosition;
+    const W = di && di.displayPixelWidth, H = di && di.displayPixelHeight, wm = di && di.displayWidthMeters, hm = di && di.displayHeightMeters;
+    if (!nv || !(nv.z > 0) || !(W > 0 && H > 0 && wm > 0 && hm > 0)) {
+      if (di && !st.anchorNoted) { st.anchorNoted = true; info('eye anchor: the display reports no nominal viewer / panel size — eyes as the runtime places them'); }
+      return null;
+    }
+    if (!st.nomC || st.stats.xrFrames - st.nomC.at >= 30 || st.stats.xrFrames < st.nomC.at) {
+      let cx = 0, cy = 0;
+      try {
+        const rc = st.canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1, sc = window.screen || {};
+        const k = sc.width > 0 ? W / sc.width : dpr; // screen DIP -> panel pixels
+        const chromeX = Math.max(0, (window.outerWidth - window.innerWidth) / 2), chromeY = Math.max(0, window.outerHeight - window.innerHeight);
+        const x = (window.screenX - (sc.availLeft || 0) + chromeX) * k + (rc.left + rc.width / 2) * dpr;
+        const y = (window.screenY - (sc.availTop || 0) + chromeY) * k + (rc.top + rc.height / 2) * dpr;
+        cx = (x - W / 2) * (wm / W); cy = -(y - H / 2) * (hm / H);
+      } catch (e) { /* the panel centre */ }
+      st.nomC = { at: st.stats.xrFrames, cx: isFinite(cx) ? cx : 0, cy: isFinite(cy) ? cy : 0 };
+    }
+    return { x: +nv.x || 0, y: +nv.y || 0, z: +nv.z, cx: st.nomC.cx, cy: st.nomC.cy };
+  }
   // Convergence, three tiers: (1) the page's explicit target when it has one and the camera is
   // actually looking at it; else, in an OPEN scene (the camera stands inside a world: a sampled bound
   // holds it, or it stands among a volume's pieces), (3) a FIXED focus T.openSceneConvM (2) units ahead
@@ -1073,8 +1226,15 @@ function dxrCore(cfg, cap, S) {
       const o = {};
       d = st.openLatched ? 0 : estimateSubjectDistance(s, o);
       raw = d > 0 && isFinite(d) ? d : 0; // a real estimate (not the fallback below)
+      if (!st.openLatched) {
+        if (o.near > 0) st.nearSurf = o.near; // the nearest surface in view (anchorEyes' lean clamp)
+        if (o.extent > 0) st.sceneExtent = o.extent; // the bounded items' size (walkTick's scale)
+        // Surrounded (v0.7.12): on T.surroundRuns consecutive estimates, so one odd frame does not latch.
+        st.surroundRuns = !o.open && o.surround && T.openSurround !== false ? (st.surroundRuns || 0) + 1 : 0;
+        if (st.surroundRuns >= Math.max(1, T.surroundRuns | 0)) latchOpen(st, `surrounded: ${o.surround}`);
+      }
       if (st.openLatched || o.open) {
-        if (!st.openLatched) { st.openLatched = true; info('open scene: the camera stands inside a world — fixed focus for the rest of this page'); }
+        if (!st.openLatched) latchOpen(st, o.why || 'the camera stands inside a world');
         src = 'fixed'; st.conv.via = 'open scene'; d = +T.openSceneConvM || 2;
         // Scale sanity, a note only: a world whose typical depth in view is millimetres or
         // kilometres is probably not in metres, and the 2 m focus will read wrong there.
@@ -1118,6 +1278,10 @@ function dxrCore(cfg, cap, S) {
     let t = null;
     try { t = st.ad.target ? st.ad.target(st) : null; } catch (e) { t = null; }
     if (!t || !isFinite(t.x) || !isFinite(t.y) || !isFinite(t.z)) return 0;
+    // A walking camera's lookAt / setTarget is a look direction, not a subject (three's FirstPersonControls
+    // looks at a point 100 ahead every frame): once a walk latched the scene open, only a controls'
+    // orbit target (OrbitControls .target, CameraControls focusPoint, an ArcRotateCamera) still wins (v0.7.12).
+    if (st.openByWalk && /lookAt|setTarget/.test(t.via || '')) return 0;
     const vm = s.viewMatrix || invert4(s.cameraPose);
     const vx = vm[0] * t.x + vm[4] * t.y + vm[8] * t.z + vm[12];
     const vy = vm[1] * t.x + vm[5] * t.y + vm[9] * t.z + vm[13];
@@ -1183,11 +1347,28 @@ function dxrCore(cfg, cap, S) {
     const fixedMode = T.openSceneMode !== 'percentile';
     let items = [];
     let n = 0, among = false, enclosing = 0, world = 0, bounded = 0;
+    // The surround test (v0.7.12): the bounded items' union box, and which of the 4 horizontal sides
+    // (front / right / back / left of the camera's heading, world +Y up) hold an item that spans the
+    // camera's height. A floor (below), a ceiling (above) and anything enclosing the camera do not count.
+    const B = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    let fx = -cw[8], fz = -cw[10];
+    const fl = Math.hypot(fx, fz);
+    if (fl > 1e-6) { fx /= fl; fz /= fl; } else { fx = 0; fz = -1; } // looking straight up / down: any heading
+    let sides = 0;
     s.forEachBounds((wx, wy, wz, wr, inVolume, isSplat) => {
       if (n >= 4000) return false;
       n++;
       if (Math.hypot(wx - px, wy - py, wz - pz) <= wr) { enclosing++; if (isSplat) world++; return true; }
       if (inVolume) { among = true; enclosing++; world++; }
+      else {
+        B[0] = Math.min(B[0], wx - wr); B[1] = Math.min(B[1], wy - wr); B[2] = Math.min(B[2], wz - wr);
+        B[3] = Math.max(B[3], wx + wr); B[4] = Math.max(B[4], wy + wr); B[5] = Math.max(B[5], wz + wr);
+        const dx = wx - px, dz = wz - pz;
+        if (Math.abs(wy - py) <= wr && Math.hypot(dx, dz) > 1e-6) {
+          const fwd = dx * fx + dz * fz, right = -dx * fz + dz * fx; // right = forward × up
+          sides |= Math.abs(fwd) >= Math.abs(right) ? (fwd > 0 ? 1 : 4) : (right > 0 ? 2 : 8);
+        }
+      }
       const vx = vm[0] * wx + vm[4] * wy + vm[8] * wz + vm[12];
       const vy = vm[1] * wx + vm[5] * wy + vm[9] * wz + vm[13];
       const z = -(vm[2] * wx + vm[6] * wy + vm[10] * wz + vm[14]);
@@ -1197,8 +1378,21 @@ function dxrCore(cfg, cap, S) {
       if (!inVolume) bounded++;
       return true;
     });
+    if (out) {
+      // The nearest surface in view (bounding spheres: conservative), and the bounded items' size.
+      let nr = Infinity;
+      for (const it of items) if (!it.v) nr = Math.min(nr, Math.max(it.z - it.r, near));
+      out.near = isFinite(nr) ? nr : 0;
+      out.extent = B[3] >= B[0] ? Math.hypot(B[3] - B[0], B[4] - B[1], B[5] - B[2]) / 2 : 0;
+      const inside = px >= B[0] && px <= B[3] && py >= B[1] && py <= B[4] && pz >= B[2] && pz <= B[5];
+      const nSides = ((sides & 1) && 1) + ((sides & 2) && 1) + ((sides & 4) && 1) + ((sides & 8) && 1);
+      out.surround = fixedMode && inside && nSides >= Math.max(1, T.surroundSides | 0) ? `geometry on ${nSides} of 4 sides at the camera's height, inside the scene's bounds` : '';
+    }
     if (fixedMode && (world || (enclosing && !bounded))) {
-      if (out) { out.open = true; out.p = items.length ? weightedPercentile(items, clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95)) : 0; }
+      if (out) {
+        out.open = true; out.p = items.length ? weightedPercentile(items, clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95)) : 0;
+        out.why = world ? 'the camera stands inside a world (a splat volume holds it)' : 'the camera stands inside a world (nothing bounded in view)';
+      }
       return 0;
     }
     if (!items.length) return 0;

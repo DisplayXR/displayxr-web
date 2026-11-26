@@ -130,6 +130,18 @@ function dxrThree(core) {
   // Globals some pages keep their controls in. Conservative: only an object whose .object IS the
   // page camera and whose .target is a Vector3.
   const CONTROL_GLOBALS = ['controls', 'orbitControls', 'cameraControls'];
+  // First-person / fly controls (the open-scene walk signal, v0.7.12), duck-typed (minified builds
+  // lose class names): PointerLockControls (isLocked + lock() + unlock()), FirstPersonControls
+  // (movementSpeed + lookSpeed), FlyControls (movementSpeed + rollSpeed). Only from a global whose
+  // .object (or .camera) IS the page camera: the instance is not reachable otherwise.
+  const WALK_GLOBALS = ['controls', 'fpsControls', 'firstPersonControls', 'flyControls', 'pointerLockControls', 'cameraControls'];
+  function walkKind(c) {
+    if (!c || typeof c !== 'object') return null;
+    if (typeof c.isLocked === 'boolean' && typeof c.lock === 'function' && typeof c.unlock === 'function') return 'PointerLockControls';
+    if (typeof c.movementSpeed === 'number' && typeof c.lookSpeed === 'number') return 'FirstPersonControls';
+    if (typeof c.movementSpeed === 'number' && typeof c.rollSpeed === 'number') return 'FlyControls';
+    return null;
+  }
 
   // ------------------------------------------------------------ the adapter hooks the core calls
   const ad = {
@@ -282,6 +294,19 @@ function dxrThree(core) {
       }
       const l = lookAts.get(cam);
       return l ? { x: l.x, y: l.y, z: l.z, via: 'camera.lookAt' } : null;
+    },
+    walkControls(st) {
+      const cam = st.mainCam;
+      if (!cam) return null;
+      for (const k of WALK_GLOBALS) {
+        try {
+          const c = window[k];
+          if (!c || (c.object !== cam && c.camera !== cam)) continue;
+          const kind = walkKind(c);
+          if (kind) return `${kind} (window.${k})`;
+        } catch (e) { /* ignore */ }
+      }
+      return null;
     },
     describe: (st) => ({
       page: { w: st.L.w, h: st.L.h, pr: st.L.pr, canvasWidthSeenByPage: st.canvas.width },

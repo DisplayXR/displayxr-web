@@ -46,6 +46,13 @@
 //   headM: [x, y, z]  the viewer's head offset in metres (y up, +z toward the viewer) on every eye pose;
 //                     with it, eyeX / eyeZ / headM are multiplied by the camera rig's metersToVirtual, as
 //                     the runtime does: the eyes sit head × m2v from the page camera (#319 'teleport').
+//   nominal: [x, y, z]  the RUNTIME MODEL (v0.7.12): getDisplayInfo() reports this nominal viewer and the 8K
+//                     panel's size, and the eyes are placed as the runtime's camera rig places them
+//                     (dxr_camera3d_compute_view): head (headM, else the nominal; display space) relative to
+//                     the CANVAS centre (the same screen-rect estimate the shim makes), its centre pulled
+//                     toward the canvas axis by parallaxFactor, eyes ± eyeX × ipdFactor, minus the nominal z,
+//                     × metersToVirtual; each projection sheared by eye × convergenceDiopters
+//                     (dxr_offaxis_projection). skew is ignored.
 //   pixelAspect: K    the eye's projection aspect is K × (eye width / eye height): a store pixel is K
 //                     times as wide as it is tall, as on the panel (K = 2: the eye is stored at half
 //                     width and the weave un-squeezes it). A round object is then K times as tall as
@@ -114,6 +121,37 @@
     return m;
   };
 
+  // The runtime model (OPTS.nominal, see the header).
+  const PANEL = { displayWidthMeters: 0.6981, displayHeightMeters: 0.3927, displayPixelWidth: 7680, displayPixelHeight: 4320 };
+  function canvasCentreM(c) {
+    const r = c.getBoundingClientRect(), dpr = window.devicePixelRatio || 1, sc = window.screen || {};
+    const W = PANEL.displayPixelWidth, Hh = PANEL.displayPixelHeight, k = sc.width > 0 ? W / sc.width : dpr;
+    const chromeX = Math.max(0, (window.outerWidth - window.innerWidth) / 2), chromeY = Math.max(0, window.outerHeight - window.innerHeight);
+    const x = (window.screenX - (sc.availLeft || 0) + chromeX) * k + (r.left + r.width / 2) * dpr;
+    const y = (window.screenY - (sc.availTop || 0) + chromeY) * k + (r.top + r.height / 2) * dpr;
+    return [(x - W / 2) * (PANEL.displayWidthMeters / W), -(y - Hh / 2) * (PANEL.displayHeightMeters / Hh)];
+  }
+  function runtimeViews(L, vfov, aspect, n, f) {
+    const nom = OPTS.nominal, rig = (L && L.rig) || {}, C = L ? canvasCentreM(L.canvas) : [0, 0];
+    const h = Array.isArray(OPTS.headM) ? OPTS.headM : nom, ex = +OPTS.eyeX || 0;
+    const m2v = rig.metersToVirtual > 0 ? rig.metersToVirtual : 1, pf = rig.parallaxFactor !== undefined ? +rig.parallaxFactor : 1;
+    const ipdF = rig.ipdFactor !== undefined ? +rig.ipdFactor : 1, invd = +rig.convergenceDiopters || 0;
+    const raw = [h[0] - C[0], h[1] - C[1], h[2]];
+    const ctr = [pf * raw[0], pf * raw[1], nom[2] + pf * (raw[2] - nom[2])];
+    const ro = Math.tan(vfov / 2) * aspect, uo = Math.tan(vfov / 2);
+    H.runtime = { C, m2v, pf, ipdF, invd };
+    return [-1, 1].map((sgn, i) => {
+      const e = [m2v * (ctr[0] + sgn * ex * ipdF), m2v * ctr[1], m2v * (ctr[2] - nom[2])];
+      const s = [e[0] * invd, e[1] * invd, e[2] * invd], dn = 1 + s[2];
+      const tr = (ro - s[0]) / dn, tl = (ro + s[0]) / dn, tu = (uo - s[1]) / dn, td = (uo + s[1]) / dn;
+      const P = new Float32Array(16);
+      P[0] = 2 / (tr + tl); P[5] = 2 / (tu + td); P[8] = (tr - tl) / (tr + tl); P[9] = (tu - td) / (tu + td);
+      P[10] = -(f + n) / (f - n); P[11] = -1; P[14] = (-2 * f * n) / (f - n);
+      const M = IDENTITY.slice(); M[12] = e[0]; M[13] = e[1]; M[14] = e[2];
+      return { eye: i ? 'right' : 'left', projectionMatrix: P, transform: { matrix: M } };
+    });
+  }
+
   class FakeLayer {
     constructor(session, canvas, opts) {
       this.session = session; this.canvas = canvas; this.closed = false;
@@ -135,7 +173,10 @@
       if (OPTS.noDisplay) { this.getDisplayInfo = () => Promise.resolve(null); this.getRenderingModes = () => Promise.resolve([]); }
     }
     setViewRig(rig) { this.rig = JSON.parse(JSON.stringify(rig)); H.lastRig = this.rig; H.rigPushes++; }
-    getDisplayInfo() { return Promise.resolve({ fake: true, displayPixelWidth: 3840, displayPixelHeight: 2160 }); }
+    getDisplayInfo() {
+      if (Array.isArray(OPTS.nominal)) { const [x, y, z] = OPTS.nominal; return Promise.resolve({ fake: true, ...PANEL, nominalViewerPosition: { x, y, z, w: 1 } }); }
+      return Promise.resolve({ fake: true, displayPixelWidth: 3840, displayPixelHeight: 2160 });
+    }
     getRenderingModes() { return Promise.resolve([{ name: 'fake-stereo', viewCount: 2 }]); }
     close() {
       if (this.closed) return;
@@ -183,6 +224,7 @@
           H.noViewFrames = (H.noViewFrames || 0) + 1; return { session: this, getViewerPose: () => ({ views: [] }) };
         }
       }
+      if (Array.isArray(OPTS.nominal)) { const views = runtimeViews(L, vfov, aspect, n, f); return { session: this, getViewerPose: () => ({ views }) }; }
       const sk = OPTS.skew !== undefined ? +OPTS.skew : SKEW; // read live: a harness may change it mid-run
       const views = [+sk, -sk].map((s, i) => ({
         eye: i ? 'right' : 'left',

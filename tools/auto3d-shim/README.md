@@ -142,6 +142,37 @@ v0.7.11, #319):
    object viewer: a model, a SplatMesh seen from outside).
 3. **An open scene** (no target, and the camera stands inside a world: a sampled bound holds it, or it
    stands among a volume's pieces: a World Labs / Marble world, an arrival.space space, a sky + floor).
+   **Not only splats (v0.7.12):** a scene is also open, and latched, when **the camera walks** or
+   **geometry surrounds it** — a first-person shooter, a mesh walk-through level. The three signals,
+   any one of which latches (logged once, naming it: `open scene: <signal> — fixed focus for the rest
+   of this page`):
+   - **(c) a world holds the camera** (above): a splat volume encloses it (`the camera stands inside a
+     world (a splat volume holds it)`), or a bound encloses it with nothing bounded in view (`… (nothing
+     bounded in view)`, the pre-0.7.11 rule);
+   - **(b) surrounded** (`T.openSurround`): the camera is inside the union box of the scene's bounded
+     items (anything whose sphere does not enclose it) AND bounded items that span the camera's height
+     sit on at least `T.surroundSides` (**3**) of its 4 horizontal sides (front / right / back / left of
+     its heading, world +Y up), on `T.surroundRuns` (2) consecutive estimates. A floor never counts (it
+     encloses the camera, or it is below eye height), so a model viewer on a 40-unit floor (harness case
+     `a`'s scene) has one side and stays an object viewer;
+   - **(a) the camera walks** (`T.openWalk`, sampled every `T.walkEveryFrames` frames): pointer lock on
+     the canvas (or an ancestor: `PointerLockControls(camera, document.body)`), first-person / fly
+     controls the adapter recognises (three: a `window.controls` / `fpsControls` / `flyControls` /
+     `firstPersonControls` / `pointerLockControls` whose `.object` is the page camera, duck-typed as
+     PointerLockControls, FirstPersonControls or FlyControls; PlayCanvas: a camera script named like
+     `fly` / `first-person` / `fps` / `walk` / `free-cam`), or the camera's **motion**. The motion
+     classifier is conservative: each sample's change is split, as the display rig's pivot is, into a
+     rotation about the point of the view axis that moved least plus the translation that pivot does not
+     explain; it walks only when that unexplained translation sums to `T.walkTravel` (0.5) × the scene's
+     scale (min(convergence, the bounded items' half-extent)) **and** the camera has turned
+     `T.walkTurnDeg` (20°) about a point within `T.walkPivotFrac` (0.25) × that scale of itself. An
+     orbit (any radius, scripted turntables included) turns about a far pivot and leaves no
+     translation; a dolly / zoom toward a target, a pan and a scripted slide translate without turning;
+     a cut (> 30° or > the scale in one sample) is skipped. A page's explicit target still wins over
+     all three, with one exception: once a **walk** latched, a `lookAt` / `setTarget` point is a look
+     direction, not a subject (three's FirstPersonControls `lookAt`s a point 100 ahead every frame), so
+     only a controls' orbit target (OrbitControls `.target`, CameraControls `focusPoint`, an
+     ArcRotateCamera) still wins there.
    **Bounded props in view do not veto it** (v0.7.11; before, any one sent the scene back to the
    estimator, and arrival.space, ~400 meshes inside its splat world, flipped between `estimator` and
    `fixed` as the viewer walked: the depth kept changing, and the estimator's m2v lifted the eyes metres
@@ -1022,6 +1053,8 @@ dev build only.
 | `maxSbsWidth` | 3072 | the SBS store's width cap (browser-pvt#24), then the GL limits |
 | `maxSbsArea` | 5760² | the SBS store's area cap (Chromium's WebGL `kMaxArea`, as `@displayxr/inline3d`'s `MAX_DRAWING_BUFFER_AREA`) (v0.7.11) |
 | `coverMaxMs` | 5000 | the join cover's longest hold; also the "no display" threshold |
+| `openWalk` / `openSurround` | `true` | the v0.7.12 open-scene signals (walk: `walkEveryFrames` 6, `walkTravel` 0.5, `walkTurnDeg` 20, `walkPivotFrac` 0.25; surround: `surroundSides` 3, `surroundRuns` 2); `false` = off (A/B) |
+| `eyeAnchor` / `eyeLeanMax` | `true` / `0.5` | v0.7.12: the nominal viewer on the page camera (camera rig); the scaled head deviation clamped to this × the nearest surface in view (estimator / target scale) |
 | `openSceneMode` | `'fixed'` | open scenes (no target, the camera inside a world; latched, v0.7.11): `'fixed'` focus at real scale, or `'percentile'` (the 0.5.3 room rule) |
 | `scaleSamples` / `scaleSpread` / `scaleMaxWaitMs` | 3 / 0.1 / 8000 | the rig's scale is decided once per activation: from this many consistent estimates within this spread, on a quiet page, or after this long (v0.7.11) |
 | `openSceneConvM` | 2 | `'fixed'`: the focus distance in front of the page camera, in scene units read as metres |
@@ -1112,9 +1145,35 @@ a structural reason (WebGPU, post effects, several cameras), the HUD shows that 
 
 ### Rigs: camera by default, display on Ctrl+Alt+P
 
+**Eyes anchored on the page camera (v0.7.12, David: "keep the page's original camera; add only IPD +
+convergence", for games too).** What the runtime's camera rig does with the head (XR_DXR_view_rig §3,
+`dxr_camera3d_compute_view`): the eye relative to the **canvas centre**, its z minus the nominal
+distance, its centre pulled toward the canvas axis by `parallaxFactor`, × m2v. So the nominal distance
+is already subtracted, but the nominal viewer's height above the window (0.1 m on most panels) and the
+canvas's own offset on the panel are not: at rest the eyes sat m2v × pf × (nominal − canvas centre) off
+the page camera (2.2 units right and 0.4 down at m2v 8 for the harness's off-centre canvas, case
+`anchor-est-off`), reframing the author's shot and, in a mesh room, pushing the eyes toward a wall.
+Now (`core.anchorEyes`, camera rig only, every session frame): that rest offset is subtracted from both
+eyes and each frustum is re-sheared for the eye's new position (the runtime's own
+`dxr_offaxis_projection` relation, `P[8] = −shear.x / ro`, `P[0] = (1 + shear.z) / ro`, applied as a
+delta), so the screen window stays centred on the page camera's axis at the convergence distance:
+**at the nominal head the eyes straddle the page camera and see the author's frustum exactly** (each
+sheared only by its own ±IPD/2); off-axis per eye; the convergence plane keeps zero disparity. Only the
+head's **deviation** from nominal moves the eyes, × m2v × pf as before. On an estimator / target scale
+that deviation is **clamped** to `T.eyeLeanMax` (0.5) × the nearest surface in view (the estimator's
+nearest bounded sphere, `z − r`, and the convergence distance): normal parallax is unchanged, but
+leaning in cannot carry the eyes into the model (a 0.6 m lean at m2v 8 is 4.8 units; with the knot 6.9
+ahead it stops at 3.47). **Open (fixed) scenes keep the anchor** (rest = page camera, so arrival.space at
+rest renders from the page camera) **without the clamp**: at real scale the deviation is the viewer's
+real head motion. The display rig is untouched (a portal: the eyes belong at the viewer's distance).
+Inputs: `XRDisplayInfo.nominalViewerPosition` and the panel's size (DisplayXR Browser patch 0221+), and
+the canvas centre on the panel, estimated as the SDK's `tileScreenRect` does (`screenX/Y` + browser
+chrome + the client rect; exact at 100 % page zoom, refreshed every 30 frames). Without the display info
+the views are used as they come (one console note). `T.eyeAnchor: false` is the A/B.
+
 **The scale is set once (v0.7.11, David: "if we ever use m2v it cannot change, the scale is set once and
-we'd better get it right").** A rig's scale puts the eyes at the viewer's head offset × m2v from the
-page camera, so a scale that follows the estimate moves the eyes through the scene as the viewer walks
+we'd better get it right").** A rig's scale multiplies the viewer's head offset (since v0.7.12 only its
+deviation from nominal) into the eyes' offset from the page camera, so a scale that follows the estimate moves the eyes through the scene as the viewer walks
 (arrival.space on the panel, #319: page camera at y 1.23, eyes at y 6.8). So, per activation:
 - **open scene:** m2v 1, at once (and for good: open latches). It is the one change allowed after a
   decision: an estimator scale is replaced once if the scene turns out to be open (logged).
@@ -1243,6 +1302,17 @@ running), so the rig is always sampled at the configured depth.
 | `spark-room-subject` | `three-spark.html?room=1`, a 0.4-unit box added 3 units ahead 1 s after settling | v0.7.11: `fixed` (2, m2v 1, latched) before AND 5 s after the box, no settle line (≤ 0.7.9: `estimator` after, converging on the box) |
 | `spark-room-props` | `three-spark.html?room=1&subject=1`: the box in view from the start | open with a bounded prop in view: `fixed`, convergence 2 (v0.7.11) |
 | `spark-room-latch` | `three-spark.html?room=1`, fake head offset (0, 0.1, 0.6) m, then `__leaveRoom()` (camera 40 back, outside every bound) | `fixed` 2, latched, m2v 1, eye 0 within 0.7 of the page camera before AND 4 s after (v0.7.11) |
+| `walk-room-still` | `pages/three-walk.html?scene=room&cam=still`: a mesh room (floor + four separate wall meshes 3 high + crates), no `lookAt`, the camera still inside at eye height | v0.7.12: open by **surround**: `fixed` 2, m2v 1, latched, one `open scene: surrounded: …` line |
+| `walk-room-fps` | `?scene=room&cam=walk`: a first-person stroll round the room | open (walk or surround, whichever first), one line |
+| `walk-field` | `?scene=field&cam=walk`: open ground, pillars 40 ahead only (never surrounded), walking forward and looking ±20° | open by the **walk** motion classifier (`walk: the camera moved … and turned …`) |
+| `walk-plc` | `?scene=model&cam=plc`: the model page with a PointerLockControls-shaped `window.controls` on the camera | open by `walk: PointerLockControls (window.controls)` |
+| `walk-fpc` | `?scene=field&cam=fpc`: a FirstPersonControls-shaped `window.controls`, the page `lookAt`s 100 ahead every frame | open by `walk: FirstPersonControls`; the lookAt target no longer wins: `fixed` 2 |
+| `walk-model-still` / `-orbit` / `-dolly` | `?scene=model`: case `a`'s scene (a knot on a 40-unit floor, camera 8 back) still, orbiting it (radius 8, facing it, no `lookAt`), dollying 4–8 along the axis | stay the **estimator** for 8 s: not latched, no open line, m2v ≠ 1 |
+| `walk-room-off` | `?scene=room&cam=still`, cfg `openWalk` / `openSurround` false | the A/B: the estimator |
+| `anchor-est-rest` | `?scene=model&cam=still`, the fake's **runtime model** (`fake.nominal` [0, 0.1, 0.65]: eyes as `dxr_camera3d_compute_view` places them, relative to the canvas centre; frusta sheared by eye × diopters), head at nominal | v0.7.12: estimator m2v 8; eye midpoint on the page camera (< 1e-4); the two eyes' P[8] opposite, P[9] 0 (the author's frustum ± IPD/2); the removed rest offset > 0.5 units |
+| `anchor-est-off` | the same, cfg `eyeAnchor: false` | the A/B: eye midpoint at m2v × (nominal − canvas centre) |
+| `anchor-fixed-rest` / `-lean` | `?scene=room&cam=still`, runtime model, head at nominal / (0.1, 0.1, 0.48) | fixed rig (m2v 1): midpoint on the page camera / exactly (0.1, 0, −0.17), unclamped |
+| `anchor-est-lean` / `-clamp` | `?scene=model&cam=still`, head (0.02, 0.1, 0.62) / (0, 0.1, 0.05) | a small lean is m2v × the deviation, unclamped; a 0.6 m lean (4.8 units) is clamped to 0.5 × the nearest surface (6.94 → 3.47), toward the scene, short of it |
 | `spark-est-head` | `three-spark.html?at=7`, the same head offset, then a 3-unit box 3 ahead | estimator scale set once (d 7, m2v 7, logged once); eye 0 at head × m2v (4.3) from the camera; the box moves the convergence > 5 %, m2v stays one value over 4 s, the eye never farther than head × m2v (v0.7.11) |
 | `e-postfx-view0` | `three-postfx.html?view=identity`: the chain, its camera kept at `setViewOffset(w, h, 0, 0, w, h)` (the sandworm page at rest), an unlit magenta marker at (0, 1.5, 3) | as `a`, plus the marker's height in the left eye = the page's own projection of it (`window.__expectNdcY`, ± 0.02 NDC). The fake skews x only, so without the view both halves are equally wrong and only this check sees it. Fails before v0.6.3: never converts, with the sandworm page's 2D line |
 | `e-postfx-shift` | `?view=shift`: a kept lens shift, 12 % of the height down | as `e-postfx-view0` (marker at 0.515; 0.275 without the view) |
