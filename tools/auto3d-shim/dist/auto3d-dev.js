@@ -522,7 +522,8 @@ function dxrCore(cfg, cap, S) {
     surroundSides: 3,
     surroundRuns: 2,      // ... on this many consecutive estimates
     eyeAnchor: true,      // false: the runtime's views as they come (≤ 0.7.11), harness A/B
-    eyeLeanMax: 0.5,      // the scaled head deviation never exceeds this × the nearest surface in view (estimator / target scale only): leaning in cannot enter the model
+    eyeLeanMax: 0.5,
+    nominalFallback: [0, 0.1, 0.6], // the nominal viewer (m, display space) when XRDisplayInfo has none: the runtime's on Leia SR + sim_display      // the scaled head deviation never exceeds this × the nearest surface in view (estimator / target scale only): leaning in cannot enter the model
     displayPivot: true, // display rig: the page's rotations pivot about the virtual display's centre (pivotOffset); false = the portal rides the page camera (0.5.4), harness A/B only
     convRoomPercentile: 0.7, // 'percentile' mode: converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance). 'fixed' mode reads it only for the scale-sanity note
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
@@ -1264,6 +1265,7 @@ function dxrCore(cfg, cap, S) {
     const A = st.V[0].pose, Bp = st.V[1].pose;
     const c = [(A[12] + Bp[12]) / 2, (A[13] + Bp[13]) / 2, (A[14] + Bp[14]) / 2];
     const dev = [c[0] - r[0], c[1] - r[1], c[2] - r[2]];
+    if (Math.hypot(dev[0], dev[1], dev[2]) < 1e-6 * (1 + Math.hypot(r[0], r[1], r[2]) + Math.hypot(c[0], c[1], c[2]))) dev[0] = dev[1] = dev[2] = 0;
     const dl = Math.hypot(dev[0], dev[1], dev[2]);
     let lim = Infinity;
     if (st.conv.src !== 'fixed') {
@@ -1285,11 +1287,18 @@ function dxrCore(cfg, cap, S) {
     st.anchor = { r, dev: dl, lim: isFinite(lim) ? lim : null, clamped: k < 1 };
   }
   function nominalOf(st) {
-    const di = st.di, nv = di && di.nominalViewerPosition;
+    const di = st.di, rep = di && di.nominalViewerPosition;
     const W = di && di.displayPixelWidth, H = di && di.displayPixelHeight, wm = di && di.displayWidthMeters, hm = di && di.displayHeightMeters;
-    if (!nv || !(nv.z > 0) || !(W > 0 && H > 0 && wm > 0 && hm > 0)) {
-      if (di && !st.anchorNoted) { st.anchorNoted = true; info('eye anchor: the display reports no nominal viewer / panel size — eyes as the runtime places them'); }
+    if (!(W > 0 && H > 0 && wm > 0 && hm > 0)) {
+      if (di && !st.anchorNoted) { st.anchorNoted = true; info('eye anchor: the display reports no panel size — eyes as the runtime places them'); }
       return null;
+    }
+    const fb = Array.isArray(T.nominalFallback) ? T.nominalFallback : [0, 0.1, 0.6];
+    const reported = !!(rep && rep.z > 0);
+    const nv = reported ? rep : { x: +fb[0] || 0, y: +fb[1] || 0, z: +fb[2] || 0.6 };
+    if (!st.anchorNoted) {
+      st.anchorNoted = true;
+      info(`eye anchor: nominal viewer (${(+nv.x || 0).toFixed(3)}, ${(+nv.y || 0).toFixed(3)}, ${(+nv.z).toFixed(3)}) m ${reported ? 'as the display reports it' : 'by fallback (the display reports none; the runtime Leia SR / sim-display nominal)'} — the page camera is that viewer`);
     }
     if (!st.nomC || st.stats.xrFrames - st.nomC.at >= 30 || st.stats.xrFrames < st.nomC.at) {
       let cx = 0, cy = 0;
