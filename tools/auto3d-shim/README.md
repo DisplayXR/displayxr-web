@@ -1897,6 +1897,21 @@ maximised window, vsync and the frame-rate limit off, the guard off), `arrival.s
   `fixed: open scene` with one `scale set: m2v 1 (open scene)` line through two 8-minute runs (the old build
   flipped to `estimator` at ~63 s); David walked it: no sky lift, no depth drift ("perfect now").
 
+**v0.7.12 (open scenes beyond splats: walk / surround; eyes anchored on the page camera; see Convergence
+and Rigs).**
+- **Headless, 2026-11-26.** Harness: **239 run, 2 skipped (`c`, `d`: no ports_25.sog), all green**, with
+  the 16 new `walk-*` / `anchor-*` cases. PlayCanvas examples
+  (`corpus/results/2026-11-26-pc-examples-v0.7.12.json`): PASS 210, REVIEW 29, FLAT 36, NONE 1, ERROR 1,
+  against v0.7.10-latch: `demos/car-showcase` NONE -> PASS and `gaussian-splatting-fx/depth-effects`
+  PASS -> NONE (both PASS on a re-run: load timing), `loaders/glb` PASS -> REVIEW (its known flip; REVIEW
+  on the v0.7.11 bundle too, same night). New open latches: `xr/ar-basic`, `xr/ar-camera-color`,
+  `xr/xr-hands` by **surround** (a room of meshes round the camera); no example latched by walk headless
+  (`camera/first-person` and `camera/fly` take no input there). Every verdict of an example that went
+  open is unchanged.
+- **Not yet on the panel.** To check: arrival.space unchanged (open, `m2v 1`, at rest the eyes on the page
+  camera), a mesh FPS-style page (`open scene: walk: …` or `surrounded: …`), an object viewer (estimator;
+  leaning in stops short of the model).
+
 **v0.7.10 (#339: one stretched frame at go-live; the layer now follows the committed side-by-side store,
 "Going live" under [Architecture](#architecture-a-sentinel-one-core-one-adapter-per-engine)), Windows:**
 - **Panel.** Leia 15.6" 4K, DisplayXR Browser 1.10.6 with its built-in auto-3D off and the dev extension,
