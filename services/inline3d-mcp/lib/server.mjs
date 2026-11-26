@@ -21,7 +21,7 @@ import { assetCheck, formatAssetReport } from '../node_modules/@displayxr/inline
 import { scaffold } from '../node_modules/@displayxr/inline3d-tools/lib/scaffold.mjs';
 import { parsePublicUrl, assertResolvesPublic, guardedGet, GuardError } from './url-guard.mjs';
 
-export const TOOLS_VERSION = '0.1.7';
+export const TOOLS_VERSION = '0.1.8';
 export const SERVER_VERSION = '0.1.0';
 const PKG = new URL('../node_modules/@displayxr/inline3d-tools/', import.meta.url);
 const DOCS_URL = 'https://github.com/DisplayXR/displayxr-web/blob/main/docs';
@@ -137,7 +137,7 @@ export function createServer({ runpod, limits, clientIp = 'unknown', log = () =>
     await limits.settleJob(id, st.executionTime).catch(() => {});
     const out = st.output || {};
     if (out.verdict === 'error') return { done: true, error: out.error };
-    return { done: true, report: out.report, seconds: out.checkSeconds };
+    return { done: true, report: out.report, kind: out.kind, seconds: out.checkSeconds };
   }
 
   function answer(id, r, cold) {
@@ -145,6 +145,7 @@ export function createServer({ runpod, limits, clientIp = 'unknown', log = () =>
       return ok(`CHECK RUNNING (job_id: ${id}). ${cold ? 'The checker is starting up, which takes about a minute the first time. ' : ''}Tell the user the check is running, then call get_check_result with this job_id (it waits up to 40 s per call). Results are kept 30 minutes.`, { status: 'running', job_id: id });
     }
     if (r.error) return fail(`The check could not complete: ${r.error}`);
+    if (r.kind === 'asset') return ok(formatAssetReport(r.report), r.report);
     return ok(formatReport(r.report), { status: 'done', job_id: id, ...trimForStructured(r.report) });
   }
 
@@ -237,6 +238,12 @@ export function createServer({ runpod, limits, clientIp = 'unknown', log = () =>
       rep.file = u.href;
       return ok(formatAssetReport(rep), rep);
     } catch (e) {
+      // Some CDNs refuse fetches from this server's datacenter IPs (Cloudflare bot rules) while a
+      // browser, and the checker's worker, get the file: retry a .glb there before giving up.
+      if (/HTTP (401|403|429)\b/.test(e.message) && /\.glb$/i.test(new URL(url).pathname) && runpod && limits) {
+        log(`check_asset_url: ${e.message}; retrying on the worker`);
+        return runCheckTool({ mode: 'asset', url, target });
+      }
       return fail(`check_asset_url: ${e.message}`);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
