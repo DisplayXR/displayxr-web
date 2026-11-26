@@ -1166,10 +1166,17 @@ leaning in cannot carry the eyes into the model (a 0.6 m lean at m2v 8 is 4.8 un
 ahead it stops at 3.47). **Open (fixed) scenes keep the anchor** (rest = page camera, so arrival.space at
 rest renders from the page camera) **without the clamp**: at real scale the deviation is the viewer's
 real head motion. The display rig is untouched (a portal: the eyes belong at the viewer's distance).
-Inputs: `XRDisplayInfo.nominalViewerPosition` and the panel's size (DisplayXR Browser patch 0221+), and
-the canvas centre on the panel, estimated as the SDK's `tileScreenRect` does (`screenX/Y` + browser
-chrome + the client rect; exact at 100 % page zoom, refreshed every 30 frames). Without the display info
-the views are used as they come (one console note). `T.eyeAnchor: false` is the A/B.
+Inputs: the panel's size from `XRDisplayInfo`, the nominal viewer, and the canvas centre on the panel,
+estimated as the SDK's `tileScreenRect` does (`screenX/Y` + browser chrome + the client rect; exact at
+100 % page zoom, refreshed every 30 frames). **The nominal viewer:** `XRDisplayInfo.nominalViewerPosition`
+when the browser reports it; DisplayXR Browser 1.10.6 does not (its `getDisplayInfo()` has the panel size
+and the view scale only), so the fallback is `T.nominalFallback` = **(0, 0.1, 0.6) m**, the nominal the
+runtime itself uses on the shipping displays: the Leia SR plug-in reports it (`displayxr-cli info`: "SR
+nominal viewing position: (0.0, 100.0, 600.0) mm"), sim_display seats its viewer 0.1 m up too, and the
+camera rig takes only its y and z (x is 0). Only x / y enter the anchor (the runtime subtracts z). One
+console line per canvas says which: `eye anchor: nominal viewer (0.000, 0.100, 0.600) m by fallback …` or
+`… as the display reports it`. Without a panel size the views are used as they come.
+`T.eyeAnchor: false` is the A/B.
 
 **The scale is set once (v0.7.11, David: "if we ever use m2v it cannot change, the scale is set once and
 we'd better get it right").** A rig's scale multiplies the viewer's head offset (since v0.7.12 only its
@@ -1310,6 +1317,8 @@ running), so the rig is always sampled at the configured depth.
 | `walk-model-still` / `-orbit` / `-dolly` | `?scene=model`: case `a`'s scene (a knot on a 40-unit floor, camera 8 back) still, orbiting it (radius 8, facing it, no `lookAt`), dollying 4–8 along the axis | stay the **estimator** for 8 s: not latched, no open line, m2v ≠ 1 |
 | `walk-room-off` | `?scene=room&cam=still`, cfg `openWalk` / `openSurround` false | the A/B: the estimator |
 | `anchor-est-rest` | `?scene=model&cam=still`, the fake's **runtime model** (`fake.nominal` [0, 0.1, 0.65]: eyes as `dxr_camera3d_compute_view` places them, relative to the canvas centre; frusta sheared by eye × diopters), head at nominal | v0.7.12: estimator m2v 8; eye midpoint on the page camera (< 1e-4); the two eyes' P[8] opposite, P[9] 0 (the author's frustum ± IPD/2); the removed rest offset > 0.5 units |
+| `anchor-est-unreported` / `anchor-fixed-unreported` | the runtime model at the runtime's nominal (0, 0.1, 0.6), **not reported** (the real panel's `getDisplayInfo()` shape) | the fallback nominal: eye midpoint on the page camera (< 1e-4), one `eye anchor: … by fallback` line |
+| `anchor-default-fake` | the default fake: the real panel shape, the legacy views plus the runtime's rest offset at its nominal | the offset (> 0.5 units) is taken off again: midpoint on the page camera. Every other case runs on this (so its views are what they were); `a` + `a-legacy` (byte parity: the rest offset and the anchor round-trip the float32 frustum by an ulp, so both run without them) and the two pre-0.7.12 head-model cases (`spark-est-head`, `spark-room-latch`) take `fake.noRest` + `eyeAnchor` off |
 | `anchor-est-off` | the same, cfg `eyeAnchor: false` | the A/B: eye midpoint at m2v × (nominal − canvas centre) |
 | `anchor-fixed-rest` / `-lean` | `?scene=room&cam=still`, runtime model, head at nominal / (0.1, 0.1, 0.48) | fixed rig (m2v 1): midpoint on the page camera / exactly (0.1, 0, −0.17), unclamped |
 | `anchor-est-lean` / `-clamp` | `?scene=model&cam=still`, head (0.02, 0.1, 0.62) / (0, 0.1, 0.05) | a small lean is m2v × the deviation, unclamped; a 0.6 m lean (4.8 units) is clamped to 0.5 × the nearest surface (6.94 → 3.47), toward the scene, short of it |
@@ -1908,6 +1917,13 @@ and Rigs).**
   `xr/xr-hands` by **surround** (a room of meshes round the camera); no example latched by walk headless
   (`camera/first-person` and `camera/fly` take no input there). Every verdict of an example that went
   open is unchanged.
+- **`loaders/glb` flaps 2D <-> 3D every ~4 s on the panel**: by design, and the same on v0.7.11 (headless,
+  same night: 7 conversions / 9 orthographic stand-downs in 30 s on the v0.7.11 bundle, 6 / 9 on v0.7.12).
+  The example's camera switches projection every 2 s; see "Cameras that switch projection" above.
+- **Panel, first pass (8K Dell, Browser 1.10.6):** arrival.space latched by its splat volume at 9 s, one
+  `scale set: m2v 1`, stable 150 s; games_fps latched by `the camera stands inside a world (nothing
+  bounded in view)` at 2 s; keyframes `target: camera.lookAt`, m2v 9.52, no open line. The eye anchor was
+  inert there (the browser reports no nominal viewer): fixed by the fallback above.
 - **Not yet on the panel.** To check: arrival.space unchanged (open, `m2v 1`, at rest the eyes on the page
   camera), a mesh FPS-style page (`open scene: walk: …` or `surrounded: …`), an object viewer (estimator;
   leaning in stops short of the model).

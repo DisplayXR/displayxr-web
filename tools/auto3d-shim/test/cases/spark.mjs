@@ -83,7 +83,7 @@ export default function cases({ P, NEW }) {
     // and stay there when a 3-unit box appears 3 ahead and pulls the estimate in.
     { id: 'spark-est-head', name: 'Spark splats, object viewer (estimator): m2v set once (7) and frozen while the estimate moves; eyes stay at head × m2v from the page camera',
       url: P + 'three-spark.html?at=7', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
-      fake: { eyeX: 0.032, headM: [0, 0.1, 0.6] },
+      fake: { eyeX: 0.032, headM: [0, 0.1, 0.6], noRest: true }, cfg: { eyeAnchor: false }, // the pre-0.7.12 head model (eye = head × m2v, no nominal): the scale-once semantics alone; the anchor is cases/walk.mjs
       probe: async () => {
         const read = () => { const R = window.__dxrAuto3D.state().renderers.find((x) => x.active), c = window.__camWorld(), e = R.eyeAt;
           return { src: R.convergenceSource, d: R.convergence, m2v: window.__fakeXR.lastRig.metersToVirtual, scale: R.rigScale, eyeFromCam: e ? Math.hypot(e[0] - c[12], e[1] - c[13], e[2] - c[14]) : null }; };
@@ -161,7 +161,7 @@ export default function cases({ P, NEW }) {
     // does): at m2v 1 the eyes stay within ~0.6 of the page camera. On the panel (#319) the estimator's
     // m2v put arrival.space's eyes 5.6 units above the camera ('head on top of a tree').
     { id: 'spark-room-latch', name: 'Spark splats, open scene, then the camera leaves the volume: the open latch keeps the fixed focus; eyes stay by the page camera', url: P + 'three-spark.html?room=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
-      fake: { eyeX: 0.032, headM: [0, 0.1, 0.6] },
+      fake: { eyeX: 0.032, headM: [0, 0.1, 0.6], noRest: true }, cfg: { eyeAnchor: false }, // the pre-0.7.12 head model (eye = head × m2v, no nominal): the scale-once semantics alone; the anchor is cases/walk.mjs
       probe: async () => {
         const read = () => {
           const R = window.__dxrAuto3D.state().renderers.find((x) => x.active), c = window.__camWorld(), e = R.eyeAt;

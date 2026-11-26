@@ -53,6 +53,11 @@
 //                     toward the canvas axis by parallaxFactor, eyes ± eyeX × ipdFactor, minus the nominal z,
 //                     × metersToVirtual; each projection sheared by eye × convergenceDiopters
 //                     (dxr_offaxis_projection). skew is ignored.
+//   reportNominal: false  with nominal: the runtime model at that nominal, but getDisplayInfo() does NOT report it
+//                     (the real panel: DisplayXR Browser 1.10.6 reports the panel size only).
+//   (default)         getDisplayInfo() = the real panel's shape (size + view scale, no nominal), and the legacy
+//                     views carry the runtime's rest offset at its nominal (0, 0.1, 0.6) m (the shim's anchor
+//                     takes it off again). noRest: no rest offset; noPanel: the pre-0.7.12 answer (no size).
 //   pixelAspect: K    the eye's projection aspect is K × (eye width / eye height): a store pixel is K
 //                     times as wide as it is tall, as on the panel (K = 2: the eye is stored at half
 //                     width and the weave un-squeezes it). A round object is then K times as tall as
@@ -173,9 +178,13 @@
       if (OPTS.noDisplay) { this.getDisplayInfo = () => Promise.resolve(null); this.getRenderingModes = () => Promise.resolve([]); }
     }
     setViewRig(rig) { this.rig = JSON.parse(JSON.stringify(rig)); H.lastRig = this.rig; H.rigPushes++; }
+    // The REAL panel's shape by default (DisplayXR Browser 1.10.6 on the 8K Dell): the panel size and the
+    // view scale, NO nominalViewerPosition. OPTS.nominal: reported too. OPTS.noPanel: the pre-0.7.12 fake's
+    // answer (no size, so no eye anchor).
     getDisplayInfo() {
-      if (Array.isArray(OPTS.nominal)) { const [x, y, z] = OPTS.nominal; return Promise.resolve({ fake: true, ...PANEL, nominalViewerPosition: { x, y, z, w: 1 } }); }
-      return Promise.resolve({ fake: true, displayPixelWidth: 3840, displayPixelHeight: 2160 });
+      if (Array.isArray(OPTS.nominal) && OPTS.reportNominal !== false) { const [x, y, z] = OPTS.nominal; return Promise.resolve({ fake: true, ...PANEL, recommendedViewScaleX: 0.5, recommendedViewScaleY: 0.5, nominalViewerPosition: { x, y, z, w: 1 } }); }
+      if (OPTS.noPanel) return Promise.resolve({ fake: true, displayPixelWidth: 3840, displayPixelHeight: 2160 });
+      return Promise.resolve({ fake: true, ...PANEL, recommendedViewScaleX: 0.5, recommendedViewScaleY: 0.5 });
     }
     getRenderingModes() { return Promise.resolve([{ name: 'fake-stereo', viewCount: 2 }]); }
     close() {
@@ -231,6 +240,23 @@
         projectionMatrix: proj(vfov, aspect, n, f, s),
         transform: { matrix: eyeMatrix(i) },
       }));
+      // The runtime's REST offset (v0.7.12): its camera rig puts a viewer at the nominal (0, 0.1, 0.6) m —
+      // the Leia SR plug-in's, which the browser does not report — at m2v x pf x (nominal - canvas centre)
+      // off the camera, frustum sheared to match. Added to the legacy pattern so the shim's eye anchor has
+      // something real to take off (the cases' views are then what they were). OPTS.noRest: not added (the
+      // pre-split script, which has no anchor; a fake with no panel size).
+      if (L && L.rig && L.rig.type === 'camera' && !OPTS.noRest && !OPTS.noPanel && !OPTS.noDisplayApi && !OPTS.noDisplay) {
+        const C = canvasCentreM(L.canvas), rig = L.rig, m2v = rig.metersToVirtual > 0 ? rig.metersToVirtual : 1;
+        const pf = rig.parallaxFactor !== undefined ? +rig.parallaxFactor : 1, invd = +rig.convergenceDiopters || 0;
+        const r = [m2v * pf * (0 - C[0]), m2v * pf * (0.1 - C[1])];
+        for (const v of views) {
+          v._baseProj = Array.from(v.projectionMatrix); // TEST ONLY: the frustum before the rest offset (what the shim's anchor restores)
+          const M = v.transform.matrix, P = v.projectionMatrix, a = 1 + M[14] * invd;
+          if (invd > 0 && a > 0.05) { P[8] -= (r[0] * invd * P[0]) / a; P[9] -= (r[1] * invd * P[5]) / a; }
+          M[12] += r[0]; M[13] += r[1];
+        }
+        H.rest = r;
+      }
       return { session: this, getViewerPose: () => ({ views }) };
     }
   }

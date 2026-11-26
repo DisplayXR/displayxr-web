@@ -25,7 +25,7 @@ const WEBGL_CS = 2000, WEBGPU_CS = 2001; // THREE.WebGLCoordinateSystem / WebGPU
 const glProbe = `(() => {
   const L = window.__fakeXR.sessionObjs.at(-1);
   const f = L._frame(); const v = f.getViewerPose().views[0];
-  return { glProj0: Array.from(v.projectionMatrix), backend: window.__backend || null };
+  return { glProj0: v._baseProj || Array.from(v.projectionMatrix), backend: window.__backend || null };
 })()`;
 // One pixel of an SBS frame: [r, g, b, a].
 const px4 = (px, w, x, y) => { const i = (y * w + x) * 4; return [px[i], px[i + 1], px[i + 2], px[i + 3]]; };

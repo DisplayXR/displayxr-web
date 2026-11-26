@@ -45,7 +45,7 @@ function openCase(id, name, query, expectOpen, why, extra) {
 // Eye-anchor probe: reads the anchored eye midpoint (camera axes) and the anchor's record, with the fake
 // head at `head` (display space, metres) for 1 s first.
 const anchorProbe = (head) => new Function(`return (async () => {
-  window.__fakeXROpts.headM = ${JSON.stringify(head)};
+  if (${JSON.stringify(head)}) window.__fakeXROpts.headM = ${JSON.stringify(head)};
   await new Promise((r) => setTimeout(r, 1000));
   const R = window.__dxrAuto3D.state().renderers.find((x) => x.active);
   return R && { src: R.convergenceSource, d: R.convergence, latched: R.openLatched, eyeMid: R.eyeMid, eyeShear: R.eyeShear, anchor: R.anchor, nearSurf: R.nearSurf,
@@ -92,6 +92,23 @@ export default function cases({ P, NEW }) {
         JSON.stringify(sh));
       t('the runtime alone would have parked it m2v × (nominal − canvas centre) off (> 0.5 units)', p.anchor && len(p.anchor.r) > 0.5, JSON.stringify(p.anchor));
     }),
+    // THE REAL PANEL'S SHAPE (DisplayXR Browser 1.10.6): getDisplayInfo() has the panel size but NO
+    // nominalViewerPosition. The runtime still seats its viewer at its own nominal (Leia SR: (0, 0.1, 0.6) m);
+    // the shim's fallback is that nominal, so the anchor still applies, and says so once.
+    anchorCase('anchor-est-unreported', 'eye anchor, estimator, the real panel shape (no nominal reported): the fallback nominal still puts the eyes on the page camera', 'three-walk.html?scene=model&cam=still', [0, 0.1, 0.6], (p, t, r) => {
+      t('estimator scale', p.src === 'estimator' && p.m2v > 6, JSON.stringify({ src: p.src, m2v: p.m2v }));
+      t('eye midpoint on the page camera (|mid| < 1e-4)', len(p.eyeMid) < 1e-4 && p.anchor && len(p.anchor.r) > 0.5, `mid ${p.eyeMid.map((x) => x.toFixed(5))}, removed ${p.anchor && p.anchor.r.map((x) => x.toFixed(3))}`);
+      const l = r.log.filter((x) => /eye anchor:/.test(x));
+      t('logged once: the nominal used, by fallback', l.length === 1 && /\(0\.000, 0\.100, 0\.600\) m by fallback/.test(l[0]), l.join(' | ') || 'no eye-anchor line');
+    }, { fake: { nominal: [0, 0.1, 0.6], reportNominal: false, eyeX: 0.032 } }),
+    anchorCase('anchor-fixed-unreported', 'eye anchor, open scene, the real panel shape (no nominal reported): eyes on the page camera', 'three-walk.html?scene=room&cam=still', [0, 0.1, 0.6], (p, t) => {
+      t('fixed rig, eye midpoint on the page camera', p.src === 'fixed' && len(p.eyeMid) < 1e-4, `src ${p.src}, mid ${p.eyeMid.map((x) => x.toFixed(5))}`);
+    }, { fake: { nominal: [0, 0.1, 0.6], reportNominal: false, eyeX: 0.032 } }),
+    // The default fake (no runtime model): the legacy pattern plus the runtime's rest offset, which the
+    // anchor takes off again: what every other case runs on.
+    anchorCase('anchor-default-fake', 'eye anchor on the default fake (real panel shape, legacy views + the runtime rest offset): the offset is removed', 'three-walk.html?scene=model&cam=still', null, (p, t) => {
+      t('eye midpoint back on the page camera (|mid| < 1e-4) after a rest offset of > 0.5 units', len(p.eyeMid) < 1e-4 && p.anchor && len(p.anchor.r) > 0.5, `mid ${p.eyeMid.map((x) => x.toFixed(5))}, removed ${p.anchor && p.anchor.r.map((x) => x.toFixed(3))}`);
+    }, { fake: {} }),
     // The A/B: anchor off, the same head leaves the eyes m2v × 0.1 above the page camera.
     anchorCase('anchor-est-off', 'eye anchor off (A/B): the runtime\'s eyes sit m2v × the nominal height above the page camera', 'three-walk.html?scene=model&cam=still', NOMINAL, (p, t) => {
       const C = p.runtime.C, want = [p.m2v * (0 - C[0]), p.m2v * (0.1 - C[1]), 0];
