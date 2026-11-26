@@ -5,6 +5,23 @@ entry points (`.`, `./three`) are frozen for 1.x, while the **scene subpaths** (
 `./splat`, `./model`) are a preview tier whose options may change in any release. Entries below say
 which tier they touch, because that is what tells you whether an upgrade can move your pixels.
 
+## Unreleased
+
+### Added — lift (`./lift`, preview tier): the wait and the arrival of the 3D scene are visible
+
+- **A pulse while the scene is made.** From *Explore* until the Gaussian scene is ready, a soft
+  light breathes over the element (native lift only, where the element itself stays on screen),
+  and the chip's label shows its spinner next to "Converting". Under
+  `prefers-reduced-motion` the light is steady.
+- **The scene assembles.** The explore view now arrives with an `assemble` reveal: the splats fly
+  in as particles and settle into the picture, the centre first, over 1.1 s. It replaces the
+  350 ms depth-only reveal, which was easy to miss. `lift(el, { explore: { reveal: 'inflate' } })`
+  keeps the old one. Both eyes of a woven tile see the same particle in the same place (the
+  effect reads the splat's world position and time only), a particle is never drawn nearer than
+  where it settles, and the settled frame is the same frame as before, bit for bit.
+  `createExplore().fadeIn(ms, { assemble: true, assembleMs })` for a page that drives the
+  renderer itself.
+
 ## 1.60.2 — 2026-11-26
 
 ### Fixed — lift: a black Gaussians scene is reported, not opened (web#341)

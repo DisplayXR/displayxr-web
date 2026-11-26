@@ -34,6 +34,8 @@ import { getRegistry } from './providers/registry.js';
 export { resolveMediaAt, STATES };
 
 const FADE_MS = 350;
+/** The explore view's assemble reveal (explore.reveal 'assemble'), ms. */
+const ASSEMBLE_MS = 1100;
 /** Native mode: the builtin chip hides after this long without pointer activity (`ui.autoHideMs`). */
 const UI_AUTOHIDE_MS = 2500;
 const MAX_EYE_PX = 2048; // cap on one view's backing width
@@ -158,7 +160,7 @@ const MONO_VIEW = Object.freeze({
  *        attributes — remove()/exit REMOVES them instead of restoring their pre-lift values (the
  *        browser's built-in: its menu pre-sets `dxr-lift="auto"`).
  * @param {'high'|'normal'|'low'|'paused'} [opts.priority='normal']  native live: `dxr-lift-priority`.
- * @param {{pivotTargetM?:number, comfort?:'auto'|'always'|'off', eyes?:'nominal'|'tracked'}} [opts.explore]
+ * @param {{pivotTargetM?:number, comfort?:'auto'|'always'|'off', eyes?:'nominal'|'tracked', reveal?:'assemble'|'inflate'}} [opts.explore]
  *        the explore view (docs/lift-explore.md § Comfort): a METRIC lift whose pivot is more than
  *        2× off `pivotTargetM` (default 2.0 m; dead-band ±100 %, so photos with a pivot in ~1–4 m
  *        are left untouched and only far scenes — e.g. a paused CG video frame — are rescaled)
@@ -192,6 +194,7 @@ export async function lift(element, opts = {}) {
       pivotTargetM: Number.isFinite(opts.explore?.pivotTargetM) && opts.explore.pivotTargetM > 0 ? opts.explore.pivotTargetM : 2.0,
       comfort: ['auto', 'always', 'off'].includes(opts.explore?.comfort) ? opts.explore.comfort : 'auto',
       eyes: opts.explore?.eyes === 'tracked' ? 'tracked' : 'nominal',
+      reveal: opts.explore?.reveal === 'inflate' ? 'inflate' : 'assemble',
       depthBudget: opts.explore?.depthBudget === 0 || opts.explore?.depthBudget === 'off'
         ? 0
         : Number.isFinite(opts.explore?.depthBudget) && opts.explore.depthBudget > 0 ? opts.explore.depthBudget : EXPLORE_DEPTH_BUDGET,
@@ -347,6 +350,11 @@ export async function lift(element, opts = {}) {
     isPaused: () => kind === 'still' || el.paused || el.ended,
     onState: (from, to, why) => {
       if (chip) chip.setState(to);
+      // The scene is being made (freeze + lift): pulse a soft light over the element, so the wait
+      // reads as work in progress. Native live only: there the element itself stays on screen. On
+      // the web path the SDK's own woven canvas covers it, and DOM the size of a woven tile must
+      // not sit over it (docs/woven-canvas-rules.md §8).
+      if (nativeLive && placement.setBusy) placement.setBusy(to === STATES.FREEZING || to === STATES.LIFTING);
       emit('statechange', { state: to, from, reason: why });
     },
     onEffect: (name, payload) => runEffect(name, payload || {}),
@@ -795,8 +803,15 @@ export async function lift(element, opts = {}) {
         pendingExplore = null;
         if (pendingLifted) lifted = pendingLifted;
         pendingLifted = null;
-        explore.fadeIn(FADE_MS);
-        fadeInUntil = performance.now() + FADE_MS;
+        // The arrival: the splats fly in and settle (explore.reveal 'assemble', the default), so
+        // the viewer sees the 3D scene take over; 'inflate' keeps the short depth-only reveal.
+        if (o.explore.reveal === 'assemble') {
+          explore.fadeIn(FADE_MS, { assemble: true, assembleMs: ASSEMBLE_MS });
+          fadeInUntil = performance.now() + Math.max(FADE_MS, ASSEMBLE_MS);
+        } else {
+          explore.fadeIn(FADE_MS);
+          fadeInUntil = performance.now() + FADE_MS;
+        }
         placement.setInteractive(true);
         syncBacking(true); // explore may cap the backing store at dpr 1
         break;

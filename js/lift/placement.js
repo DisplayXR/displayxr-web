@@ -223,6 +223,7 @@ function contentBox(el) {
  *   fit: ReturnType<typeof computeFit> & {boxW:number, boxH:number},
  *   update(): boolean,       // re-derive geometry; true when the canvas CSS box changed
  *   setInteractive(on: boolean): void,
+ *   setBusy(on: boolean): void,
  *   unmount(): void,
  * }}
  */
@@ -249,9 +250,18 @@ export function mountCanvas(el) {
   const style = document.createElement('style');
   style.textContent =
     ':host{all:initial}' +
-    'canvas{position:absolute;display:block;margin:0;padding:0;border:0;background:transparent;touch-action:none}';
+    'canvas{position:absolute;display:block;margin:0;padding:0;border:0;background:transparent;touch-action:none}' +
+    // The busy veil (setBusy): a soft light breathing over the element while its 3D scene is being
+    // made. Light only, never a background, and it takes no input.
+    '.veil{position:absolute;inset:0;display:none;pointer-events:none;opacity:0;' +
+    'background:radial-gradient(ellipse at 50% 50%,rgba(255,255,255,.26),rgba(255,255,255,.08) 55%,rgba(255,255,255,0) 80%)}' +
+    '.veil.on{display:block;animation:dxrveil 1.4s ease-in-out infinite}' +
+    '@keyframes dxrveil{0%,100%{opacity:.15}50%{opacity:1}}' +
+    '@media (prefers-reduced-motion:reduce){.veil.on{animation:none;opacity:.5}}';
   const canvas = document.createElement('canvas');
-  shadow.append(style, canvas);
+  const veil = document.createElement('div');
+  veil.className = 'veil';
+  shadow.append(style, canvas, veil);
 
   const container = layout.container || el.parentElement || document.body;
   if (layout.after && layout.after.parentElement === container) layout.after.after(host);
@@ -327,6 +337,10 @@ export function mountCanvas(el) {
       canvas.style.touchAction = on ? 'none' : ''; // a touch drag orbits, it does not scroll the page
     },
     setSourceHidden,
+    /** The busy veil: a soft light pulsing over the element while a scene is being generated. */
+    setBusy(on) {
+      veil.classList.toggle('on', !!on);
+    },
     unmount() {
       setSourceHidden(false);
       host.remove();

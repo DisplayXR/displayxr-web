@@ -91,6 +91,39 @@ test('liftLambda: identity at s = 1, pivot plane fixed, flat at s = 0 seen from 
   for (const u of ['uLiftS', 'uLiftO', 'uLiftD', 'uLiftFade']) assert.ok(LIFT_MODIFY_VS.includes(u));
 });
 
+test('assemble reveal: off is the exact baseline, and nothing reads a screen-space input', () => {
+  for (const u of ['uLiftA', 'uLiftARmax']) assert.ok(LIFT_MODIFY_VS.includes(`uniform float ${u};`));
+  // uLiftA >= 1 returns before any per-splat work: the settled scene is untouched
+  assert.match(LIFT_MODIFY_VS, /float liftArrive\(vec3 c\) \{\s*if \(uLiftA >= 1\.0\) return 1\.0;/);
+  // both eyes must see the same particle in the same place: world position and uLiftA only
+  for (const bad of ['gl_FragCoord', 'matrix_view', 'matrix_projection', 'viewport_size', 'gl_Position']) {
+    assert.ok(!LIFT_MODIFY_VS.includes(bad), `${bad} would make the two eyes disagree`);
+  }
+  // a particle away from home is never NEARER than home: z only ever decreases (farther, -z)
+  assert.match(LIFT_MODIFY_VS, /center\.z -= /);
+  assert.ok(!/center\.z \+= /.test(LIFT_MODIFY_VS));
+});
+
+// The shader's per-splat progress, restated: 0 before launch, 1 home, monotonic in the amount.
+function arrive(k, amount) {
+  if (amount >= 1) return 1;
+  return Math.min(1, Math.max(0, (amount - k * 0.6) / 0.4));
+}
+test('assemble reveal: every splat is hidden at 0, home at 1, and the centre leads the edge', () => {
+  for (const k of [0, 0.25, 0.5, 0.75, 1]) {
+    assert.equal(arrive(k, 0), 0);
+    assert.equal(arrive(k, 1), 1);
+    let prev = -1;
+    for (let a = 0; a <= 1.0001; a += 0.05) {
+      const lp = arrive(k, Math.min(1, a));
+      assert.ok(lp >= prev - 1e-12);
+      prev = lp;
+    }
+  }
+  assert.ok(arrive(0, 0.3) > arrive(1, 0.3)); // the centre of the picture arrives first
+  assert.equal(arrive(1, 0.6), 0); // the last splat has not launched yet at 60 %
+});
+
 test('comfortScale: metric scenes off target are brought to it; everything else untouched', () => {
   assert.equal(PIVOT_TARGET_M, 2);
   assert.equal(comfortScale({ pivotZ: 10 }, { space: 'metric' }), 0.2);
