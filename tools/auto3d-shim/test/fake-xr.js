@@ -43,6 +43,9 @@
 //   skew: S           the off-axis skew instead of ±0.1 (0: none). eyeX / eyeZ / skew are read every
 //                     frame, so a harness may change them on window.__fakeXROpts mid-run (the
 //                     PlayCanvas examples run's viewpoint probe: skew 0 + eyeX, halves must differ).
+//   headM: [x, y, z]  the viewer's head offset in metres (y up, +z toward the viewer) on every eye pose;
+//                     with it, eyeX / eyeZ / headM are multiplied by the camera rig's metersToVirtual, as
+//                     the runtime does: the eyes sit head × m2v from the page camera (#319 'teleport').
 //   pixelAspect: K    the eye's projection aspect is K × (eye width / eye height): a store pixel is K
 //                     times as wide as it is tall, as on the panel (K = 2: the eye is stored at half
 //                     width and the weave un-squeezes it). A round object is then K times as tall as
@@ -101,7 +104,15 @@
     return o;
   }
   const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-  const eyeMatrix = (i) => { const m = IDENTITY.slice(); m[12] = (i ? 1 : -1) * (+OPTS.eyeX || 0); m[14] = +OPTS.eyeZ || 0; return m; };
+  // headM (see the header): eyeX / eyeZ / headM scaled by the pushed camera rig's metersToVirtual.
+  const eyeMatrix = (i) => {
+    const m = IDENTITY.slice(), h = Array.isArray(OPTS.headM) ? OPTS.headM : null;
+    const k = h && H.lastRig && H.lastRig.metersToVirtual > 0 ? H.lastRig.metersToVirtual : 1;
+    m[12] = ((i ? 1 : -1) * (+OPTS.eyeX || 0) + (h ? +h[0] || 0 : 0)) * k;
+    m[13] = (h ? +h[1] || 0 : 0) * k;
+    m[14] = ((+OPTS.eyeZ || 0) + (h ? +h[2] || 0 : 0)) * k;
+    return m;
+  };
 
   class FakeLayer {
     constructor(session, canvas, opts) {

@@ -156,7 +156,17 @@ function dxrPlayCanvas(core) {
   function wrapDevice(st) {
     const dev = st.dev;
     const orig = dev.setResolution;
-    st.setRes = (w, h) => { st.depth++; try { orig.call(dev, w, h); } finally { st.depth--; } };
+    // WebGPU: what the engine has encoded so far for this frame is submitted first. We resize from
+    // postrender (the flip, the stand-down), i.e. mid-frame: the canvas's current texture, which this
+    // frame's passes draw into, is destroyed by the canvas resize, and the engine's own submit at
+    // frameEnd then failed validation ("Destroyed texture [D3DImageBacking_…WebGPUSwapBufferProvider]
+    // used in a submit", at every conversion: #319). Submitted before the resize, the work is valid.
+    st.setRes = (w, h) => {
+      if (dev.isWebGPU && typeof dev.submit === 'function' && (realW(st.canvas) !== w || realH(st.canvas) !== h)) {
+        try { dev.submit(); } catch (e) { warnOnce('pc-gpu-submit', 'could not submit the frame before a resize', e); }
+      }
+      st.depth++; try { orig.call(dev, w, h); } finally { st.depth--; }
+    };
     dev.setResolution = function (w, h) {
       if (!st.active || st.depth > 0) { if (!st.active) { st.L.w = w; st.L.h = h; } return orig.call(dev, w, h); }
       st.L.w = w; st.L.h = h;
@@ -1295,7 +1305,7 @@ function dxrPlayCanvas(core) {
       const s = Math.sqrt(Math.max(m[0] * m[0] + m[1] * m[1] + m[2] * m[2], m[4] * m[4] + m[5] * m[5] + m[6] * m[6], m[8] * m[8] + m[9] * m[9] + m[10] * m[10]));
       const r = Math.hypot(bb.halfExtents.x, bb.halfExtents.y, bb.halfExtents.z) * s;
       if (!(r >= 0) || !isFinite(r)) continue;
-      more = cb(wx, wy, wz, r) !== false;
+      more = cb(wx, wy, wz, r, false, true) !== false; // a splat volume: holding the camera, it is a world (core estimateSubjectDistance)
     }
   }
 

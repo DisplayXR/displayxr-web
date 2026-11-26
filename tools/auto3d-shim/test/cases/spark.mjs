@@ -76,6 +76,35 @@ export default function cases({ P, NEW }) {
       } },
     // No lookAt, the lattice 7 units ahead: the estimator finds the SplatMesh's centre (before the
     // splat bounds it saw nothing and fell back to 5.00).
+    // The camera rig in ESTIMATOR mode (an object viewer: the camera outside every bound). v0.7.11: the
+    // scale (m2v = depth × d / 0.5, d where the scale was decided) is set ONCE and frozen; the
+    // convergence keeps following the estimate. The viewer's head sits 0.61 m off (fake headM, scaled by
+    // m2v as the runtime does): the eyes sit head × m2v from the page camera (0.61 × 7 ≈ 4.3 units here),
+    // and stay there when a 3-unit box appears 3 ahead and pulls the estimate in.
+    { id: 'spark-est-head', name: 'Spark splats, object viewer (estimator): m2v set once (7) and frozen while the estimate moves; eyes stay at head × m2v from the page camera',
+      url: P + 'three-spark.html?at=7', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
+      fake: { eyeX: 0.032, headM: [0, 0.1, 0.6] },
+      probe: async () => {
+        const read = () => { const R = window.__dxrAuto3D.state().renderers.find((x) => x.active), c = window.__camWorld(), e = R.eyeAt;
+          return { src: R.convergenceSource, d: R.convergence, m2v: window.__fakeXR.lastRig.metersToVirtual, scale: R.rigScale, eyeFromCam: e ? Math.hypot(e[0] - c[12], e[1] - c[13], e[2] - c[14]) : null }; };
+        const before = read();
+        window.__addSubject(3); // a 3-unit box 3 ahead: the estimate moves in from 7
+        let maxEye = 0; const m2vs = new Set();
+        for (let i = 0; i < 40; i++) { await new Promise((r) => setTimeout(r, 100)); const x = read(); m2vs.add(x.m2v); if (x.eyeFromCam > maxEye) maxEye = x.eyeFromCam; }
+        return { before, after: read(), maxEye, m2vs: [...m2vs] };
+      },
+      check(r, t) {
+        t('converted within 60 s', r.ok, `${r.ms} ms`);
+        const p = r.probe, head = Math.hypot(0.032, 0.1, 0.6);
+        if (!p) { t('probe read', false, 'no probe'); return; }
+        const b = p.before, a = p.after;
+        t('scale set once by the estimator at the lattice (7 ± 5 %), m2v = d, logged once', b.src === 'estimator' && b.scale && Math.abs(b.scale.d - 7) / 7 < 0.05 && Math.abs(b.m2v - b.scale.d) < 1e-3 * b.scale.d &&
+          r.log.filter((l) => /scale set: m2v/.test(l)).length === 1, `before ${JSON.stringify(b)}; ${r.log.filter((l) => /scale set/.test(l)).join(' | ')}`);
+        t('eye 0 at head × m2v from the page camera (±5 %)', Math.abs(b.eyeFromCam - head * b.m2v) < 0.05 * head * b.m2v, `eye ${b.eyeFromCam.toFixed(2)}, head × m2v ${(head * b.m2v).toFixed(2)}`);
+        t('the box pulls the estimate in (convergence moves > 5 %), m2v does NOT move (one value over 4 s)', Math.abs(a.d - b.d) / b.d > 0.05 && p.m2vs.length === 1 && p.m2vs[0] === b.m2v,
+          `d ${b.d.toFixed(2)} -> ${a.d.toFixed(2)}; m2v seen ${p.m2vs.join(', ')}`);
+        t('the eyes never moved farther than head × the frozen m2v from the page camera', p.maxEye <= head * b.m2v * 1.01, `max ${p.maxEye.toFixed(3)} vs ${(head * b.m2v).toFixed(3)}`);
+      } },
     { id: 'spark-est', name: 'Spark splats, no lookAt: estimator converges on the SplatMesh centre (7)', url: P + 'three-spark.html?at=7', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady' },
     // No lookAt, the camera inside the splat mesh (lattice at 8 + a 15-unit shell around the camera):
     // the mesh's sphere holds the camera and nothing bounded is in view: an OPEN scene. Fixed focus:
@@ -95,34 +124,62 @@ export default function cases({ P, NEW }) {
       } },
     // ... and with T.convRoomPercentile 0.5 on top: the weighted MEDIAN (8.06).
     { id: 'spark-room-percentile-p50', name: 'Spark splats, camera inside the mesh, percentile mode, convRoomPercentile 0.5: the weighted median (8)', url: P + 'three-spark.html?room=1&mode=percentile&p=0.5', shim: NEW, cfg: { openSceneMode: 'percentile', convRoomPercentile: 0.5 }, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady' },
-    // A bounded subject appears inside the open scene (a model loading into a Marble world): 1 s after
-    // settling on the fixed focus, the page adds a 0.4-unit box 3 units ahead. The estimator keeps
-    // running, so the source switches from 'fixed' to 'estimator' and the rig leaves real scale
-    // (metersToVirtual = depth·d/0.5, eased toward the box at 3; read 5 s after it appears).
-    { id: 'spark-room-subject', name: 'Spark splats, open scene, a bounded subject appears after 1 s: fixed -> estimator', url: P + 'three-spark.html?room=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
+    // v0.7.11 (#319): a bounded prop in view no longer ends an open scene, and open LATCHES. arrival.space
+    // has ~400 meshes (props, signs, portals) inside its splat world: the source flipped between the
+    // estimator and the fixed rig as the viewer walked, and the depth kept changing on the panel.
+    // A bounded subject appears inside the open scene 1 s after the fixed focus (a model loading into a
+    // world): the source STAYS 'fixed' at real scale (0.7.x: it went to 'estimator', converging on the box).
+    { id: 'spark-room-subject', name: 'Spark splats, open scene, a bounded subject appears after 1 s: stays fixed (open latches, props do not veto)', url: P + 'three-spark.html?room=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
       probe: async () => {
-        const read = () => { const R = window.__dxrAuto3D.state().renderers.find((x) => x.active); return { src: R.convergenceSource, via: R.convergenceVia, d: R.convergence, rig: JSON.parse(JSON.stringify(window.__fakeXR.lastRig)), hud: (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || '' }; };
+        const read = () => { const R = window.__dxrAuto3D.state().renderers.find((x) => x.active); return { src: R.convergenceSource, via: R.convergenceVia, d: R.convergence, latched: R.openLatched, rig: JSON.parse(JSON.stringify(window.__fakeXR.lastRig)), hud: (document.querySelector('[data-dxr-auto3d-hud]') || {}).textContent || '' }; };
         const before = read();
         await new Promise((r) => setTimeout(r, 1000));
         window.__addSubject();
-        await new Promise((r) => setTimeout(r, 5000)); // the estimator runs every 30 frames, eased by 0.25: ~10 steps
+        await new Promise((r) => setTimeout(r, 5000)); // the estimator ran every 30 frames: ~10 times
         return { before, after: read() };
       },
       check(r, t) {
         t('converted within 60 s', r.ok, `${r.ms} ms`);
         const p = r.probe;
         if (!p) { t('probe read', false, 'no probe'); return; }
-        const b = p.before, a = p.after;
-        t(`before: source 'fixed', convergence 2, real scale (m2v 1, ipd = parallax = 1), HUD "(fixed: open scene)"`,
-          b.src === 'fixed' && b.d === 2 && b.rig.metersToVirtual === 1 && b.rig.ipdFactor === 1 && b.rig.parallaxFactor === 1 && b.hud.includes('(fixed: open scene)'),
-          `src ${b.src} d ${b.d} m2v ${b.rig.metersToVirtual} ipd ${b.rig.ipdFactor} parallax ${b.rig.parallaxFactor} hud "${b.hud}"`);
-        t(`after the box: source 'estimator', convergence toward the box (3 ± 5 %), rig m2v = 0.5·d/0.5 again`,
-          a.src === 'estimator' && Math.abs(a.d - 3) / 3 < 0.05 && Math.abs(a.rig.metersToVirtual - a.d) < 1e-3 * a.d && Math.abs(a.rig.convergenceDiopters - 1 / a.d) < 1e-3 / a.d && a.hud.includes('(estimator)'),
-          `src ${a.src} via ${a.via} d ${a.d} m2v ${a.rig.metersToVirtual} diopters ${a.rig.convergenceDiopters} hud "${a.hud}"`);
-        // The go-live line said 2.00 (fixed); the move to the box gets ONE follow-up line once eased to rest.
-        const settled = r.log.filter((l) => /convergence settled: /.test(l));
-        t('one "convergence settled: ~3 units (estimator)" line after the go-live line', settled.length === 1 && /settled: (2\.9|3\.0)\d* units \(estimator\)/.test(settled[0]),
-          settled.join(' | ') || 'none');
+        const fixedOk = (x) => x.src === 'fixed' && x.via === 'open scene' && x.d === 2 && x.rig.metersToVirtual === 1 && x.rig.ipdFactor === 1 && x.rig.parallaxFactor === 1 && x.hud.includes('(fixed: open scene)');
+        const fmt = (x) => `src ${x.src} via ${x.via} d ${x.d} latched ${x.latched} m2v ${x.rig.metersToVirtual} ipd ${x.rig.ipdFactor} hud "${x.hud}"`;
+        t(`before: source 'fixed', convergence 2, real scale (m2v 1, ipd = parallax = 1), latched`, fixedOk(p.before) && p.before.latched === true, fmt(p.before));
+        t(`5 s after the box (3 units ahead, in view): still 'fixed: open scene', convergence 2, real scale`, fixedOk(p.after), fmt(p.after));
+        t('no "convergence settled" line (the source never moved)', !r.log.some((l) => /convergence settled: /.test(l)), r.log.filter((l) => /convergence settled: /.test(l)).join(' | ') || 'none');
+      } },
+    // Open with a bounded prop in view from the start (the box at 3 among the room's splats): open, not
+    // the estimator on the box (0.7.x: 'estimator', 3).
+    { id: 'spark-room-props', name: 'Spark splats, camera inside the mesh with a bounded prop in view from the start: open scene, fixed focus 2', url: P + 'three-spark.html?room=1&subject=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
+      alsoCheck(r, t, h, R) {
+        t(`open with a prop in view: convergence exactly 2, via 'open scene'`, R && R.convergence === 2 && R.convergenceVia === 'open scene' && R.convergenceSource === 'fixed',
+          `convergence ${R && R.convergence} source ${R && R.convergenceSource} via ${R && R.convergenceVia}`);
+      } },
+    // The latch: open, then the camera leaves the room (40 units back, outside every bound: from there the
+    // estimator alone sees an object viewer and would converge on the lattice ~48 ahead). Stays fixed.
+    // The viewer's head sits 0.1 m up and 0.6 m back (fake headM, scaled by the rig's m2v as the runtime
+    // does): at m2v 1 the eyes stay within ~0.6 of the page camera. On the panel (#319) the estimator's
+    // m2v put arrival.space's eyes 5.6 units above the camera ('head on top of a tree').
+    { id: 'spark-room-latch', name: 'Spark splats, open scene, then the camera leaves the volume: the open latch keeps the fixed focus; eyes stay by the page camera', url: P + 'three-spark.html?room=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__splatReady',
+      fake: { eyeX: 0.032, headM: [0, 0.1, 0.6] },
+      probe: async () => {
+        const read = () => {
+          const R = window.__dxrAuto3D.state().renderers.find((x) => x.active), c = window.__camWorld(), e = R.eyeAt;
+          return { src: R.convergenceSource, via: R.convergenceVia, d: R.convergence, latched: R.openLatched, m2v: window.__fakeXR.lastRig.metersToVirtual,
+            eyeFromCam: e ? +Math.hypot(e[0] - c[12], e[1] - c[13], e[2] - c[14]).toFixed(3) : null };
+        };
+        const before = read();
+        window.__leaveRoom();
+        await new Promise((r) => setTimeout(r, 4000));
+        return { before, after: read() };
+      },
+      check(r, t) {
+        t('converted within 60 s', r.ok, `${r.ms} ms`);
+        const p = r.probe;
+        if (!p) { t('probe read', false, 'no probe'); return; }
+        const ok = (x) => x.src === 'fixed' && x.via === 'open scene' && x.d === 2 && x.latched === true && x.m2v === 1 && x.eyeFromCam !== null && x.eyeFromCam < 0.7;
+        t('inside the room: fixed 2, latched, eye 0 within 0.7 of the page camera (head 0.61 m × m2v 1)', ok(p.before), JSON.stringify(p.before));
+        t('4 s after the camera left the volume (outside every bound): still fixed 2 at real scale, eyes still by the camera', ok(p.after), JSON.stringify(p.after));
       } },
     // Render on demand: the page stops drawing 30 frames after the splats are sorted; the shim's
     // replay keeps both eyes drawn (Spark's onBeforeRender runs in every replayed eye render).
