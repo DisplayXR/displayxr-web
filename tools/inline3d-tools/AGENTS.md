@@ -15,11 +15,11 @@ sandboxed agent, prefer the MCP server** (below): MCP servers run outside the sa
 sandbox. Otherwise run them as shell commands:
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.7 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
-npx -y @displayxr/inline3d-tools@0.1.7 assets <file.glb> [--target tablet|desktop]
-npx -y @displayxr/inline3d-tools@0.1.7 assets prep <in> <out.glb> [--metres 0.01] [--decimate 0.5]
-npx -y @displayxr/inline3d-tools@0.1.7 scaffold <esm|vite> <target-dir> --title "<page title>"
-npx -y @displayxr/inline3d-tools@0.1.7 gen providers | gen run <adapter> ... --confirm-paid | gen provenance --file ...
+npx -y @displayxr/inline3d-tools@0.1.8 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.8 assets <file.glb> [--target tablet|desktop]
+npx -y @displayxr/inline3d-tools@0.1.8 assets prep <in> <out.glb> [--metres 0.01] [--decimate 0.5]
+npx -y @displayxr/inline3d-tools@0.1.8 scaffold <esm|vite> <target-dir> --title "<page title>"
+npx -y @displayxr/inline3d-tools@0.1.8 gen providers | gen run <adapter> ... --confirm-paid | gen provenance --file ...
 ```
 
 or, with the MCP server configured (`inline3d-tools mcp`; config snippets for Codex, Cursor and
@@ -58,6 +58,11 @@ the buffer, clamp it to the device, frame the subject on the glass, and validate
 three or PlayCanvas: use PlayCanvas for models and splats (the default, the most tested path); use
 three when the page already is a three.js app (`addScene` + `EyeCamera`, see
 `docs/porting-three-js-apps.md`).
+An **animated character** (a rigged glTF that idles, hops, waves, reacts): `addScene` + `EyeCamera`
+with three's `GLTFLoader` and `THREE.AnimationMixer` (`mixer.update(dt)` in your per-frame update,
+which runs for both the 3D and the 2D path). Play the clips the file actually has (list
+`gltf.animations` names; a model rarely has every gesture the user named, so pick the nearest clip,
+such as a jump for "say hi", and say so). `addModel` does not drive clips.
 
 ### 2. Pick the rig by what the user moves
 
@@ -195,10 +200,25 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
   drop legacy calls. The checker scrolls the page and reports chrome that passes over a tile.
 - HUD text and values: HTML beside or over the tile, readable size, not drawn into the 3D scene.
 
+**Input: tap, pointer, tracked hands.** Taps, clicks and drags are ordinary pointer events on the
+canvas, in 3D and 2D alike: `canvas.addEventListener('pointerdown', …)`. There are no controllers and
+no `select` events. **Tracked hands** (DisplayXR Browser 1.8.0+ on Windows with a hand tracker; none
+anywhere else, so always give the same action a tap too) come from `@displayxr/inline3d/hands`
+(import-map entry `…/inline3d@1.60.2/js/inline3d-hands.js`; types in `hands.d.ts`):
+- a model or splat: `addModel(wall, canvas, url, { hands: true })` (pinch to turn, two pinches to zoom);
+- your own scene: `watchHands(wall, (f) => { const h = f.right || f.left; … })` after `addScene`.
+  Each frame gives `f.left` / `f.right` (null when not seen), with `wrist`, `thumbTip`, `indexTip`,
+  `joint(name)` and `palmLength`, in metres in the rig frame (the eye views' frame: x right, y up, z
+  toward the viewer). "Hold up your hand" = a hand appears (`h && !hadHand`); follow it with
+  `h.wrist[0]`; a pinch = `PinchDetector` on the thumb-to-index distance.
+  `f.gate` is `'available'` or why hands are withheld (`'camera-rig'`, `'not-fullscreen'`,
+  `'scaled-rig'`, …): use a display rig. The checker simulates no hands, so a PASS says nothing
+  about the hand path: say so, and ask the user to try it on the display.
+
 ### 6. Pins (exact versions, no `^`)
 
-`@displayxr/inline3d` **1.60.1**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
-range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.60.1/js/inline3d.js`,
+`@displayxr/inline3d` **1.60.2**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
+range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.60.2/js/inline3d.js`,
 `https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs`,
 `https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js`. If a newer SDK is installed, its
 `CHANGELOG.md` says what changed; prefer the installed version's docs over this list.
@@ -206,7 +226,7 @@ range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr
 ### 7. Before you say done: run the checker
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.7 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.8 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
 ```
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;
@@ -234,8 +254,8 @@ The templates ship in the exact-pinned `@displayxr/inline3d-tools` npm package; 
 command copies them (the first run downloads the package; the user may be asked to approve the command):
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.7 scaffold esm  <target-dir> --title "<page title>"
-npx -y @displayxr/inline3d-tools@0.1.7 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
+npx -y @displayxr/inline3d-tools@0.1.8 scaffold esm  <target-dir> --title "<page title>"
+npx -y @displayxr/inline3d-tools@0.1.8 scaffold vite <target-dir> --title "<page title>" [--name <npm-name>]
 ```
 
 It never overwrites an existing file (`--force` replaces). What it writes:
@@ -245,7 +265,7 @@ It never overwrites an existing file (`--force` replaces). What it writes:
 | `app.js` | the page logic (shared by both flavours): a three.js scene on `addScene` with `EyeCamera`, display rig, validate-before-clear with last-good replay, buffer sized 2× the box (dpr ≤ 2, clamped to the GPU), cover removed on `handle.firstWoven` + a 4 s timeout + `catch`, a mono 2D fallback |
 | `style.css` | page styles; the canvas and its ancestors carry no CSS effects |
 | `index.html` (esm) | no build step: an import map with exact CDN pins |
-| `index.html` + `package.json` (vite) | Vite: exact npm pins (`@displayxr/inline3d` 1.60.1, `three` 0.180.0) |
+| `index.html` + `package.json` (vite) | Vite: exact npm pins (`@displayxr/inline3d` 1.60.2, `three` 0.180.0) |
 
 ### Steps
 
@@ -276,7 +296,7 @@ It never overwrites an existing file (`--force` replaces). What it writes:
    without `player.firstWoven`, wait for the first frame and then ~1200 ms more.
 
    Add `"playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs"` and
-   `"@displayxr/inline3d/model": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.60.1/js/inline3d-model-entry.js"`
+   `"@displayxr/inline3d/model": "https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.60.2/js/inline3d-model-entry.js"`
    (or `.../js/inline3d-splat-pc-entry.js` for `/splat/playcanvas`) to the import map, or
    `"playcanvas": "2.24.0"` to `package.json`. Images and video use `wall.addImage(canvas, 'pic_2x1.jpg')`
    / `wall.addVideo(canvas, videoEl)` in the 3D branch and an `<img>` of the left half (or a mono
@@ -287,8 +307,8 @@ It never overwrites an existing file (`--force` replaces). What it writes:
 5. **Run the checker before saying done**, and fix every FAIL:
 
    ```sh
-   npx -y @displayxr/inline3d-tools@0.1.7 check <target-dir>              # esm
-   npx -y @displayxr/inline3d-tools@0.1.7 check http://localhost:5173/    # vite dev server
+   npx -y @displayxr/inline3d-tools@0.1.8 check <target-dir>              # esm
+   npx -y @displayxr/inline3d-tools@0.1.8 check http://localhost:5173/    # vite dev server
    ```
 
 The untouched template passes every check (verdict PASS). If your change makes a check fail, the
@@ -305,19 +325,29 @@ Tools, in the order to reach for them:
 
 | Tool | When | Install |
 |---|---|---|
-| `inline3d-tools assets` | always, last | `npx -y @displayxr/inline3d-tools@0.1.7 assets` (exact pin, from npm; Node only) |
+| `inline3d-tools assets` | always, last | `npx -y @displayxr/inline3d-tools@0.1.8 assets` (exact pin, from npm; Node only) |
 | glTF-Transform CLI | glTF/GLB in, glTF/GLB out: inspect, resize, compress, simplify, centre | `npx -y @gltf-transform/cli@4.3.0` (pinned; nothing installed globally) |
 | Blender (headless) | any other format (FBX, OBJ, STL, PLY, DAE, .blend), units/axis fixes, heavy decimation | **only if already installed**; never install it |
-| `inline3d-tools gen` | no asset exists and the user wants one generated | `npx -y @displayxr/inline3d-tools@0.1.7 gen`; needs the user's own API key in the environment; every call is paid and needs the user's yes |
+| `inline3d-tools gen` | no asset exists and the user wants one generated | `npx -y @displayxr/inline3d-tools@0.1.8 gen`; needs the user's own API key in the environment; every call is paid and needs the user's yes |
 
 ### 1. Get it
 
 In order of preference:
 
 1. **The user's own asset** (in the project, or a path they gave). Record it:
-   `npx -y @displayxr/inline3d-tools@0.1.7 gen provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
-2. **A library asset with a clear licence** (CC0 / CC-BY, e.g. the Khronos glTF sample models,
-   Poly Haven). Record the URL, author and licence; CC-BY needs visible credit on the page.
+   `npx -y @displayxr/inline3d-tools@0.1.8 gen provenance --file assets/x.glb --source "supplied by the user" --license "user's"`.
+2. **A library asset with a clear licence** (CC0 / CC-BY). Record the URL, author and licence;
+   CC-BY needs visible credit on the page (credit CC0 too, it costs nothing). Where to look:
+   - **Poly Pizza** (`https://poly.pizza`, low-poly, many CC0 and **rigged and animated** characters
+     and animals by Quaternius: dinosaurs, pets, people, robots). Search it with
+     `https://poly.pizza/api/search/<word>` (JSON: `title`, `creator`, `licence`, `url`); the
+     model page `https://poly.pizza<url>` carries the GLB as `https://static.poly.pizza/<uuid>.glb`
+     (CORS open, loads straight into a page). Example: T-Rex by Quaternius, CC0,
+     `https://static.poly.pizza/34eed102-48f0-43dd-bc6f-ef7a6dfddfbb.glb` (336 KB; clips Idle, Walk,
+     Run, Jump, Attack, Death).
+   - **Khronos glTF sample models** (`https://github.com/KhronosGroup/glTF-Sample-Assets`, served
+     from `raw.githubusercontent.com`): test and showcase models (Fox is rigged and animated).
+   - **Poly Haven** (`https://polyhaven.com`): CC0 props, textures and HDRIs, no characters.
 3. **A placeholder you build** (primitives in three.js/PlayCanvas) when nothing fits and the user
    did not ask for generation. Say so in your notes.
 4. **Generation**, only when the user asked for it or agreed. See §4.
@@ -345,7 +375,7 @@ fetches decoders from a CDN). Other fixes: `$GT simplify in.glb out.glb --ratio 
 **Anything else (Blender, if present).** Detect it, don't install it:
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.7 assets prep in.fbx out.glb [--metres 0.01] [--decimate 0.5] [--blender <path>]
+npx -y @displayxr/inline3d-tools@0.1.8 assets prep in.fbx out.glb [--metres 0.01] [--decimate 0.5] [--blender <path>]
 ```
 
 It looks for Blender (`--blender`, `$BLENDER`, `PATH`, the default install location), never installs
@@ -362,8 +392,8 @@ helmet is ~0.3 m, not 2 m).
 ### 3. Check it (before the page uses it)
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.7 assets out.glb            # tablet budget (default)
-npx -y @displayxr/inline3d-tools@0.1.7 assets out.glb --target desktop
+npx -y @displayxr/inline3d-tools@0.1.8 assets out.glb            # tablet budget (default)
+npx -y @displayxr/inline3d-tools@0.1.8 assets out.glb --target desktop
 ```
 
 It reports: missing external files, decoders the page must provide, triangles (both eyes draw
@@ -377,7 +407,7 @@ animations. Fix every FAIL; act on WARNs or say why not. Then run the page check
 ### 4. Generate it (optional, paid, the user's keys)
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.7 gen providers     # which adapters have a key (names only)
+npx -y @displayxr/inline3d-tools@0.1.8 gen providers     # which adapters have a key (names only)
 ```
 
 Adapters: `meshy` and `tripo` (text-to-3d, image-to-3d → GLB), `openai` (image → PNG, for
@@ -398,7 +428,7 @@ textures, posters and backdrops). Each reads its key from the environment (`MESH
   shippable.
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.7 gen run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
+npx -y @displayxr/inline3d-tools@0.1.8 gen run meshy --kind text-to-3d --prompt "a brass desk lamp, PBR" --out assets/lamp-raw.glb --confirm-paid
 ```
 
 ### 5. ASSETS.md
