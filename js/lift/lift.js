@@ -36,8 +36,7 @@ export { resolveMediaAt, STATES };
 const FADE_MS = 350;
 /** The explore view's assemble reveal (explore.reveal 'assemble'), ms. */
 const ASSEMBLE_MS = 1100;
-/** Native mode: the builtin chip hides after this long without pointer activity (`ui.autoHideMs`). */
-const UI_AUTOHIDE_MS = 2500;
+/** (Removed default) The chip no longer auto-hides unless the page asks: `ui: { autoHideMs }`. */
 const MAX_EYE_PX = 2048; // cap on one view's backing width
 
 /** Explore's default depth budget: the scene's fore-to-back disparity at the nominal eye pair, as a
@@ -344,6 +343,12 @@ export async function lift(element, opts = {}) {
     if (chip) chip.setProgress(base + span * value);
   };
 
+  // The native live stream is held ('paused') while the tab is hidden (suspend) or while a scene
+  // is being made (liftBusy); one helper, so neither reason releases the other's hold.
+  let liftBusy = false;
+  function syncLiveHold() {
+    if (nativeLive) nativeLive.hold(suspended || liftBusy ? 'paused' : null);
+  }
   const machine = createLiftMachine({
     kind: machineKind,
     mode: machineMode,
@@ -355,6 +360,11 @@ export async function lift(element, opts = {}) {
       // the web path the SDK's own woven canvas covers it, and DOM the size of a woven tile must
       // not sit over it (docs/woven-canvas-rules.md §8).
       if (nativeLive && placement.setBusy) placement.setBusy(to === STATES.FREEZING || to === STATES.LIFTING);
+      // While the scene is made, the live conversion of the element is held: the frame Explore
+      // lifts is already taken, and the live stream would only compete with the runtime's splat
+      // job for the GPU (win box: a Gaussians job 2.3 s alone, 3.4-3.7 s next to a live stream).
+      liftBusy = to === STATES.FREEZING || to === STATES.LIFTING;
+      syncLiveHold();
       emit('statechange', { state: to, from, reason: why });
     },
     onEffect: (name, payload) => runEffect(name, payload || {}),
@@ -843,11 +853,11 @@ export async function lift(element, opts = {}) {
         break; // nothing temporal to reset: the runtime keeps the stream state
       case 'suspend':
         suspended = true;
-        if (nativeLive) nativeLive.hold('paused');
+        syncLiveHold();
         break;
       case 'resume':
         suspended = false;
-        if (nativeLive) nativeLive.hold(null);
+        syncLiveHold();
         break;
       case 'pauseMedia':
         if (kind === 'video') el.pause();
@@ -936,11 +946,11 @@ export async function lift(element, opts = {}) {
 
   // ── wire up ───────────────────────────────────────────────────────────────────────────
   if (o.ui === 'builtin') {
-    // Native mode: the browser crops the element's whole on-screen rect and weaves its conversion
-    // back into it, so the chip (inside that rect) gets converted + woven like the video. It
-    // auto-hides by default there until the browser splits planes for lift rects; the web path
-    // (the SDK renders + weaves its own canvas, chip excluded) keeps it always visible.
-    const autoHideMs = o.uiAutoHideMs ?? (native ? UI_AUTOHIDE_MS : 0);
+    // The chip stays visible: the DisplayXR Browser composites content over a lifted element flat at
+    // the screen plane (its plane split covers <video> since browser 0333 and <img> since 0474), so
+    // the chip is no longer converted with the picture. Auto-hiding it (the old native default)
+    // also swallowed a click on a hidden chip until the pointer moved. `ui: { autoHideMs }` opts in.
+    const autoHideMs = o.uiAutoHideMs ?? 0;
     chip = createChip(
       placement.shadow,
       {

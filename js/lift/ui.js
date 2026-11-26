@@ -8,11 +8,10 @@
 //   live → "Explore"   explore → "SOG" (download) + "Resume" (videos) + "Exit"   error → "Exit"
 // `ui: 'none'` never creates it; the page drives the handle itself.
 //
-// Auto-hide (`autoHideMs`, lift.js defaults it ON in native mode only): the DisplayXR Browser's
-// native lift crops the element's whole on-screen rect out of the page raster and weaves the
-// vendor's conversion back into it, so a chip INSIDE that rect is converted and woven like video
-// content. Until the browser splits planes for lift rects, the chip fades out after `autoHideMs`
-// without pointer activity over the element (or the chip) and comes back on the next move/press.
+// Auto-hide (`autoHideMs`, opt-in, off by default): the chip fades out after `autoHideMs` without
+// pointer activity over the element (or the chip) and comes back on the next move/press. It was
+// the native default while the DisplayXR Browser converted a chip inside a lifted rect; the browser
+// now composites it flat (plane split, browser 0333 / 0474).
 
 const CSS = `
 .chip{position:absolute;top:8px;right:8px;display:flex;gap:4px;align-items:center;
