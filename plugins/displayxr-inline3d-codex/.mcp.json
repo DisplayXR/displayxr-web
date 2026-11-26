@@ -4,7 +4,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@displayxr/inline3d-tools@0.1.6",
+        "@displayxr/inline3d-tools@0.1.7",
         "mcp"
       ],
       "startup_timeout_sec": 60,

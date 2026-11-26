@@ -14,7 +14,7 @@ Run the checker from the exact-pinned `@displayxr/inline3d-tools` npm package (t
 downloads it; the user approves the command):
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.6 check <url | dir | page.html>
+npx -y @displayxr/inline3d-tools@0.1.7 check <url | dir | page.html>
 ```
 
 If the `inline3d-tools` MCP server is configured, its `check` tool does the same (`target`, `root`,

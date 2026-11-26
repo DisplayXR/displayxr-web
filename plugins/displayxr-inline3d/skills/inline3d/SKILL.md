@@ -117,8 +117,16 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
       `onLayerLost: viewer.onLayerLost`; `addSplat` / `addModel` / `addPlayer` handle it themselves.
 - [ ] **Nothing opaque above the canvas**; backgrounds and black go *under* it. Never overlap two
       woven canvases (hide the lower one with `display: none`).
+- [ ] **Size before the first woven frame** (1.59.0+): the store is already side-by-side when the layer
+      delivers its first frame. Size it in the same task as `addScene`, never after an `await` or in a
+      later `requestAnimationFrame`. Take the first size from `wall.displayInfo` (sync; may be `null` or
+      `cached: true`, both fine), then refine once `handle.getDisplayInfo()` resolves:
+      `let viewInfo = wall.displayInfo; size(); const handle = wall.addScene(…);
+      handle.getDisplayInfo().then((i) => { viewInfo = i; size(); })`. A store still shaped for flat on
+      those frames gives each eye half the scene; the SDK warns once (`[inline3d] this woven scene
+      canvas's store is …`) and holds `firstWoven` until it is right, but never resizes it for you.
 - [ ] **Buffer = 2 × eye width, from `sceneBufferSize`** (core, 1.58.0+): an `addScene` page sizes its
-      canvas with `sceneBufferSize(canvas, { sbs, viewScale: sbs ? await handle.getDisplayInfo() : null })` (set
+      canvas with `sceneBufferSize(canvas, { sbs, viewScale: sbs ? viewInfo : null })` (set
       `canvas.width/height`, or `renderer.setSize(s.width, s.height, false)`, only when they change;
       camera aspect from `s.eyeWidth / s.eyeHeight`), never `clientWidth × devicePixelRatio × 2`. Per eye
       it is window device px × the runtime's view scale (dpr ≤ 2 without one), fitted to the GL limits
@@ -159,8 +167,8 @@ world per frame. Shrinking depth: rotate or scale uniformly, never squash z.
 
 ## 6. Pins (exact versions, no `^`)
 
-`@displayxr/inline3d` **1.58.1**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
-range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.58.1/js/inline3d.js`,
+`@displayxr/inline3d` **1.60.1**, `playcanvas` **2.24.0** (exact; `>=2.22.3 <3` is the supported
+range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr.net/npm/@displayxr/inline3d@1.60.1/js/inline3d.js`,
 `https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.mjs`,
 `https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js`. If a newer SDK is installed, its
 `CHANGELOG.md` says what changed; prefer the installed version's docs over this list.
@@ -168,7 +176,7 @@ range), `three` **0.180.0**. CDN import maps pin the same: `https://cdn.jsdelivr
 ## 7. Before you say done: run the checker
 
 ```sh
-npx -y @displayxr/inline3d-tools@0.1.6 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
+npx -y @displayxr/inline3d-tools@0.1.7 check <url | dir | page.html> [--root <project>] [--max-texture 4096]
 ```
 
 This runs the exact-pinned `@displayxr/inline3d-tools` package from npm (the first run downloads it;
