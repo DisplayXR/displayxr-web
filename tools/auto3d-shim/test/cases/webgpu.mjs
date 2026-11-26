@@ -77,7 +77,7 @@ export default function cases({ P, NEW, productShim }) {
     const L = window.__fakeXR.sessionObjs.at(-1), c = document.querySelector('canvas:not([data-dxr-auto3d-cover])');
     const W = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width').get.call(c), H = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height').get.call(c);
     const f = L._frame(); const v = f.getViewerPose().views[0];
-    return { glProj0: Array.from(v.projectionMatrix), deviceType: window.__deviceType, W, H };
+    return { glProj0: v._baseProj || Array.from(v.projectionMatrix), deviceType: window.__deviceType, W, H };
   })()`;
   return [...[
     ['p-webgpu', '?rev=177', 'a three.js WebGPURenderer below the driver minimum (r177)', /WebGPURenderer r177 .*needs r178 or later/],

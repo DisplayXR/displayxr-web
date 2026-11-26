@@ -9,10 +9,12 @@ export default function cases({ P, NEW, LEGACY, hasSog, SOG_DIR }) {
   // script (which had no target) is about the machinery, not the new source. a-target covers it.
   return [
     // eyeScale 0.5: the pre-0.5.2 half-width eye, so this frame stays byte-comparable with the pre-split script (a-legacy).
-    { id: 'a', name: 'three.js keyframes', url: P + 'three-keyframes.html', shim: NEW, cfg: { convTarget: false, eyeScale: 0.5 }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
+    // fake noRest: a-legacy's parity needs byte-identical inputs; the runtime's rest offset and the eye
+    // anchor that takes it off again round-trip the float32 frustum by an ulp (cases/walk.mjs covers them).
+    { id: 'a', name: 'three.js keyframes', url: P + 'three-keyframes.html', shim: NEW, cfg: { convTarget: false, eyeScale: 0.5, eyeAnchor: false }, fake: { noRest: true }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
     // The pre-split script defaults to depth 0.3; parity is about the machinery, not the default, so it
     // is given today's camera-rig default (0.5, 2026-09-28) through its own test config.
-    { id: 'a-legacy', name: 'three.js keyframes, pre-split content.js', url: P + 'three-keyframes.html', shim: LEGACY, cfg: { depth: 0.5 }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', parityOf: 'a' },
+    { id: 'a-legacy', name: 'three.js keyframes, pre-split content.js', url: P + 'three-keyframes.html', shim: LEGACY, cfg: { depth: 0.5 }, fake: { noRest: true }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', parityOf: 'a' },
     { id: 'a-off', name: 'three.js keyframes, site switched off', url: P + 'three-keyframes.html', shim: NEW, cfg: { enabled: false }, expect: 'idle', ready: 'window.__frozen' },
     { id: 'b', name: 'PlayCanvas meshes (ESM, no globals)', url: P + 'pc-mesh.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
     { id: 'a-kill', name: 'three.js keyframes, Ctrl+Alt+3 off while live, then on again (render-on-demand)', url: P + 'three-keyframes.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', killAfter: true, commits: true },

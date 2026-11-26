@@ -1,9 +1,9 @@
-// DisplayXR auto-3D 0.7.11 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.12 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap, S) {
 'use strict';
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.7.11'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.7.12'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -27,6 +27,17 @@ function dxrCore(cfg, cap, S) {
     openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
     openSceneConvM: 2,      // 'fixed': converge this far in front of the page camera, scene units read as METRES (Marble worlds and most three.js scenes are metric)
     openSceneRealDepth: 0.5, // 'fixed': the camera-rig depth that means the viewer's REAL IPD (ipdFactor 1); less scales the eye separation down (0.25 halves it)
+    openWalk: true,       // the walk signal (walkTick); false: off (A/B)
+    walkEveryFrames: 6,   // the motion classifier samples the page camera this often (session frames)
+    walkTravel: 0.5,      // ... walks when its translation NOT explained by a pivot reaches this × the scene's scale (min(convergence, the bounded items' extent)) ...
+    walkTurnDeg: 20,      // ... AND it has turned at least this much about a point near itself (|pivot| < walkPivotFrac × that scale): orbits, dollies, pans and turntables never do
+    walkPivotFrac: 0.25,
+    openSurround: true,   // the surround signal: inside the bounded items' union box with geometry on >= surroundSides of the 4 horizontal sides (a floor below does not count)
+    surroundSides: 3,
+    surroundRuns: 2,      // ... on this many consecutive estimates
+    eyeAnchor: true,      // false: the runtime's views as they come (≤ 0.7.11), harness A/B
+    eyeLeanMax: 0.5,
+    nominalFallback: [0, 0.1, 0.6], // the nominal viewer (m, display space) when XRDisplayInfo has none: the runtime's on Leia SR + sim_display      // the scaled head deviation never exceeds this × the nearest surface in view (estimator / target scale only): leaning in cannot enter the model
     displayPivot: true, // display rig: the page's rotations pivot about the virtual display's centre (pivotOffset); false = the portal rides the page camera (0.5.4), harness A/B only
     convRoomPercentile: 0.7, // 'percentile' mode: converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance). 'fixed' mode reads it only for the scale-sanity note
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
@@ -460,6 +471,7 @@ function dxrCore(cfg, cap, S) {
       const di = await ask('getDisplayInfo');
       const modes = await ask('getRenderingModes');
       if (di === undefined && modes === undefined) return; // no display API on this build: fall back to the eye timeout
+      if (di) st.di = di; // the nominal viewer and the panel's size (anchorEyes)
       if (di || (Array.isArray(modes) && modes.length)) { st.displayOk = true; return; }
     }
     if (st.layer !== layer) return;
@@ -502,6 +514,7 @@ function dxrCore(cfg, cap, S) {
       two = true;
       for (let i = 0; i < 2; i++) { st.V[i].proj.set(views[i].projectionMatrix); st.V[i].pose.set(views[i].transform.matrix); }
       st.haveViews = true; st.stats.twoView++;
+      anchorEyes(st); // the nominal viewer on the page camera, the scaled lean clamped (camera rig; v0.7.12)
       st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14])) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0);
     } else {
       st.stats.shortView++;
@@ -521,6 +534,7 @@ function dxrCore(cfg, cap, S) {
         try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ending */ }
       }
       if (!estimateConvergence(st, false, true) && st.stats.xrFrames % (st.rigScale ? 30 : 10) === 0) estimateConvergence(st, false);
+      if (!st.openLatched && st.stats.xrFrames % Math.max(1, T.walkEveryFrames | 0) === 0) walkTick(st);
       tickRamp(st, t);
       if (HAS_RIG && st.layer) { try { st.layer.setViewRig(buildRig(st, ad.rigFov(st))); } catch (e) { warnOnce('rig', 'setViewRig failed', e); } }
     }
@@ -715,6 +729,105 @@ function dxrCore(cfg, cap, S) {
     o[i][12] += t[0]; o[i][13] += t[1]; o[i][14] += t[2];
     return o[i];
   }
+  function latchOpen(st, why) {
+    if (st.openLatched) return;
+    st.openLatched = true; st.openWhy = why; st.openByWalk = /^walk/.test(why);
+    info(`open scene: ${why} — fixed focus for the rest of this page`);
+  }
+  function walkTick(st) {
+    if (T.openWalk === false || st.openLatched || !st.active) return;
+    const why = walkSignal(st);
+    if (why) { latchOpen(st, `walk: ${why}`); estimateConvergence(st, false); }
+  }
+  function walkSignal(st) {
+    try { const pl = document.pointerLockElement; if (pl && (pl === st.canvas || pl.contains(st.canvas))) return 'pointer lock on the canvas'; } catch (e) { /* ignore */ }
+    let c = null;
+    try { c = st.ad.walkControls ? st.ad.walkControls(st) : null; } catch (e) { c = null; }
+    if (c) return c;
+    let s = null;
+    try { s = st.ad.sampler(st); } catch (e) { s = null; }
+    if (!s || !s.cameraPose) return null;
+    const m = s.cameraPose, fl = Math.hypot(m[8], m[9], m[10]) || 1;
+    const p = [m[12], m[13], m[14]], f = [-m[8] / fl, -m[9] / fl, -m[10] / fl];
+    const scale = Math.min(st.conv.d > 0 ? st.conv.d : Infinity, st.sceneExtent > 0 ? st.sceneExtent : Infinity);
+    const W = st.walk;
+    const S = (st.walk = { p, f, travel: W ? W.travel : 0, turn: W ? W.turn : 0 });
+    if (!W || !isFinite(scale)) return null;
+    const dp = [p[0] - W.p[0], p[1] - W.p[1], p[2] - W.p[2]];
+    const u = [f[0] - W.f[0], f[1] - W.f[1], f[2] - W.f[2]];
+    const uu = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+    const ang = Math.acos(clamp(f[0] * W.f[0] + f[1] * W.f[1] + f[2] * W.f[2], -1, 1));
+    const sP = uu > 1e-12 ? -(dp[0] * u[0] + dp[1] * u[1] + dp[2] * u[2]) / uu : 0;
+    const tr = Math.hypot(dp[0] + sP * u[0], dp[1] + sP * u[1], dp[2] + sP * u[2]);
+    if (ang > Math.PI / 6 || Math.hypot(dp[0], dp[1], dp[2]) > scale) return null; // a cut
+    S.travel += tr;
+    if (ang > 1e-4 && Math.abs(sP) < (+T.walkPivotFrac || 0.25) * scale) S.turn += ang;
+    if (S.travel >= (+T.walkTravel || 0.5) * scale && S.turn >= ((+T.walkTurnDeg || 20) * Math.PI) / 180) {
+      return `the camera moved ${S.travel.toPrecision(3)} units and turned ${Math.round((S.turn * 180) / Math.PI)} deg about itself (scene scale ${scale.toPrecision(3)})`;
+    }
+    return null;
+  }
+
+  function anchorEyes(st) {
+    st.anchor = null;
+    const rig = st.rig;
+    if (T.eyeAnchor === false || !rig || rig.type !== 'camera') return;
+    const nom = nominalOf(st);
+    if (!nom) return;
+    const m2v = rig.metersToVirtual > 0 ? rig.metersToVirtual : 1, pf = +rig.parallaxFactor || 0, invd = +rig.convergenceDiopters || 0;
+    const r = [m2v * pf * (nom.x - nom.cx), m2v * pf * (nom.y - nom.cy), 0];
+    const A = st.V[0].pose, Bp = st.V[1].pose;
+    const c = [(A[12] + Bp[12]) / 2, (A[13] + Bp[13]) / 2, (A[14] + Bp[14]) / 2];
+    const dev = [c[0] - r[0], c[1] - r[1], c[2] - r[2]];
+    if (Math.hypot(dev[0], dev[1], dev[2]) < 1e-6 * (1 + Math.hypot(r[0], r[1], r[2]) + Math.hypot(c[0], c[1], c[2]))) dev[0] = dev[1] = dev[2] = 0;
+    const dl = Math.hypot(dev[0], dev[1], dev[2]);
+    let lim = Infinity;
+    if (st.conv.src !== 'fixed') {
+      const nr = Math.min(st.conv.d > 0 ? st.conv.d : Infinity, st.nearSurf > 0 ? st.nearSurf : Infinity);
+      if (isFinite(nr)) lim = (+T.eyeLeanMax || 0.5) * nr;
+    }
+    const k = dl > lim ? lim / dl : 1;
+    for (const V of st.V) {
+      const e = V.pose, P = V.proj;
+      const n = [dev[0] * k + e[12] - c[0], dev[1] * k + e[13] - c[1], dev[2] * k + e[14] - c[2]];
+      const a = 1 + e[14] * invd, b = 1 + n[2] * invd;
+      if (invd > 0 && a > 0.05 && b > 0.05) {
+        const p0 = P[0], p5 = P[5];
+        P[8] -= ((n[0] - e[12]) * invd * p0) / a; P[9] -= ((n[1] - e[13]) * invd * p5) / a;
+        P[0] = (p0 * b) / a; P[5] = (p5 * b) / a;
+      }
+      e[12] = n[0]; e[13] = n[1]; e[14] = n[2];
+    }
+    st.anchor = { r, dev: dl, lim: isFinite(lim) ? lim : null, clamped: k < 1 };
+  }
+  function nominalOf(st) {
+    const di = st.di, rep = di && di.nominalViewerPosition;
+    const W = di && di.displayPixelWidth, H = di && di.displayPixelHeight, wm = di && di.displayWidthMeters, hm = di && di.displayHeightMeters;
+    if (!(W > 0 && H > 0 && wm > 0 && hm > 0)) {
+      if (di && !st.anchorNoted) { st.anchorNoted = true; info('eye anchor: the display reports no panel size — eyes as the runtime places them'); }
+      return null;
+    }
+    const fb = Array.isArray(T.nominalFallback) ? T.nominalFallback : [0, 0.1, 0.6];
+    const reported = !!(rep && rep.z > 0);
+    const nv = reported ? rep : { x: +fb[0] || 0, y: +fb[1] || 0, z: +fb[2] || 0.6 };
+    if (!st.anchorNoted) {
+      st.anchorNoted = true;
+      info(`eye anchor: nominal viewer (${(+nv.x || 0).toFixed(3)}, ${(+nv.y || 0).toFixed(3)}, ${(+nv.z).toFixed(3)}) m ${reported ? 'as the display reports it' : 'by fallback (the display reports none; the runtime Leia SR / sim-display nominal)'} — the page camera is that viewer`);
+    }
+    if (!st.nomC || st.stats.xrFrames - st.nomC.at >= 30 || st.stats.xrFrames < st.nomC.at) {
+      let cx = 0, cy = 0;
+      try {
+        const rc = st.canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1, sc = window.screen || {};
+        const k = sc.width > 0 ? W / sc.width : dpr; // screen DIP -> panel pixels
+        const chromeX = Math.max(0, (window.outerWidth - window.innerWidth) / 2), chromeY = Math.max(0, window.outerHeight - window.innerHeight);
+        const x = (window.screenX - (sc.availLeft || 0) + chromeX) * k + (rc.left + rc.width / 2) * dpr;
+        const y = (window.screenY - (sc.availTop || 0) + chromeY) * k + (rc.top + rc.height / 2) * dpr;
+        cx = (x - W / 2) * (wm / W); cy = -(y - H / 2) * (hm / H);
+      } catch (e) { /* the panel centre */ }
+      st.nomC = { at: st.stats.xrFrames, cx: isFinite(cx) ? cx : 0, cy: isFinite(cy) ? cy : 0 };
+    }
+    return { x: +nv.x || 0, y: +nv.y || 0, z: +nv.z, cx: st.nomC.cx, cy: st.nomC.cy };
+  }
   function estimateConvergence(st, snap, targetOnly) {
     const s = st.ad.sampler(st);
     if (!s) return false;
@@ -725,8 +838,14 @@ function dxrCore(cfg, cap, S) {
       const o = {};
       d = st.openLatched ? 0 : estimateSubjectDistance(s, o);
       raw = d > 0 && isFinite(d) ? d : 0; // a real estimate (not the fallback below)
+      if (!st.openLatched) {
+        if (o.near > 0) st.nearSurf = o.near; // the nearest surface in view (anchorEyes' lean clamp)
+        if (o.extent > 0) st.sceneExtent = o.extent; // the bounded items' size (walkTick's scale)
+        st.surroundRuns = !o.open && o.surround && T.openSurround !== false ? (st.surroundRuns || 0) + 1 : 0;
+        if (st.surroundRuns >= Math.max(1, T.surroundRuns | 0)) latchOpen(st, `surrounded: ${o.surround}`);
+      }
       if (st.openLatched || o.open) {
-        if (!st.openLatched) { st.openLatched = true; info('open scene: the camera stands inside a world — fixed focus for the rest of this page'); }
+        if (!st.openLatched) latchOpen(st, o.why || 'the camera stands inside a world');
         src = 'fixed'; st.conv.via = 'open scene'; d = +T.openSceneConvM || 2;
         if (o.p > 0 && !st.scaleWarned && (o.p < 0.2 || o.p > 200)) {
           st.scaleWarned = true;
@@ -758,6 +877,7 @@ function dxrCore(cfg, cap, S) {
     let t = null;
     try { t = st.ad.target ? st.ad.target(st) : null; } catch (e) { t = null; }
     if (!t || !isFinite(t.x) || !isFinite(t.y) || !isFinite(t.z)) return 0;
+    if (st.openByWalk && /lookAt|setTarget/.test(t.via || '')) return 0;
     const vm = s.viewMatrix || invert4(s.cameraPose);
     const vx = vm[0] * t.x + vm[4] * t.y + vm[8] * t.z + vm[12];
     const vy = vm[1] * t.x + vm[5] * t.y + vm[9] * t.z + vm[13];
@@ -797,11 +917,25 @@ function dxrCore(cfg, cap, S) {
     const fixedMode = T.openSceneMode !== 'percentile';
     let items = [];
     let n = 0, among = false, enclosing = 0, world = 0, bounded = 0;
+    const B = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    let fx = -cw[8], fz = -cw[10];
+    const fl = Math.hypot(fx, fz);
+    if (fl > 1e-6) { fx /= fl; fz /= fl; } else { fx = 0; fz = -1; } // looking straight up / down: any heading
+    let sides = 0;
     s.forEachBounds((wx, wy, wz, wr, inVolume, isSplat) => {
       if (n >= 4000) return false;
       n++;
       if (Math.hypot(wx - px, wy - py, wz - pz) <= wr) { enclosing++; if (isSplat) world++; return true; }
       if (inVolume) { among = true; enclosing++; world++; }
+      else {
+        B[0] = Math.min(B[0], wx - wr); B[1] = Math.min(B[1], wy - wr); B[2] = Math.min(B[2], wz - wr);
+        B[3] = Math.max(B[3], wx + wr); B[4] = Math.max(B[4], wy + wr); B[5] = Math.max(B[5], wz + wr);
+        const dx = wx - px, dz = wz - pz;
+        if (Math.abs(wy - py) <= wr && Math.hypot(dx, dz) > 1e-6) {
+          const fwd = dx * fx + dz * fz, right = -dx * fz + dz * fx; // right = forward × up
+          sides |= Math.abs(fwd) >= Math.abs(right) ? (fwd > 0 ? 1 : 4) : (right > 0 ? 2 : 8);
+        }
+      }
       const vx = vm[0] * wx + vm[4] * wy + vm[8] * wz + vm[12];
       const vy = vm[1] * wx + vm[5] * wy + vm[9] * wz + vm[13];
       const z = -(vm[2] * wx + vm[6] * wy + vm[10] * wz + vm[14]);
@@ -811,8 +945,20 @@ function dxrCore(cfg, cap, S) {
       if (!inVolume) bounded++;
       return true;
     });
+    if (out) {
+      let nr = Infinity;
+      for (const it of items) if (!it.v) nr = Math.min(nr, Math.max(it.z - it.r, near));
+      out.near = isFinite(nr) ? nr : 0;
+      out.extent = B[3] >= B[0] ? Math.hypot(B[3] - B[0], B[4] - B[1], B[5] - B[2]) / 2 : 0;
+      const inside = px >= B[0] && px <= B[3] && py >= B[1] && py <= B[4] && pz >= B[2] && pz <= B[5];
+      const nSides = ((sides & 1) && 1) + ((sides & 2) && 1) + ((sides & 4) && 1) + ((sides & 8) && 1);
+      out.surround = fixedMode && inside && nSides >= Math.max(1, T.surroundSides | 0) ? `geometry on ${nSides} of 4 sides at the camera's height, inside the scene's bounds` : '';
+    }
     if (fixedMode && (world || (enclosing && !bounded))) {
-      if (out) { out.open = true; out.p = items.length ? weightedPercentile(items, clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95)) : 0; }
+      if (out) {
+        out.open = true; out.p = items.length ? weightedPercentile(items, clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95)) : 0;
+        out.why = world ? 'the camera stands inside a world (a splat volume holds it)' : 'the camera stands inside a world (nothing bounded in view)';
+      }
       return 0;
     }
     if (!items.length) return 0;
@@ -1813,7 +1959,7 @@ function dxrDev(core, ctl) {
           real: [realW(st.canvas), realH(st.canvas)],
           eye: st.R ? [st.R.eyeW, st.R.eyeH] : null,
           active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews, eyesOn: !!st.eyesOn, noDisplay: !!(st.nd || st.noDisplay),
-          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via, openLatched: !!st.openLatched, rigScale: st.rigScale ? { ...st.rigScale } : null,
+          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via, openLatched: !!st.openLatched, openWhy: st.openWhy || null, anchor: st.anchor ? { ...st.anchor } : null, nearSurf: st.nearSurf || null, eyeShear: st.haveViews ? st.V.map((v) => [v.proj[8], v.proj[9]]) : null, eyeMid: st.haveViews ? [0, 1, 2].map((k) => (st.V[0].pose[12 + k] + st.V[1].pose[12 + k]) / 2) : null, rigScale: st.rigScale ? { ...st.rigScale } : null,
           rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing, lifted: st.lifted || null,
           pivot: st.piv ? { t: [...st.piv.t], c: [...st.piv.c], d: st.piv.d } : null,
           eyeAt: st.eyeAt ? Array.from(st.eyeAt) : null, // eye 0's world position, as last composed by the adapter
@@ -1903,6 +2049,14 @@ function dxrThree(core) {
     } catch (e) { warnOnce('lookat', 'could not watch camera.lookAt — convergence falls back to the estimator', e); }
   }
   const CONTROL_GLOBALS = ['controls', 'orbitControls', 'cameraControls'];
+  const WALK_GLOBALS = ['controls', 'fpsControls', 'firstPersonControls', 'flyControls', 'pointerLockControls', 'cameraControls'];
+  function walkKind(c) {
+    if (!c || typeof c !== 'object') return null;
+    if (typeof c.isLocked === 'boolean' && typeof c.lock === 'function' && typeof c.unlock === 'function') return 'PointerLockControls';
+    if (typeof c.movementSpeed === 'number' && typeof c.lookSpeed === 'number') return 'FirstPersonControls';
+    if (typeof c.movementSpeed === 'number' && typeof c.rollSpeed === 'number') return 'FlyControls';
+    return null;
+  }
 
   const ad = {
     label: (st) => `three r${revision || '?'}` + (st && st.common ? ` (WebGPURenderer, ${backendOf(st) || 'not initialised'})` : ''),
@@ -2037,6 +2191,19 @@ function dxrThree(core) {
       }
       const l = lookAts.get(cam);
       return l ? { x: l.x, y: l.y, z: l.z, via: 'camera.lookAt' } : null;
+    },
+    walkControls(st) {
+      const cam = st.mainCam;
+      if (!cam) return null;
+      for (const k of WALK_GLOBALS) {
+        try {
+          const c = window[k];
+          if (!c || (c.object !== cam && c.camera !== cam)) continue;
+          const kind = walkKind(c);
+          if (kind) return `${kind} (window.${k})`;
+        } catch (e) { /* ignore */ }
+      }
+      return null;
     },
     describe: (st) => ({
       page: { w: st.L.w, h: st.L.h, pr: st.L.pr, canvasWidthSeenByPage: st.canvas.width },
@@ -3207,6 +3374,18 @@ function dxrPlayCanvas(core) {
       }
       const l = lookAts.get(e);
       return l ? { x: l.x, y: l.y, z: l.z, via: 'entity.lookAt' } : null;
+    },
+    walkControls(st) {
+      const e = st.cam && st.cam.entity;
+      const list = e && e.script && (e.script.scripts || e.script._scripts);
+      if (!Array.isArray(list)) return null;
+      for (const sc of list) {
+        if (!sc || sc.enabled === false) continue;
+        let name = '';
+        try { name = (sc.__scriptType && sc.__scriptType.__name) || (sc.constructor && (sc.constructor.__name || sc.constructor.scriptName)) || ''; } catch (err) { name = ''; }
+        if (/fly|first.?person|fps|walk|free.?cam/i.test(name)) return `script '${name}' on the camera`;
+      }
+      return null;
     },
     flipIdle(st) { st.app.renderNextFrame = true; }, // flips on the postrender of that frame
     describe: (st) => ({
