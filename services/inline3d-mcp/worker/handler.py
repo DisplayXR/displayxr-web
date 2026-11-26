@@ -5,6 +5,9 @@
 #   "check"        input.url: a public http(s) page
 #   "check_files"  input.files: [{path, content}] - the page's own files, served on 127.0.0.1 to this
 #                  worker's Chrome only, deleted when the job ends
+#   "asset"        input.url: a public .glb, fetched through the guard proxy and run through
+#                  `inline3d-tools assets` (the front end's fallback when a host refuses its own
+#                  fetch, e.g. a CDN that blocks datacenter IPs); input.target: tablet | desktop
 # Options for both checks: max_texture, viewport ("WxH"), fallback (bool).
 # Nothing is stored: the report goes back in the job output and the job's files are removed.
 import json, os, re, secrets, shutil, subprocess, tempfile, time, urllib.request
@@ -43,6 +46,38 @@ def run_cli(target, inp, cwd=None):
     except Exception:
         return {"verdict": "error", "error": (r.stderr or r.stdout)[-1500:]}
 
+ASSET_MAX = 50 * 1024 * 1024
+
+def run_asset(url, target):
+    reset_proxy()
+    proxy = urllib.request.ProxyHandler({"http": "http://127.0.0.1:8899", "https": "http://127.0.0.1:8899"})
+    opener = urllib.request.build_opener(proxy)
+    req = urllib.request.Request(url, headers={"user-agent": "displayxr-inline3d-connector (asset check)", "accept": "*/*"})
+    d = tempfile.mkdtemp(prefix="asset-")
+    try:
+        path = os.path.join(d, "asset.glb")
+        with opener.open(req, timeout=60) as r, open(path, "wb") as fh:
+            n = 0
+            while True:
+                chunk = r.read(1 << 16)
+                if not chunk: break
+                n += len(chunk)
+                if n > ASSET_MAX:
+                    return {"verdict": "error", "error": f"the file is over {ASSET_MAX // 1048576} MB"}
+                fh.write(chunk)
+        args = ["node", CLI, "assets", path, "--json", "--target", target]
+        p = subprocess.run(args, capture_output=True, text=True, timeout=60, env={**os.environ, "HOME": "/tmp"})
+        try:
+            rep = json.loads(p.stdout)
+        except Exception:
+            return {"verdict": "error", "error": (p.stderr or p.stdout)[-1500:]}
+        rep["file"] = url
+        return {"report": rep, "kind": "asset"}
+    except urllib.error.HTTPError as e:
+        return {"verdict": "error", "error": f"HTTP {e.code} for {url} (from the checker too)"}
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
 def handler(job):
     inp = job.get("input") or {}
     mode = inp.get("mode")
@@ -55,6 +90,13 @@ def handler(job):
         if not re.match(r"^https?://", url):
             return {"verdict": "error", "error": "url must be http(s)"}
         return {"report": run_cli(url, inp), **meta()}
+    if mode == "asset":
+        url = str(inp.get("url", ""))
+        if not re.match(r"^https?://\S+\.glb(\?\S*)?$", url, re.I):
+            return {"verdict": "error", "error": "url must be an http(s) .glb"}
+        target = "desktop" if inp.get("target") == "desktop" else "tablet"
+        out = run_asset(url, target)
+        return {**out, **meta()} if "report" in out else out
     if mode == "check_files":
         files = inp.get("files") or []
         if not isinstance(files, list) or not files or len(files) > MAX_FILES:
