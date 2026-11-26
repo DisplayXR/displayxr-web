@@ -146,7 +146,10 @@ function dxrCore(cfg, cap, S) {
   const site = {
     decision: cfg.decision === 'allow' || cfg.decision === 'offer' ? cfg.decision : 'block',
     depths: { camera: cd.camera > 0 ? cd.camera : DEFAULT_DEPTH.camera, display: cd.display > 0 ? cd.display : DEFAULT_DEPTH.display },
-    rig: cfg.rig === 'display' ? 'display' : 'camera',
+    // The user's choice of style for the site, or 'auto' while there is none (the host passed no rig,
+    // or one it does not know): then decideAutoRig picks the rig per activation (v0.7.13).
+    rigChoice: cfg.rig === 'display' || cfg.rig === 'camera' ? cfg.rig : 'auto',
+    rig: cfg.rig === 'display' ? 'display' : 'camera', // the ACTIVE rig (rigMode)
     convScale: typeof cfg.convScale === 'number' && cfg.convScale > 0 ? Math.min(CONV_SCALE_MAX, Math.max(CONV_SCALE_MIN, cfg.convScale)) : 1,
   };
   // "Just this time" (setEnabled(v, { remember: false })): true / false overrides the decision for
@@ -513,7 +516,7 @@ function dxrCore(cfg, cap, S) {
     session.requestAnimationFrame(loop);
     ad.firstDraw(st);
     try { S.settle(st.canvas); } catch (e) { /* the sentinel's search is best-effort */ }
-    info(`live on ${desc(st.canvas)}: SBS ${st.R.W}x${st.R.H} (eye ${st.R.eyeW}x${st.R.eyeH}), rig ${HAS_RIG ? rigMode() : 'display (no setViewRig)'},`,
+    info(`live on ${desc(st.canvas)}: SBS ${st.R.W}x${st.R.H} (eye ${st.R.eyeW}x${st.R.eyeH}), rig ${HAS_RIG ? rigMode() + (site.rigChoice === 'auto' ? ' (automatic: decided with the scale)' : '') : 'display (no setViewRig)'},`,
       `convergence ${st.conv.d.toPrecision(3)} units (${convText(st)}), depth ${depthOf()}`);
     st.convLogged = { d: st.conv.d, src: st.conv.src, via: st.conv.via }; st.convPrev = st.conv.d;
     notify();
@@ -966,6 +969,7 @@ function dxrCore(cfg, cap, S) {
     if (src === 'fixed') {
       if (S && S.open) return;
       st.rigScale = { d: 0, open: true, basis: 'open scene' };
+      decideAutoRig(st, src);
       info(`scale set: m2v 1 (open scene${S ? `; replaces ${scaleText(st, S)} (${S.basis})` : ''})`);
       scaleReady(st);
       return;
@@ -984,6 +988,7 @@ function dxrCore(cfg, cap, S) {
       const d = med > 0 ? med : st.conv.d || 1;
       st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(T.scaleMaxWaitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
     }
+    decideAutoRig(st, src);
     info(`scale set: ${scaleText(st, st.rigScale)} (${st.rigScale.basis}; distance ${st.rigScale.d.toPrecision(3)} units)`);
     scaleReady(st);
   }
@@ -995,6 +1000,49 @@ function dxrCore(cfg, cap, S) {
     return rigMode() === 'display' ? `display portal ${(2 * d * Math.tan(st.ad.rigFov(st) / 2)).toPrecision(3)} units tall at ${d.toPrecision(3)}` : `m2v ${((depthOf('camera') * d) / 0.5).toPrecision(3)}`;
   }
   // The depth fades in once the scale is set (it waited flat), when the cover is already down.
+  // ------------------------------------------------------------ the automatic rig (v0.7.13)
+  // While the user has not chosen a style for the site (site.rigChoice 'auto'), the rig is decided
+  // once per activation, when its scale is (setScaleOnce: the rig is still flat then, k 0, so the
+  // choice never shows as a jump), from the same signals the convergence tiers use:
+  //   'display' (Object on the glass) for an OBJECT ON A TURNTABLE: the convergence comes from the
+  //     page's own target (an orbit target, or the lookAt / setTarget the camera is looking at), the
+  //     scene is not open (not latched, no world holds the camera, not surrounded) and nothing says the
+  //     camera walks (pointer lock, first-person / fly controls);
+  //   'camera' (Scene camera) for everything else: open scenes (their fixed 2 m focus at real scale),
+  //     object viewers with no page target (the estimator: no orbit to pivot the portal about), and
+  //     any doubt.
+  // A scene that latches open later (latchOpen: a walk, a surround) moves an automatic 'display' back
+  // to 'camera'. A choice in the chip (ctl.setRig) ends the automatic rig and is saved for the site.
+  function walkHint(st) {
+    try { const pl = document.pointerLockElement; if (pl && (pl === st.canvas || pl.contains(st.canvas))) return 'pointer lock on the canvas'; } catch (e) { /* ignore */ }
+    try { return (st.ad.walkControls && st.ad.walkControls(st)) || null; } catch (e) { return null; }
+  }
+  function decideAutoRig(st, src) {
+    if (site.rigChoice !== 'auto' || !HAS_RIG) return;
+    let rig = 'camera', why;
+    if (src === 'fixed' || st.openLatched) why = `open scene${st.openWhy ? ': ' + st.openWhy : ''}`;
+    else if (src !== 'target') why = 'no page target (the estimator)';
+    else {
+      const w = walkHint(st);
+      if (w) why = `the camera may walk: ${w}`;
+      else {
+        const o = {};
+        let s = null;
+        try { s = st.ad.sampler(st); } catch (e) { s = null; }
+        if (s) estimateSubjectDistance(s, o);
+        if (o.open) why = o.why;
+        else if (o.surround) why = `surrounded: ${o.surround}`;
+        else { rig = 'display'; why = `object on a turntable (target: ${st.conv.via || 'the page'})`; }
+      }
+    }
+    setAutoRig(rig, why);
+  }
+  function setAutoRig(rig, why) {
+    const was = site.rig;
+    site.rig = rig;
+    info(`style: ${rig === 'display' ? 'Object on the glass (display rig)' : 'Scene camera (camera rig)'}, automatic: ${why}`);
+    if (was !== rig) notify();
+  }
   function scaleReady(st) { if (!st.cover && !st.coverForced && rampK(st) < 1 && !st.ramp && !st.releasing) startRamp(st, 1); }
 
   // ------------------------------------------------------------ the display rig's pivot
@@ -1085,6 +1133,7 @@ function dxrCore(cfg, cap, S) {
     if (st.openLatched) return;
     st.openLatched = true; st.openWhy = why; st.openByWalk = /^walk/.test(why);
     info(`open scene: ${why} — fixed focus for the rest of this page`);
+    if (site.rigChoice === 'auto' && site.rig === 'display') setAutoRig('camera', `open scene: ${why}`);
   }
   function walkTick(st) {
     if (T.openWalk === false || st.openLatched || !st.active) return;
@@ -1100,9 +1149,7 @@ function dxrCore(cfg, cap, S) {
   // dolly / zoom to a target, a pan and a scripted slide translate without turning; a cut (> 30 deg or
   // > the scale in one sample: preset views, a camera switch) is skipped, not counted.
   function walkSignal(st) {
-    try { const pl = document.pointerLockElement; if (pl && (pl === st.canvas || pl.contains(st.canvas))) return 'pointer lock on the canvas'; } catch (e) { /* ignore */ }
-    let c = null;
-    try { c = st.ad.walkControls ? st.ad.walkControls(st) : null; } catch (e) { c = null; }
+    const c = walkHint(st);
     if (c) return c;
     let s = null;
     try { s = st.ad.sampler(st); } catch (e) { s = null; }
@@ -1618,7 +1665,7 @@ function dxrCore(cfg, cap, S) {
     const s = statusOf(), t = lastTarget || candidate;
     return {
       state: s.status, reason: s.reason || null, waiting: !!s.waiting, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
-      rig: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
+      rig: rigMode(), rigAuto: site.rigChoice === 'auto', depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
       convScale: site.convScale, convSource: owner && owner.active ? convSource(owner) : null,
       convText: owner && owner.active ? convText(owner) : null, convergence: owner && owner.active ? owner.conv.d * site.convScale : null, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews), tracking: !!(owner && owner.eyesOn),
       // For the chip (read-only facts; it never touches the state): the site switch, the cover over
@@ -1649,6 +1696,7 @@ function dxrCore(cfg, cap, S) {
     setEnabled(v, opts) { setEnabled(v, opts); },
     setRig(m, opts) {
       site.rig = m === 'display' ? 'display' : 'camera';
+      site.rigChoice = site.rig; // the user chose: no automatic rig for this document (and the site, when remembered)
       info(`${site.rig} rig for`, location.origin);
       if (remember(opts)) save({ rig: site.rig });
       notify();

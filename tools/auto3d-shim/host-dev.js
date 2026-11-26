@@ -27,7 +27,8 @@ function dxrDevHost(loadCore) {
     let stored = {};
     try { stored = JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch (e) { /* opaque origin */ }
     const ok = stored.v === V;
-    const base = { v: V, enabled: true, convScale: 1, rig: 'camera', hud: true, ...(ok ? stored : {}) };
+    // No rig by default: the core picks it (the automatic rig, v0.7.13) until the user chooses one.
+    const base = { v: V, enabled: true, convScale: 1, hud: true, ...(ok ? stored : {}) };
     // Per-rig depth (v0.4). A v0.3 site stored ONE depth, applied to both rigs; it was tuned on the
     // camera rig (the only rig then worth tuning), so it carries over to the camera rig only.
     const sd = ok ? stored.depths : null;
