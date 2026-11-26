@@ -1,9 +1,9 @@
-// DisplayXR auto-3D 0.7.12 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.13 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap, S) {
 'use strict';
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.7.12'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.7.13'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -86,7 +86,8 @@ function dxrCore(cfg, cap, S) {
   const site = {
     decision: cfg.decision === 'allow' || cfg.decision === 'offer' ? cfg.decision : 'block',
     depths: { camera: cd.camera > 0 ? cd.camera : DEFAULT_DEPTH.camera, display: cd.display > 0 ? cd.display : DEFAULT_DEPTH.display },
-    rig: cfg.rig === 'display' ? 'display' : 'camera',
+    rigChoice: cfg.rig === 'display' || cfg.rig === 'camera' ? cfg.rig : 'auto',
+    rig: cfg.rig === 'display' ? 'display' : 'camera', // the ACTIVE rig (rigMode)
     convScale: typeof cfg.convScale === 'number' && cfg.convScale > 0 ? Math.min(CONV_SCALE_MAX, Math.max(CONV_SCALE_MIN, cfg.convScale)) : 1,
   };
   let once = null;
@@ -344,7 +345,7 @@ function dxrCore(cfg, cap, S) {
     session.requestAnimationFrame(loop);
     ad.firstDraw(st);
     try { S.settle(st.canvas); } catch (e) { /* the sentinel's search is best-effort */ }
-    info(`live on ${desc(st.canvas)}: SBS ${st.R.W}x${st.R.H} (eye ${st.R.eyeW}x${st.R.eyeH}), rig ${HAS_RIG ? rigMode() : 'display (no setViewRig)'},`,
+    info(`live on ${desc(st.canvas)}: SBS ${st.R.W}x${st.R.H} (eye ${st.R.eyeW}x${st.R.eyeH}), rig ${HAS_RIG ? rigMode() + (site.rigChoice === 'auto' ? ' (automatic: decided with the scale)' : '') : 'display (no setViewRig)'},`,
       `convergence ${st.conv.d.toPrecision(3)} units (${convText(st)}), depth ${depthOf()}`);
     st.convLogged = { d: st.conv.d, src: st.conv.src, via: st.conv.via }; st.convPrev = st.conv.d;
     notify();
@@ -657,6 +658,7 @@ function dxrCore(cfg, cap, S) {
     if (src === 'fixed') {
       if (S && S.open) return;
       st.rigScale = { d: 0, open: true, basis: 'open scene' };
+      decideAutoRig(st, src);
       info(`scale set: m2v 1 (open scene${S ? `; replaces ${scaleText(st, S)} (${S.basis})` : ''})`);
       scaleReady(st);
       return;
@@ -675,6 +677,7 @@ function dxrCore(cfg, cap, S) {
       const d = med > 0 ? med : st.conv.d || 1;
       st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(T.scaleMaxWaitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
     }
+    decideAutoRig(st, src);
     info(`scale set: ${scaleText(st, st.rigScale)} (${st.rigScale.basis}; distance ${st.rigScale.d.toPrecision(3)} units)`);
     scaleReady(st);
   }
@@ -682,6 +685,36 @@ function dxrCore(cfg, cap, S) {
     if (S.open && rigMode() !== 'display') return 'm2v 1';
     const d = Math.max(1e-6, (S.d || st.conv.d || 1) * site.convScale);
     return rigMode() === 'display' ? `display portal ${(2 * d * Math.tan(st.ad.rigFov(st) / 2)).toPrecision(3)} units tall at ${d.toPrecision(3)}` : `m2v ${((depthOf('camera') * d) / 0.5).toPrecision(3)}`;
+  }
+  function walkHint(st) {
+    try { const pl = document.pointerLockElement; if (pl && (pl === st.canvas || pl.contains(st.canvas))) return 'pointer lock on the canvas'; } catch (e) { /* ignore */ }
+    try { return (st.ad.walkControls && st.ad.walkControls(st)) || null; } catch (e) { return null; }
+  }
+  function decideAutoRig(st, src) {
+    if (site.rigChoice !== 'auto' || !HAS_RIG) return;
+    let rig = 'camera', why;
+    if (src === 'fixed' || st.openLatched) why = `open scene${st.openWhy ? ': ' + st.openWhy : ''}`;
+    else if (src !== 'target') why = 'no page target (the estimator)';
+    else {
+      const w = walkHint(st);
+      if (w) why = `the camera may walk: ${w}`;
+      else {
+        const o = {};
+        let s = null;
+        try { s = st.ad.sampler(st); } catch (e) { s = null; }
+        if (s) estimateSubjectDistance(s, o);
+        if (o.open) why = o.why;
+        else if (o.surround) why = `surrounded: ${o.surround}`;
+        else { rig = 'display'; why = `object on a turntable (target: ${st.conv.via || 'the page'})`; }
+      }
+    }
+    setAutoRig(rig, why);
+  }
+  function setAutoRig(rig, why) {
+    const was = site.rig;
+    site.rig = rig;
+    info(`style: ${rig === 'display' ? 'Object on the glass (display rig)' : 'Scene camera (camera rig)'}, automatic: ${why}`);
+    if (was !== rig) notify();
   }
   function scaleReady(st) { if (!st.cover && !st.coverForced && rampK(st) < 1 && !st.ramp && !st.releasing) startRamp(st, 1); }
 
@@ -733,6 +766,7 @@ function dxrCore(cfg, cap, S) {
     if (st.openLatched) return;
     st.openLatched = true; st.openWhy = why; st.openByWalk = /^walk/.test(why);
     info(`open scene: ${why} — fixed focus for the rest of this page`);
+    if (site.rigChoice === 'auto' && site.rig === 'display') setAutoRig('camera', `open scene: ${why}`);
   }
   function walkTick(st) {
     if (T.openWalk === false || st.openLatched || !st.active) return;
@@ -740,9 +774,7 @@ function dxrCore(cfg, cap, S) {
     if (why) { latchOpen(st, `walk: ${why}`); estimateConvergence(st, false); }
   }
   function walkSignal(st) {
-    try { const pl = document.pointerLockElement; if (pl && (pl === st.canvas || pl.contains(st.canvas))) return 'pointer lock on the canvas'; } catch (e) { /* ignore */ }
-    let c = null;
-    try { c = st.ad.walkControls ? st.ad.walkControls(st) : null; } catch (e) { c = null; }
+    const c = walkHint(st);
     if (c) return c;
     let s = null;
     try { s = st.ad.sampler(st); } catch (e) { s = null; }
@@ -1119,7 +1151,7 @@ function dxrCore(cfg, cap, S) {
     const s = statusOf(), t = lastTarget || candidate;
     return {
       state: s.status, reason: s.reason || null, waiting: !!s.waiting, engine: s.engine || (t ? t.engine : null), canvas: t ? t.canvas : null,
-      rig: rigMode(), depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
+      rig: rigMode(), rigAuto: site.rigChoice === 'auto', depth: depthOf(), depths: { camera: depthOf('camera'), display: depthOf('display') },
       convScale: site.convScale, convSource: owner && owner.active ? convSource(owner) : null,
       convText: owner && owner.active ? convText(owner) : null, convergence: owner && owner.active ? owner.conv.d * site.convScale : null, rigSupported: HAS_RIG, haveViews: !!(owner && owner.haveViews), tracking: !!(owner && owner.eyesOn),
       enabled: on(), cover: t && t.cover ? t.cover.el : null, coverUp: !!(t && t.cover && !t.cover.out),
@@ -1146,6 +1178,7 @@ function dxrCore(cfg, cap, S) {
     setEnabled(v, opts) { setEnabled(v, opts); },
     setRig(m, opts) {
       site.rig = m === 'display' ? 'display' : 'camera';
+      site.rigChoice = site.rig; // the user chose: no automatic rig for this document (and the site, when remembered)
       info(`${site.rig} rig for`, location.origin);
       if (remember(opts)) save({ rig: site.rig });
       notify();
