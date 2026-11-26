@@ -68,9 +68,8 @@ export interface LiftOptions {
    * handle yourself. An object is the builtin chip with options:
    * - `autoHideMs` — fade the chip out after this many ms without pointer activity over the element
    *   or the chip (a move/press shows it again; keyboard focus on a chip button pins it; progress
-   *   and provider notes re-show it briefly). Default `0`: always visible. (It used to default to
-   *   2500 in native mode, while the DisplayXR Browser converted a chip inside a lifted rect with
-   *   the picture; the browser now composites it flat at the screen plane.)
+   *   and provider notes re-show it briefly). `0` disables. Default **2500 in native mode** (the
+   *   picture stays clean while it is viewed), 0 (always visible) otherwise.
    */
   ui?: 'builtin' | 'none' | { autoHideMs?: number };
   /** Aborting removes the lift. */

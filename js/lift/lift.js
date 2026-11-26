@@ -36,7 +36,8 @@ export { resolveMediaAt, STATES };
 const FADE_MS = 350;
 /** The explore view's assemble reveal (explore.reveal 'assemble'), ms. */
 const ASSEMBLE_MS = 1100;
-/** (Removed default) The chip no longer auto-hides unless the page asks: `ui: { autoHideMs }`. */
+/** Native mode: the builtin chip hides after this long without pointer activity (`ui.autoHideMs`). */
+const UI_AUTOHIDE_MS = 2500;
 const MAX_EYE_PX = 2048; // cap on one view's backing width
 
 /** Explore's default depth budget: the scene's fore-to-back disparity at the nominal eye pair, as a
@@ -946,11 +947,11 @@ export async function lift(element, opts = {}) {
 
   // ── wire up ───────────────────────────────────────────────────────────────────────────
   if (o.ui === 'builtin') {
-    // The chip stays visible: the DisplayXR Browser composites content over a lifted element flat at
-    // the screen plane (its plane split covers <video> since browser 0333 and <img> since 0474), so
-    // the chip is no longer converted with the picture. Auto-hiding it (the old native default)
-    // also swallowed a click on a hidden chip until the pointer moved. `ui: { autoHideMs }` opts in.
-    const autoHideMs = o.uiAutoHideMs ?? 0;
+    // Native mode: the chip auto-hides (it reappears on the next pointer move over the element),
+    // a product choice: the picture stays clean while it is viewed. The browser composites the chip
+    // flat at the screen plane (plane split, browser 0333 for <video>, 0474 for <img>), so hiding
+    // is no longer needed to keep it out of the conversion. The web path keeps it always visible.
+    const autoHideMs = o.uiAutoHideMs ?? (native ? UI_AUTOHIDE_MS : 0);
     chip = createChip(
       placement.shadow,
       {
