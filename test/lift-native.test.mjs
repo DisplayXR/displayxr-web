@@ -184,19 +184,27 @@ function nativeHarness(tag, { mode, preset = {}, ownLiftAttr = false } = {}) {
   const machineMode = resolveLiftMode({ native: true, kind, mode });
   const machineKind = kind === 'still' && machineMode === 'live' ? 'video' : kind;
   if (kind === 'still' && machineMode === 'explore' && ownLiftAttr) attrs.drop();
+  // lift.js's one live hold: the tab is hidden (suspend) OR a scene is being made (freeze / lift)
+  let suspended = false;
+  let liftBusy = false;
+  const syncLiveHold = () => attrs.hold(suspended || liftBusy ? 'paused' : null);
   const m = createLiftMachine({
     kind: machineKind,
     mode: machineMode,
     isPaused: () => kind === 'still' || paused,
     setTimer: (fn) => (fn(), 1),
     clearTimer: () => {},
+    onState: (from, to) => {
+      liftBusy = to === STATES.FREEZING || to === STATES.LIFTING;
+      syncLiveHold();
+    },
     onEffect: (name) => {
       effects.push(name);
       if (name === 'startLive') attrs.apply();
       if (name === 'enterExplore') attrs.setOff(true);
       if (name === 'exitExplore') attrs.setOff(false);
-      if (name === 'suspend') attrs.hold('paused');
-      if (name === 'resume') attrs.hold(null);
+      if (name === 'suspend') { suspended = true; syncLiveHold(); }
+      if (name === 'resume') { suspended = false; syncLiveHold(); }
       if (name === 'dispose') attrs.clear();
     },
   });
@@ -247,6 +255,38 @@ test('native state machine: <video> with an EXPLICIT mode:\'auto\' keeps the old
   m.send('play');
   assert.equal(m.state, STATES.LIVE);
   assert.equal(el.getAttribute('dxr-lift'), 'auto');
+});
+
+test('native: the live conversion is held (priority paused) while Explore makes the scene, then released', () => {
+  const { el, m } = nativeHarness('IMG', { mode: 'live' });
+  m.send('start');
+  m.send('loaded');
+  assert.equal(m.state, STATES.LIVE);
+  assert.equal(el.getAttribute('dxr-lift-priority'), 'normal');
+  m.send('explore-request');
+  assert.equal(m.state, STATES.FREEZING);
+  assert.equal(el.getAttribute('dxr-lift-priority'), 'paused', 'held while the frame is taken');
+  m.send('frozen', { gen: m.gen });
+  assert.equal(m.state, STATES.LIFTING);
+  assert.equal(el.getAttribute('dxr-lift-priority'), 'paused', 'held while the splats are made');
+  m.send('lifted', { gen: m.gen });
+  assert.equal(m.state, STATES.EXPLORE);
+  assert.equal(el.getAttribute('dxr-lift-priority'), 'normal', 'released once the scene is up');
+  assert.equal(el.getAttribute('dxr-lift'), 'off');
+});
+
+test('native: a hidden tab keeps the live hold when the scene finishes (one hold, two reasons)', () => {
+  const { el, m } = nativeHarness('VIDEO', { mode: 'auto' });
+  m.send('start');
+  m.send('loaded');
+  m.send('explore-request');
+  assert.equal(el.getAttribute('dxr-lift-priority'), 'paused');
+  m.send('hidden');
+  m.send('frozen', { gen: m.gen });
+  m.send('lifted', { gen: m.gen });
+  assert.equal(el.getAttribute('dxr-lift-priority'), 'paused', 'still hidden: stays held');
+  m.send('visible');
+  assert.equal(el.getAttribute('dxr-lift-priority'), 'normal');
 });
 
 test('native: play while the explore work is in flight → live + dxr-lift="auto" in the same tick', () => {

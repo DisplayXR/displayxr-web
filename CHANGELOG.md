@@ -7,6 +7,19 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Changed — lift (`./lift`, preview tier): Explore is faster, and the chip no longer hides
+
+- **The live conversion is held while Explore makes the scene.** From *Explore* until the
+  Gaussian scene is up (FREEZING / LIFTING), the element's native live stream is held at priority
+  `paused`: the frame to lift is already taken, and the live stream only competed with the
+  runtime's splat job for the GPU (win box: a Gaussians job 2.3 s alone, 3.4–3.7 s next to a live
+  stream on the same picture). One hold with the hidden-tab one, so neither releases the other.
+- **The chip stays visible by default** (`ui.autoHideMs` default 0, was 2500 in native mode). It
+  hid because the browser converted a chip inside a lifted rect with the picture; the browser now
+  composites it flat (patches 0333 / 0474). Hiding it also swallowed a click on Explore until the
+  pointer moved. `ui: { autoHideMs: 2500 }` restores it for an older browser.
+
+
 ### Added — lift (`./lift`, preview tier): the wait and the arrival of the 3D scene are visible
 
 - **A pulse while the scene is made.** From *Explore* until the Gaussian scene is ready, a soft
