@@ -157,7 +157,10 @@ async function runCase(browser, base, c) {
   page.on('pageerror', (e) => log.push(`[pageerror] ${String(e.message || e).slice(0, 240)}`));
   const missing = []; // an engine / addon the page could not load: fail loudly, not as a 60 s timeout
   page.on('response', (res) => { if (res.status() >= 400 && /\/deps\//.test(res.url())) missing.push(`${res.status()} ${new URL(res.url()).pathname}`); });
-  await page.evaluateOnNewDocument(`window.__dxrAuto3DTestCfg = ${JSON.stringify({ guardFps: HARNESS_GUARD_FPS, ...(c.cfg || {}) })}; window.__fakeXROpts = ${JSON.stringify(c.fake || {})};${c.commits ? ' window.__fakeXRTrackCommits = true;' : ''}`);
+  // rig 'camera' unless the case brings its own (cases/autorig.mjs) or a stored site (seed): the cases
+  // were written for the camera rig, and since v0.7.13 a dev host with no rig gets the automatic one.
+  const rigDefault = c.seed || (c.cfg && 'rig' in c.cfg) ? {} : { rig: 'camera' };
+  await page.evaluateOnNewDocument(`window.__dxrAuto3DTestCfg = ${JSON.stringify({ guardFps: HARNESS_GUARD_FPS, ...rigDefault, ...(c.cfg || {}) })}; window.__fakeXROpts = ${JSON.stringify(c.fake || {})};${c.commits ? ' window.__fakeXRTrackCommits = true;' : ''}`);
   if (c.seed) await page.evaluateOnNewDocument(`if (!sessionStorage.getItem('dxrSeeded')) { sessionStorage.setItem('dxrSeeded', '1'); localStorage.setItem('dxrAuto3D', ${JSON.stringify(JSON.stringify(c.seed))}); }`);
   await page.evaluateOnNewDocument(FAKE);
   for (const s of c.shim) await page.evaluateOnNewDocument(s);
