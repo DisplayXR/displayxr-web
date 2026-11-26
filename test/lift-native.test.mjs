@@ -20,6 +20,9 @@ import {
   NATIVE_CAPS_URL,
   NATIVE_DEPTH_URL,
   NATIVE_GAUSSIANS_URL,
+  NATIVE_GAUSSIANS_TIMEOUT_MS,
+  plyColourStats,
+  BLACK_SCENE_LUMA,
 } from '../js/lift/native.js';
 import { createLiftMachine, STATES, resolveLiftMode } from '../js/lift/state.js';
 import { getRegistry } from '../js/lift/providers/registry.js';
@@ -571,4 +574,77 @@ test('lift(): with no converter (runtime not native, no providers.lift) it rejec
     lift(el, { native: { native: false, liftState: 'unavailable', modes: [] } }),
     (e) => e instanceof NativeLiftError && e.code === 'unavailable' && asked.length === 0,
   );
+});
+
+// ── web#341: a Gaussians converter that never answers ────────────────────────────────────
+
+// A fetch that never settles unless its signal aborts (the browser holding a failed job as
+// not-ready until its own deadline).
+const hangingFetch = () => (url, init = {}) =>
+  new Promise((_, reject) => {
+    const s = init.signal;
+    if (s) s.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+  });
+
+test('native gaussians: no answer within timeoutMs ends in a timeout error, not a hang', async () => {
+  const g = createNativeGaussiansLift({ fetch: hangingFetch(), timeoutMs: 40 });
+  const ticks = [];
+  await assert.rejects(g.generateLift({ rgb: frame, onProgress: (p) => ticks.push(p) }), (e) => e.code === 'timeout' && e.fallback === true);
+  assert.ok(ticks.length >= 1, 'progress was reported');
+});
+
+test('native gaussians: the caller aborting mid-wait is an abort, not a timeout', async () => {
+  const g = createNativeGaussiansLift({ fetch: hangingFetch(), timeoutMs: 5000 });
+  const ctl = new AbortController();
+  const p = g.generateLift({ rgb: frame, signal: ctl.signal });
+  setTimeout(() => ctl.abort(), 10);
+  await assert.rejects(p, (e) => e.code === 'aborted');
+});
+
+test('native gaussians: the default wait is bounded', () => {
+  assert.ok(NATIVE_GAUSSIANS_TIMEOUT_MS > 0 && NATIVE_GAUSSIANS_TIMEOUT_MS <= 120000);
+});
+
+test('parseNativeCaps: gaussiansState is passed through when the browser reports it, absent otherwise', () => {
+  const a = parseNativeCaps({ native: true, state: 'ready', liftState: 'ready', modes: ['sbs', 'gaussians'], gaussiansState: { state: 'failed', reason: 'load' } });
+  assert.deepEqual(a.gaussiansState, { state: 'failed', reason: 'load' });
+  assert.deepEqual(a.modes, ['sbs', 'gaussians']);
+  const b = parseNativeCaps({ native: true, state: 'ready', modes: ['sbs', 'gaussians'] });
+  assert.equal(b.gaussiansState, undefined);
+  assert.equal(parseNativeCaps({ native: true, gaussiansState: { state: '' } }).gaussiansState, undefined);
+});
+
+// The provider's degree-0 layout (14 floats, no normals, no f_rest), every splat one colour.
+function degree0Ply(n, rgb) {
+  const props = ['x', 'y', 'z', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'scale_0', 'scale_1', 'scale_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3'];
+  const hb = new TextEncoder().encode(`ply\nformat binary_little_endian 1.0\nelement vertex ${n}\n${props.map((p) => `property float ${p}\n`).join('')}end_header\n`);
+  const data = new Float32Array(n * 14);
+  for (let i = 0; i < n; i++) {
+    data[i * 14 + 2] = 1 + i / n;
+    for (let k = 0; k < 3; k++) data[i * 14 + 3 + k] = (rgb[k] - 0.5) / 0.28209479177387814;
+    data[i * 14 + 6] = 5;
+    data[i * 14 + 10] = 1;
+  }
+  const u8 = new Uint8Array(hb.length + data.byteLength);
+  u8.set(hb);
+  u8.set(new Uint8Array(data.buffer), hb.length);
+  return u8;
+}
+
+test('plyColourStats: reads f_dc by name; black and lit scenes are told apart; no verdict on a header-only PLY', () => {
+  const black = plyColourStats(degree0Ply(5000, [0.01, 0.01, 0.01]));
+  assert.ok(black.p99 < BLACK_SCENE_LUMA && black.samples > 1000);
+  const lit = plyColourStats(degree0Ply(5000, [0.2, 0.5, 0.8]));
+  assert.ok(lit.p99 > 0.4);
+  assert.equal(plyColourStats(new TextEncoder().encode('ply\nformat binary_little_endian 1.0\n')), null);
+});
+
+test('native gaussians: a black scene (made from a black frame) is a "black" error, not an empty explore (web#341)', async () => {
+  const meta = { focalPx: 800, w: 1024, h: 576, pivotZ: 1.5, axes: 'opencv' };
+  let ply = degree0Ply(2000, [0.005, 0.005, 0.005]);
+  const g = createNativeGaussiansLift({ fetch: browserFetch({ [NATIVE_GAUSSIANS_URL]: () => new Response(ply, { headers: { 'x-dxr-lift-meta': JSON.stringify(meta) } }) }) });
+  await assert.rejects(g.generateLift({ rgb: frame }), (e) => e.code === 'black' && e.colour.p99 < BLACK_SCENE_LUMA);
+  ply = degree0Ply(2000, [0.3, 0.3, 0.3]);
+  const res = await g.generateLift({ rgb: frame });
+  assert.ok(res.ply instanceof ArrayBuffer);
 });

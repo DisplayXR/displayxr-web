@@ -36,6 +36,9 @@ export const LIFT_ATTRS = Object.freeze({
 export const LIFT_PRIORITIES = Object.freeze(['high', 'normal', 'low', 'paused']);
 const MODES = new Set(['depth', 'sbs', 'nview', 'gaussians']);
 const CAPS_TIMEOUT_MS = 2000;
+/** How long explore waits for the runtime's Gaussians before it gives up (a cold model's warm is
+ *  capped at 60 s by the runtime's watchdog, a conversion takes seconds once warm). */
+export const NATIVE_GAUSSIANS_TIMEOUT_MS = 90000;
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
@@ -63,6 +66,14 @@ export function parseNativeCaps(json) {
   out.modes = Array.isArray(j.modes) ? j.modes.filter((m) => MODES.has(m)) : [];
   if (Number.isFinite(j.maxStreams) && j.maxStreams >= 0) out.maxStreams = Math.floor(j.maxStreams);
   if (Number.isFinite(j.approxMsPerConvert) && j.approxMsPerConvert >= 0) out.approxMsPerConvert = +j.approxMsPerConvert;
+  // The Gaussians task's own readiness, when the browser reports it (web#341): `modes` lists
+  // `gaussians` whenever a converter is INSTALLED, so it cannot tell a failed one from a ready one.
+  // Shape: {gaussiansState: {state: ready|warming|installed|downloading|evicted|failed|..., reason?}}.
+  const gs = j.gaussiansState;
+  if (gs && typeof gs === 'object' && typeof gs.state === 'string' && gs.state) {
+    out.gaussiansState = { state: gs.state };
+    if (typeof gs.reason === 'string' && gs.reason) out.gaussiansState.reason = gs.reason;
+  }
   return out;
 }
 
@@ -231,7 +242,54 @@ export function createNativeLiveAttrs(el, o = {}) {
 
 // ── native providers (the paused frame) ──────────────────────────────────────────────────────
 
-/** A native-module failure. `code`: http | unsupported | format | encode | network | aborted. */
+/** Below this 99th-percentile splat luminance a native Gaussians result is "black" (web#341). */
+export const BLACK_SCENE_LUMA = 0.08;
+
+/**
+ * The colour of a 3DGS PLY, from a strided sample of its splats' degree-0 colour
+ * (0.5 + C0·f_dc, clamped, Rec. 709 luma). Properties are read by name, so any layout works.
+ * Returns null when the bytes are not a little-endian float PLY with f_dc_0..2 (no verdict).
+ * @param {Uint8Array} u8
+ * @param {number} [maxSamples]
+ * @returns {{samples:number, p99:number, mean:number}|null}
+ */
+export function plyColourStats(u8, maxSamples = 4096) {
+  const head = new TextDecoder().decode(u8.subarray(0, Math.min(u8.length, 16384)));
+  const endTok = 'end_header\n';
+  const end = head.indexOf(endTok);
+  if (!head.startsWith('ply') || end < 0 || !/format binary_little_endian 1\.0/.test(head)) return null;
+  const count = +(/element vertex (\d+)/.exec(head) || [])[1];
+  if (!(count > 0)) return null;
+  const sizeOf = { float: 4, float32: 4, double: 8, uchar: 1, uint8: 1, char: 1, int8: 1, short: 2, ushort: 2, int16: 2, uint16: 2, int: 4, uint: 4, int32: 4, uint32: 4 };
+  let stride = 0;
+  const off = {};
+  const vtx = head.slice(head.indexOf('element vertex'), end).split('\nelement ')[0];
+  for (const m of vtx.matchAll(/property (\S+) (\S+)/g)) {
+    off[m[2]] = { at: stride, type: m[1] };
+    stride += sizeOf[m[1]] ?? 4;
+  }
+  const keys = ['f_dc_0', 'f_dc_1', 'f_dc_2'];
+  if (keys.some((k) => !off[k] || (off[k].type !== 'float' && off[k].type !== 'float32'))) return null;
+  const base = end + endTok.length;
+  if (u8.byteLength - base < count * stride) return null;
+  const dv = new DataView(u8.buffer, u8.byteOffset + base, count * stride);
+  const step = Math.max(1, Math.floor(count / maxSamples));
+  const C0 = 0.28209479177387814;
+  const lum = [];
+  let sum = 0;
+  for (let i = 0; i < count; i += step) {
+    const c = keys.map((k) => Math.min(1, Math.max(0, 0.5 + C0 * dv.getFloat32(i * stride + off[k].at, true))));
+    const y = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    if (!Number.isFinite(y)) continue;
+    lum.push(y);
+    sum += y;
+  }
+  if (!lum.length) return null;
+  lum.sort((a, b) => a - b);
+  return { samples: lum.length, p99: lum[Math.min(lum.length - 1, Math.floor(lum.length * 0.99))], mean: sum / lum.length };
+}
+
+/** A native-module failure. `code`: http | unsupported | format | encode | network | aborted | timeout | unavailable | black. */
 export class NativeLiftError extends Error {
   constructor(message, code, extra = {}) {
     super(message);
@@ -403,6 +461,7 @@ export function sniffSplatFormat(u8) {
  */
 export function createNativeGaussiansLift(opts = {}) {
   const fetchImpl = opts.fetch || ((...a) => globalThis.fetch(...a));
+  const timeoutMs = opts.timeoutMs > 0 ? opts.timeoutMs : NATIVE_GAUSSIANS_TIMEOUT_MS;
   let unsupported = false;
   return {
     id: 'native-gaussians',
@@ -414,14 +473,38 @@ export function createNativeGaussiansLift(opts = {}) {
       const t0 = now();
       const blob = await encodeFrame(rgb);
       if (onProgress) onProgress({ stage: 'lifting', progress: 0.1, elapsedS: 0 });
-      let r;
+      // Bounded (web#341): a converter that is installed but fails to load never answers this
+      // POST with an error today (the browser reads its failed job as not-ready until its own
+      // 180 s deadline), so the page would sit in `lifting` for minutes. Our own abort ends it
+      // with a `timeout` error; the caller's signal still wins. A ticking elapsed count keeps
+      // the chip visibly alive meanwhile.
+      const ctl = new AbortController();
+      let timedOut = false;
+      const onAbort = () => ctl.abort();
+      if (signal) {
+        if (signal.aborted) throw new NativeLiftError('native lift: aborted', 'aborted');
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+      const timer = setTimeout(() => {
+        timedOut = true;
+        ctl.abort();
+      }, timeoutMs);
+      const tick = onProgress ? setInterval(() => onProgress({ stage: 'lifting', progress: 0.1, elapsedS: (now() - t0) / 1000 }), 1000) : null;
+      let r, u8;
       try {
-        r = await post(fetchImpl, NATIVE_GAUSSIANS_URL, blob, signal);
+        r = await post(fetchImpl, NATIVE_GAUSSIANS_URL, blob, ctl.signal);
+        u8 = new Uint8Array(await r.arrayBuffer());
       } catch (e) {
+        if (timedOut && !(signal && signal.aborted))
+          throw new NativeLiftError(`native gaussians: no answer within ${Math.round(timeoutMs / 1000)} s`, 'timeout');
+        if (signal && signal.aborted) throw new NativeLiftError('native lift: aborted', 'aborted');
         if (e && e.code === 'unsupported') unsupported = true;
         throw e;
+      } finally {
+        clearTimeout(timer);
+        if (tick) clearInterval(tick);
+        if (signal) signal.removeEventListener('abort', onAbort);
       }
-      const u8 = new Uint8Array(await r.arrayBuffer());
       const fmtName = sniffSplatFormat(u8);
       const ms = Math.round(now() - t0);
       if (onProgress) onProgress({ stage: 'lifting', progress: 1, elapsedS: ms / 1000 });
@@ -440,6 +523,16 @@ export function createNativeGaussiansLift(opts = {}) {
         // +z, y down). A header that names no convention means that — NOT explore's own 'opengl'
         // default, under which a +z scene sits behind the camera and explore draws solid black.
         if (!meta.axes && !meta.convention) meta.axes = 'opencv';
+        // A scene whose every splat is black came from a black frame (web#341: a runtime readback
+        // without its keyed mutex, runtime #2830). Say so rather than open an empty black scene.
+        const col = plyColourStats(u8);
+        if (col && col.p99 < BLACK_SCENE_LUMA) {
+          throw new NativeLiftError(
+            `native gaussians: the scene is black (99th-percentile splat luminance ${col.p99.toFixed(3)} over ${col.samples} samples) — the frame it was made from was black`,
+            'black',
+            { colour: col },
+          );
+        }
         return { ply: u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength), meta: { ...meta, timings: { nativeMs: ms } } };
       }
       throw new NativeLiftError('native gaussians: response is neither a .sog nor a .ply', 'format');
