@@ -90,6 +90,27 @@ function dxrCore(cfg, cap, S) {
     eyeAnchor: true,      // false: the runtime's views as they come (≤ 0.7.11), harness A/B
     eyeLeanMax: 0.5,
     nominalFallback: [0, 0.1, 0.6], // the nominal viewer (m, display space) when XRDisplayInfo has none: the runtime's on Leia SR + sim_display      // the scaled head deviation never exceeds this × the nearest surface in view (estimator / target scale only): leaning in cannot enter the model
+    // THE CORE GLASS (v0.8.0, David, panel 2026-11-27, tried in the Model Viewer on a helmet, an
+    // elongated fox and a long-tailed dinosaur): in the display rig the glass sits where ONE THIRD
+    // of the subject's CORE SURFACE is in front of it, AT EVERY ANGLE. "Core": points spread over the
+    // surface by area (adapter coreSet), so a thin tail / strap / antenna carries little weight, and
+    // the stage (floors, domes, backdrops) is left out. "Every angle": the depth is re-read from the
+    // page's live camera whenever the camera or the subject moves, so a long subject is never
+    // recessed side-on nor pushed far out end-on, and a zoom (the page's camera moving in) is a
+    // smaller virtual display. A fixed function of shape and view: it never hunts.
+    coreGlass: true,     // false: the portal at the frozen scale distance, as 0.7.x (A/B)
+    // THE STRICT OBJECT TEST (v0.8.0, David 2026-11-27: "display rig only when we are 100% sure we
+    // are dealing with a simple object that is the point of the experience"). objectVerdict.
+    strictObject: true,  // false: any page target not in an open scene is an object, as 0.7.13 (A/B)
+    settleMs: 1000,      // the surface set must be unchanged for this long before the verdict ...
+    settleMaxMs: 8000,   // ... or this long since the activation's first look (a page that never settles: not an object)
+    objFitMax: 1.3,      // the subject's radius about the target is at most this x the frame's half-size there ...
+    objFitMin: 0.08,     // ... at least this x (a speck is not the point of the page) ...
+    objStandoff: 1.2,    // ... and the camera stands at least this x that radius from the target
+    targetDrift: 0.05,   // the target may move at most this x its distance while we watch
+    resumeMs: 2000,      // an object page that was demoted (a fly, a fly-through) is decided AGAIN after this long back outside the subject, looking at it, with no walk hint
+    overlayEveryFrames: 30, // page elements over the canvas that move with the camera (hotspots, labels): looked for this often
+    glassFront: 1 / 3,   // the share of the core surface in front of the glass
     displayPivot: true, // display rig: the page's rotations pivot about the virtual display's centre (pivotOffset); false = the portal rides the page camera (0.5.4), harness A/B only
     convRoomPercentile: 0.7, // 'percentile' mode: converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance). 'fixed' mode reads it only for the scale-sanity note
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
@@ -485,7 +506,7 @@ function dxrCore(cfg, cap, S) {
     const dr = depthRangeFor(st);
     st.near = dr.near; st.far = dr.far;
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
-    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; // a new activation decides the rig's scale again (setScaleOnce)
+    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.rigSwitch = null; st.glass = null; // a new activation decides the rig's scale again (setScaleOnce)
     estimateConvergence(st, true);
     st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
     buildRig(st, ad.rigFov(st));
@@ -767,7 +788,11 @@ function dxrCore(cfg, cap, S) {
       // samples, setScaleOnce: a slow page would otherwise wait seconds per sample).
       if (!estimateConvergence(st, false, true) && st.stats.xrFrames % (st.rigScale ? 30 : 10) === 0) estimateConvergence(st, false);
       if (!st.openLatched && st.stats.xrFrames % Math.max(1, T.walkEveryFrames | 0) === 0) walkTick(st);
+      if (T.strictObject !== false && st.conv.src !== 'fixed' && !(st.verdict && st.verdict.done)) objectVerdict(st);
+      if (st.stats.xrFrames % (st.verdict && st.verdict.done ? Math.max(1, T.overlayEveryFrames | 0) : 10) === 0) overlayTick(st);
+      if (T.strictObject !== false && st.stats.xrFrames % 6 === 0) verdictWatch(st);
       tickRamp(st, t);
+      tickRigSwitch(st);
       // Pushed every frame and before any draw: a rig drives the NEXT locate.
       if (HAS_RIG && st.layer) { try { st.layer.setViewRig(buildRig(st, ad.rigFov(st))); } catch (e) { warnOnce('rig', 'setViewRig failed', e); } }
     }
@@ -883,6 +908,9 @@ function dxrCore(cfg, cap, S) {
     // Flat (both eyes on the page camera) until the scale is decided: no eye pose is ever built on a
     // provisional scale (setScaleOnce).
     const k = st.rigScale ? rampK(st) : 0;
+    // The core glass: on the display rig always; on the camera rig for an object-like page (objectVerdict)
+    // whose convergence is the page's target, so its focus is placed by the same rule.
+    const dg = rigMode() === 'display' || (st.objLike && st.conv.src !== 'fixed') ? coreGlass(st) * site.convScale : (st.glass = null, 0);
     if (rigMode() === 'display') {
       // DISPLAY rig, for object-centric scenes (the P key of legacy WebXR apps): the canvas is a
       // portal onto a virtual display. Framing: the portal sits on the convergence plane, square to
@@ -902,9 +930,12 @@ function dxrCore(cfg, cap, S) {
       // height, and the eyes sit at the viewer's offset × m2v from it), so the whole portal is placed
       // at the frozen scale distance (v0.7.11): it no longer follows a moving estimate.
       const r = st.rigs.display;
-      r.position.x = r.position.y = 0; r.position.z = -ds;
+      // The core glass (T.coreGlass): the portal at the live depth that leaves T.glassFront of the
+      // core surface in front, times the user's Focus. Else the frozen scale distance (0.7.x).
+      const dp = dg > 0 ? dg : ds;
+      r.position.x = r.position.y = 0; r.position.z = -dp;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
-      r.virtualDisplayHeight = 2 * ds * Math.tan(verticalFov / 2);
+      r.virtualDisplayHeight = 2 * dp * Math.tan(verticalFov / 2);
       const dep = depthOf('display');
       r.ipdFactor = dep * k;
       r.parallaxFactor = dep * k;
@@ -919,7 +950,7 @@ function dxrCore(cfg, cap, S) {
     rig.position.x = rig.position.y = rig.position.z = 0;
     rig.orientation.x = rig.orientation.y = rig.orientation.z = 0; rig.orientation.w = 1;
     rig.verticalFov = verticalFov;
-    rig.convergenceDiopters = 1 / d;
+    rig.convergenceDiopters = 1 / (dg > 0 ? dg : d);
     if (st.conv.src === 'fixed') {
       // OPEN scene, fixed focus (the legacy-WebXR rule): REAL scale. 1 unit = 1 m, so the viewer's
       // own IPD applies (metersToVirtual 1), converged T.openSceneConvM (2 m) ahead. The user's depth
@@ -976,6 +1007,8 @@ function dxrCore(cfg, cap, S) {
     }
     if (S) return;
     if (src === 'target' && raw > 0) {
+      // The strict object test decides the rig, and it needs a settled scene: flat until then.
+      if (T.strictObject !== false && site.rigChoice === 'auto' && !st.openLatched && !objectVerdict(st)) return;
       st.rigScale = { d: raw, basis: `target${st.conv.via ? ': ' + st.conv.via : ''}` };
     } else {
       const W = st.rigScaleWait || (st.rigScaleWait = { t0: now(), xs: [] });
@@ -985,6 +1018,7 @@ function dxrCore(cfg, cap, S) {
       const quiet = !(guard.loading && guard.loading(t));
       const late = t - W.t0 >= T.scaleMaxWaitMs; // from this activation's first estimate (the flip)
       if (!(consistent && quiet) && !late) return;
+      if (T.strictObject !== false && site.rigChoice === 'auto' && src === 'estimator' && !st.openLatched && !late && !objectVerdict(st)) return;
       const d = med > 0 ? med : st.conv.d || 1;
       st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(T.scaleMaxWaitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
     }
@@ -1021,7 +1055,7 @@ function dxrCore(cfg, cap, S) {
     if (site.rigChoice !== 'auto' || !HAS_RIG) return;
     let rig = 'camera', why;
     if (src === 'fixed' || st.openLatched) why = `open scene${st.openWhy ? ': ' + st.openWhy : ''}`;
-    else if (src !== 'target') why = 'no page target (the estimator)';
+    else if (src !== 'target' && T.strictObject === false) why = 'no page target (the estimator)';
     else {
       const w = walkHint(st);
       if (w) why = `the camera may walk: ${w}`;
@@ -1030,9 +1064,11 @@ function dxrCore(cfg, cap, S) {
         let s = null;
         try { s = st.ad.sampler(st); } catch (e) { s = null; }
         if (s) estimateSubjectDistance(s, o);
+        const v = T.strictObject !== false ? objectVerdict(st) : null;
         if (o.open) why = o.why;
         else if (o.surround) why = `surrounded: ${o.surround}`;
-        else { rig = 'display'; why = `object on a turntable (target: ${st.conv.via || 'the page'})`; }
+        else if (T.strictObject !== false && !(v && v.object)) why = v ? v.why : 'the scene has not settled';
+        else { rig = 'display'; why = src === 'target' ? `object on a turntable (target: ${st.conv.via || 'the page'})` : 'an object seen from outside (no page target: the estimator)'; }
       }
     }
     setAutoRig(rig, why, !st.rigDecided);
@@ -1046,6 +1082,402 @@ function dxrCore(cfg, cap, S) {
     if (was !== rig) notify();
   }
   function scaleReady(st) { if (!st.cover && !st.coverForced && rampK(st) < 1 && !st.ramp && !st.releasing) startRamp(st, 1); }
+
+  // ------------------------------------------------------------ the strict object test (v0.8.0)
+  // "A simple object that is the point of the experience": the display rig replaces the author's
+  // perspective with the viewer's own, so it is used only when ALL of these hold (else the camera rig):
+  //   settled    the surface set (coreSet) has not changed for T.settleMs and the page is not loading;
+  //   fixed      the page's target has not moved (a follow camera, a map pan, a scripted path move it);
+  //   compact    the subject fits the frame at the target, fills a real share of it, and the camera
+  //              stands well outside it (rooms, landscapes and close-ups fail);
+  //   alone      nothing was left out but a floor under it or a dome around it (set.other === 0);
+  //   no overlay no page element over the canvas moves with the camera (hotspots, labels: they are
+  //              placed with the page's own camera maths and would drift under another projection).
+  // `like` (compact + fixed) is the weaker "object-like": the camera rig then takes its convergence
+  // from the same core glass (buildRig), so a configurator keeps its camera and still focuses well.
+  // Returns null while pending.
+  function objectVerdict(st) {
+    const V = st.verdict || (st.verdict = { t0: now(), set: null, since: 0, tgt: null, moved: false, done: null });
+    if (V.done) return V.done;
+    const finish = (object, like, why) => {
+      V.done = { object, like, why };
+      st.objLike = like;
+      info(`object test: ${object ? 'a simple object (display rig)' : like ? 'object-like, not certain (camera rig, core focus)' : 'not an object (camera rig)'} — ${why}`);
+      return V.done;
+    };
+    if (typeof st.ad.coreSet !== 'function') return finish(false, false, 'this engine gives no surface to read');
+    let s = null, set = null;
+    try { s = st.ad.sampler(st); } catch (e) { s = null; }
+    const t = now(), late = t - V.t0 >= T.settleMaxMs, d = st.conv.d || 0;
+    if (!s || !(d > 0)) return late ? finish(false, false, 'no camera target to measure from') : null;
+    const F = stageFrame(s, d);
+    if (!V.tgt) V.tgt = [F.tx, F.ty, F.tz];
+    else if (Math.hypot(F.tx - V.tgt[0], F.ty - V.tgt[1], F.tz - V.tgt[2]) > (st.conv.src === 'target' ? T.targetDrift : 3 * T.targetDrift) * d) V.moved = true;
+    try { set = st.ad.coreSet(st, s, { d }); } catch (e) { set = null; }
+    if (set !== V.set) { V.set = set; V.since = t; }
+    const quiet = !(guard.loading && guard.loading(t));
+    if (!late && (!set || t - V.since < T.settleMs || !quiet)) return null;
+    // The overlay watch needs three looks to see page elements follow the camera: wait for them (at
+    // most until the cap), so a page with hotspots never starts on the display rig.
+    if (!late && !st.overlayTracked && !(st.ovl && st.ovl.looks >= 3) && t - V.t0 < 2500) return null;
+    if (!set) return finish(false, false, 'no subject found in the scene');
+    if (V.moved) return finish(false, false, 'the camera target moves (a follow camera, a pan or a scripted path)');
+    // The subject's radius about the target: the 95th percentile of its points' distance.
+    let n = 0;
+    for (const p of set.parts) n += p.k;
+    const r = new Float32Array(n);
+    let j = 0;
+    for (const p of set.parts) {
+      const m = p.m, q = p.pts, st4 = p.stride || 3;
+      for (let i = 0, end = p.k * st4; i < end; i += st4) {
+        const x = m[0] * q[i] + m[4] * q[i + 1] + m[8] * q[i + 2] + m[12] - F.tx;
+        const y = m[1] * q[i] + m[5] * q[i + 1] + m[9] * q[i + 2] + m[13] - F.ty;
+        const z = m[2] * q[i] + m[6] * q[i + 1] + m[10] * q[i + 2] + m[14] - F.tz;
+        r[j++] = Math.hypot(x, y, z);
+      }
+    }
+    const R = selectKth(r, n, Math.min(n - 1, Math.floor(0.95 * (n - 1))));
+    V.R = R; V.Rf = F.Rf;
+    const fit = R / F.Rf;
+    if (!(fit <= T.objFitMax)) return finish(false, false, `the scene is larger than the frame (${fit.toFixed(2)} x)`);
+    if (!(fit >= T.objFitMin)) return finish(false, false, `the subject is a speck in the frame (${fit.toFixed(3)} x)`);
+    if (!(d >= T.objStandoff * R)) return finish(false, false, `the camera is too close to, or inside, the subject (${(d / R).toFixed(2)} radii)`);
+    if (set.other > 0) return finish(false, true, `${set.other} other part(s) in the scene besides the subject`);
+    if (st.overlayTracked) return finish(false, true, 'page elements over the canvas follow the 3D scene (hotspots, labels)');
+    return finish(true, true, `one compact subject, ${fit.toFixed(2)} x the frame, camera ${(d / R).toFixed(1)} radii away, nothing else in the scene`);
+  }
+  // AFTER the verdict the page is still watched (v0.8.0, David 2026-11-27: a preset camera path may
+  // orbit first and fly off later; a viewer may offer a fly mode beside its orbit mode). An object
+  // (or object-like) page is DEMOTED, never promoted, so it cannot flip back and forth, when:
+  //   - the target moves: more than T.targetDrift x its distance from where it was at the verdict
+  //     (a retarget on a detail of the subject, within the subject's radius, is allowed);
+  //   - the camera comes inside the subject (closer to the target than T.objStandoff x its radius is
+  //     allowed down to 1 x: a zoom; inside it is a fly-through).
+  // An automatic display rig then fades to the camera rig; the core focus goes too.
+  function verdictWatch(st) {
+    const V = st.verdict;
+    if (!V || !V.done || !V.tgt || !(V.R > 0)) return;
+    let s = null;
+    try { s = st.ad.sampler(st); } catch (e) { s = null; }
+    if (!s) return;
+    const cw = s.cameraPose, fl = Math.hypot(cw[8], cw[9], cw[10]) || 1;
+    const px = cw[12], py = cw[13], pz = cw[14], fx = -cw[8] / fl, fy = -cw[9] / fl, fz = -cw[10] / fl;
+    // Where the subject is from here: how far, and how far off the view axis.
+    const vx = V.tgt[0] - px, vy = V.tgt[1] - py, vz = V.tgt[2] - pz, along = vx * fx + vy * fy + vz * fz;
+    const dist = Math.hypot(vx, vy, vz), off = Math.hypot(vx - along * fx, vy - along * fy, vz - along * fz);
+    if (V.done.object || V.done.like) {
+      let why = null;
+      if (st.conv.src === 'fixed') why = 'the scene became an open world';
+      else if (dist < V.R) why = 'the camera went inside the subject';
+      else if (!(along > 0) || off > Math.max(V.R, T.targetDrift * dist)) why = 'the camera no longer looks at the subject (a fly-through or a pan)';
+      if (!why) return;
+      demote(st, why);
+      if (site.rigChoice === 'auto' && site.rig === 'display') fadeRig(st, 'camera', why);
+      return;
+    }
+    // PROMOTION (David 2026-11-27: "promoting on resuming orbit is the right choice"). Only a page that
+    // WAS an object: back outside the subject, looking at it, nothing saying the camera walks, for
+    // T.resumeMs -> everything is decided again (the open latch included), under a fade to flat.
+    if (!V.was || st.rigSwitch) return;
+    const ok = dist >= T.objStandoff * V.R && along > 0 && off <= V.R && !walkHint(st);
+    if (!ok) { V.resumeSince = 0; return; }
+    const t = now();
+    if (!V.resumeSince) { V.resumeSince = t; return; }
+    if (t - V.resumeSince < T.resumeMs) return;
+    V.resumeSince = 0;
+    info('object test: the camera is back outside the subject, looking at it: deciding again');
+    redecide(st);
+  }
+  function demote(st, why) {
+    const V = st.verdict;
+    if (!V || !V.done || !(V.done.object || V.done.like)) return;
+    V.was = V.done; V.done = { object: false, like: false, why }; V.resumeSince = 0;
+    st.objLike = false;
+    info(`object test: no longer an object (camera rig) — ${why}`);
+  }
+  // Decide the scene again from scratch (rig, scale, open latch), flat while it happens.
+  function redecide(st) {
+    const reset = () => {
+      st.openLatched = false; st.openWhy = null; st.openByWalk = false; st.surroundRuns = 0; st.walk = null;
+      st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.glass = null; st.piv = null;
+      estimateConvergence(st, true);
+    };
+    if (!st.active || rampK(st) <= 0) { reset(); return; }
+    st.rigSwitch = { reset };
+    startRamp(st, 0);
+  }
+  // Page elements over the canvas that MOVE WITH THE CAMERA (hotspots, labels, CSS2D annotations):
+  // small positioned elements whose box moved between two looks while the camera moved and the canvas
+  // did not. Two such looks -> st.overlayTracked (never unset: the page has them). An automatic display
+  // rig then goes back to the camera rig, through a fade.
+  function overlayTick(st) {
+    if (st.overlayTracked || !st.canvas || !st.canvas.isConnected) return;
+    let s = null;
+    try { s = st.ad.sampler(st); } catch (e) { s = null; }
+    if (!s) return;
+    const O = st.ovl || (st.ovl = { els: [], scanAt: -Infinity, pos: new WeakMap(), obs: new WeakMap(), self: new WeakSet(), cam: null, cr: null, looks: 0 });
+    O.looks++;
+    const cr = st.canvas.getBoundingClientRect(), t = now();
+    if (!(cr.width > 0 && cr.height > 0)) return;
+    if (t - O.scanAt > 2000) {
+      O.scanAt = t; O.els = [];
+      let root = st.canvas.parentElement;
+      for (let i = 0; i < 2 && root && root.parentElement && root !== document.body; i++) root = root.parentElement;
+      if (root) {
+        const all = root.querySelectorAll('*');
+        for (let i = 0; i < all.length && i < 1500 && O.els.length < 80; i++) {
+          const el = all[i];
+          if (el === st.canvas || el.tagName === 'CANVAS' || el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.contains(st.canvas)) continue;
+          if (el.hasAttribute('data-dxr-auto3d-hud') || el.hasAttribute('data-dxr-auto3d-chip')) continue;
+          let cs = null;
+          try { cs = getComputedStyle(el); } catch (e) { continue; }
+          if (!cs || cs.visibility === 'hidden' || cs.display === 'none' || (cs.position !== 'absolute' && cs.position !== 'fixed' && cs.transform === 'none')) continue;
+          const b = el.getBoundingClientRect();
+          if (!(b.width > 0 && b.height > 0) || b.width > 0.4 * cr.width || b.height > 0.4 * cr.height) continue;
+          if (b.right < cr.left || b.left > cr.right || b.bottom < cr.top || b.top > cr.bottom) continue;
+          O.els.push(el);
+        }
+      }
+    }
+    const cp = s.cameraPose;
+    let camMoved = false;
+    if (O.cam) { let dsum = 0; for (let i = 0; i < 16; i++) dsum += Math.abs(cp[i] - O.cam[i]); camMoved = dsum > 1e-4; }
+    const still = O.cr && Math.abs(cr.left - O.cr.left) < 0.5 && Math.abs(cr.top - O.cr.top) < 0.5 && Math.abs(cr.width - O.cr.width) < 0.5;
+    const tanV = s.tanHalfFov !== undefined ? s.tanHalfFov : Math.tan(s.verticalFov / 2), tanH = tanV * (s.aspect || cr.width / cr.height);
+    const sx = Math.hypot(cp[0], cp[1], cp[2]) || 1, sy = Math.hypot(cp[4], cp[5], cp[6]) || 1, sz = Math.hypot(cp[8], cp[9], cp[10]) || 1;
+    let hit = null;
+    for (const el of O.els) {
+      if (!el.isConnected) continue;
+      const b = el.getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2, was = O.pos.get(el);
+      const mv = was && Math.hypot(x - was[0], y - was[1]) > 2;
+      O.pos.set(el, [x, y]);
+      if (!was || !still) continue;
+      if (mv && !camMoved) { O.self.add(el); O.obs.delete(el); continue; }   // moves on its own: a spinner, a CSS animation
+      if (!camMoved || O.self.has(el)) continue;
+      if (!mv) { O.obs.delete(el); continue; }                               // the camera moved, it did not: fixed UI
+      // The ray through its centre, in world space (the page camera's own projection).
+      const cx = (((x - cr.left) / cr.width) * 2 - 1) * tanH, cy = (1 - ((y - cr.top) / cr.height) * 2) * tanV;
+      let dx = (cp[0] / sx) * cx + (cp[4] / sy) * cy - cp[8] / sz, dy = (cp[1] / sx) * cx + (cp[5] / sy) * cy - cp[9] / sz, dz = (cp[2] / sx) * cx + (cp[6] / sy) * cy - cp[10] / sz;
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      dx /= dl; dy /= dl; dz /= dl;
+      let L = O.obs.get(el);
+      if (!L) O.obs.set(el, (L = []));
+      L.push([cp[12], cp[13], cp[14], dx, dy, dz]);
+      if (L.length > 16) L.shift();
+      if (L.length >= 5 && pinnedTo3D(L, st.conv.d || 1)) { hit = el; break; }
+    }
+    O.cam = Float64Array.from(cp); O.cr = { left: cr.left, top: cr.top, width: cr.width };
+    if (hit) {
+      st.overlayTracked = true;
+      info(`page overlays: an element over the canvas is pinned to a point of the 3D scene (${desc(hit)})`);
+      if (site.rigChoice === 'auto' && site.rig === 'display') fadeRig(st, 'camera', 'page elements over the canvas follow the 3D scene (hotspots, labels)');
+    }
+  }
+  // Do these rays (origin + unit direction, from different camera positions) meet at ONE point in front
+  // of the cameras? Least squares: p minimises the sum of squared distances to the rays. A hotspot
+  // pinned to the scene passes; a timeline scrubber, a progress bar or a tooltip that merely moves
+  // while the camera does, does not. Cameras that did not translate (a pure look-around) prove nothing.
+  function pinnedTo3D(L, scale) {
+    let spread = 0;
+    for (const r of L) spread = Math.max(spread, Math.hypot(r[0] - L[0][0], r[1] - L[0][1], r[2] - L[0][2]));
+    if (spread < 0.03 * scale) return false;
+    // A = sum(I - d d^T), b = sum((I - d d^T) o).
+    let a00 = 0, a01 = 0, a02 = 0, a11 = 0, a12 = 0, a22 = 0, b0 = 0, b1 = 0, b2 = 0;
+    for (const [ox, oy, oz, dx, dy, dz] of L) {
+      const m00 = 1 - dx * dx, m01 = -dx * dy, m02 = -dx * dz, m11 = 1 - dy * dy, m12 = -dy * dz, m22 = 1 - dz * dz;
+      a00 += m00; a01 += m01; a02 += m02; a11 += m11; a12 += m12; a22 += m22;
+      b0 += m00 * ox + m01 * oy + m02 * oz; b1 += m01 * ox + m11 * oy + m12 * oz; b2 += m02 * ox + m12 * oy + m22 * oz;
+    }
+    const c00 = a11 * a22 - a12 * a12, c01 = a02 * a12 - a01 * a22, c02 = a01 * a12 - a02 * a11;
+    const det = a00 * c00 + a01 * c01 + a02 * c02;
+    if (!(Math.abs(det) > 1e-9)) return false;
+    const c11 = a00 * a22 - a02 * a02, c12 = a01 * a02 - a00 * a12, c22 = a00 * a11 - a01 * a01;
+    const px = (c00 * b0 + c01 * b1 + c02 * b2) / det, py = (c01 * b0 + c11 * b1 + c12 * b2) / det, pz = (c02 * b0 + c12 * b1 + c22 * b2) / det;
+    // The cameras must have gone round the point by a real angle (>= 12 degrees between two of them, seen
+    // from it): over a small arc the rays are near parallel and ANY drifting element fits some far point.
+    let minCos = 1;
+    const f = L[0], fx = f[0] - px, fy = f[1] - py, fz = f[2] - pz, fl = Math.hypot(fx, fy, fz) || 1;
+    for (const r of L) { const x = r[0] - px, y = r[1] - py, z = r[2] - pz; minCos = Math.min(minCos, (x * fx + y * fy + z * fz) / ((Math.hypot(x, y, z) || 1) * fl)); }
+    if (minCos > Math.cos((12 * Math.PI) / 180) || fl > 4 * scale) return false;
+    let err = 0;
+    for (const [ox, oy, oz, dx, dy, dz] of L) {
+      const vx = px - ox, vy = py - oy, vz = pz - oz, along = vx * dx + vy * dy + vz * dz;
+      if (!(along > 0)) return false; // behind a camera
+      err = Math.max(err, Math.hypot(vx - along * dx, vy - along * dy, vz - along * dz) / along);
+    }
+    return err < 0.02; // within ~1 degree of every ray
+  }
+  // An automatic rig change AFTER go-live: fade to flat, switch, fade back in (never a live jump).
+  function fadeRig(st, rig, why) {
+    if (site.rig === rig && !st.rigSwitch) return;
+    if (!st.active || !st.rigScale || rampK(st) <= 0) { st.rigSwitch = null; setAutoRig(rig, why, false); return; }
+    st.rigSwitch = { rig, why };
+    startRamp(st, 0);
+  }
+  function tickRigSwitch(st) {
+    const W = st.rigSwitch;
+    if (!W || st.ramp || rampK(st) > 0) return;
+    st.rigSwitch = null;
+    if (W.reset) { W.reset(); return; }   // the scale decision fades it back in (scaleReady)
+    setAutoRig(W.rig, W.why, false);
+    startRamp(st, 1);
+  }
+
+  // ------------------------------------------------------------ the core glass (v0.8.0)
+  // The depth, along the page camera's view axis, that leaves T.glassFront of the subject's core
+  // surface in front of it. The adapter's coreSet(st, s, ref) returns the surface points, per part in
+  // the part's LOCAL space with its live world matrix, so a turning subject needs no resample:
+  //   { parts: [{ pts: Float32Array, k (points), stride (3 | 4), m (column-major world matrix) }], note }
+  // Re-read only when the view or a part moved (a checksum of the matrices). 0 = no core (no adapter
+  // support, nothing sampled, T.coreGlass false): the caller falls back to the frozen scale distance.
+  function coreGlass(st) {
+    if (T.coreGlass === false || !st.active || typeof st.ad.coreSet !== 'function') { st.glass = null; return 0; }
+    let s = null, set = null;
+    try { s = st.ad.sampler(st); } catch (e) { s = null; }
+    if (!s) return st.glass ? st.glass.d : 0;
+    const vm = s.viewMatrix || invert4(s.cameraPose);
+    try { set = st.ad.coreSet(st, s, { d: st.conv.d || 0 }); } catch (e) { warnOnce('core-set', 'could not read the scene surface: the glass stays at the scale distance', e); set = null; }
+    if (!set || !set.parts || !set.parts.length) { st.glass = null; return 0; }
+    let sig = set.parts.length;
+    for (let i = 0; i < 16; i++) sig = sig * 31 + vm[i];
+    for (const p of set.parts) { sig = sig * 31 + p.k; for (let i = 0; i < 16; i++) sig = sig * 31 + p.m[i]; }
+    const G = st.glass || (st.glass = { sig: NaN, d: 0, buf: null, n: 0, logged: false });
+    if (G.sig === sig && G.set === set) return G.d;
+    G.sig = sig; G.set = set;
+    let total = 0;
+    for (const p of set.parts) total += p.k;
+    if (!G.buf || G.buf.length < total) G.buf = new Float32Array(total);
+    const z = G.buf, near = s.near || 0;
+    let n = 0;
+    for (const p of set.parts) {
+      const m = p.m, q = p.pts, st4 = p.stride || 3;
+      // Row 2 of (view x world): view depth = -(a x + b y + c z + e).
+      const a = vm[2] * m[0] + vm[6] * m[1] + vm[10] * m[2], b = vm[2] * m[4] + vm[6] * m[5] + vm[10] * m[6];
+      const c = vm[2] * m[8] + vm[6] * m[9] + vm[10] * m[10], e = vm[2] * m[12] + vm[6] * m[13] + vm[10] * m[14] + vm[14];
+      for (let i = 0, end = p.k * st4; i < end; i += st4) {
+        const d = -(a * q[i] + b * q[i + 1] + c * q[i + 2] + e);
+        if (d > near && isFinite(d)) z[n++] = d;
+      }
+    }
+    if (n < 16) { G.d = 0; return 0; }
+    const d = clamp(selectKth(z, n, Math.min(n - 1, Math.floor(clamp(+T.glassFront || 1 / 3, 0.02, 0.98) * (n - 1)))), near * 2, (s.far || Infinity) * 0.9);
+    G.d = d; G.n = n;
+    if (!G.logged) {
+      G.logged = true;
+      info(`glass: core surface, ${Math.round(clamp(+T.glassFront || 1 / 3, 0.02, 0.98) * 100)}% in front at every angle (${n} points over ${set.parts.length} part(s)${set.note ? '; ' + set.note : ''}); now ${d.toPrecision(3)} units`);
+    }
+    return d;
+  }
+  // The surface points of a set of parts, shared out BY AREA (adapters' coreSet). Each part is one of
+  //   { m, P, I?, stride? }   triangles: P = vertex positions (xyz at `stride` floats, default 3), in the
+  //                           part's local space; I = indices or null (then every 3 vertices)
+  //   { m, min, max }         a bounding box (local): vertex data unreadable, skinned, instanced
+  //   { m, pts, k, stride }   ready points (a point cloud, splat centres): kept as they are, thinned
+  // m = the part's live column-major world matrix (areas are measured in world space; the points stay
+  // local, so a moving part needs no resample). At most `maxTris` triangles are read per part. A fixed
+  // seed: a scene always gets the same points. Returns [{ pts, k, stride, m }].
+  function sampleSurface(cands, budget, maxTris) {
+    let total = 0;
+    for (const e of cands) {
+      const m = e.m;
+      if (e.pts) continue;
+      if (!e.P) {
+        const sx = Math.hypot(m[0], m[1], m[2]), sy = Math.hypot(m[4], m[5], m[6]), sz = Math.hypot(m[8], m[9], m[10]);
+        const ex = (e.max[0] - e.min[0]) * sx, ey = (e.max[1] - e.min[1]) * sy, ez = (e.max[2] - e.min[2]) * sz;
+        e.area = 2 * (ex * ey + ey * ez + ez * ex); total += e.area > 0 && isFinite(e.area) ? e.area : 0;
+        continue;
+      }
+      const P = e.P, I = e.I && e.I.length >= 3 ? e.I : null, sp = e.stride || 3, nV = Math.floor(P.length / sp);
+      const nTri = Math.floor((I ? I.length : nV) / 3), step = Math.max(1, Math.ceil(nTri / maxTris)), nt = Math.ceil(nTri / step);
+      const tri = new Float32Array(nt * 9), cum = new Float64Array(nt);
+      let k = 0, acc = 0;
+      for (let t = 0; t < nTri; t += step) {
+        const i0 = (I ? I[t * 3] : t * 3) * sp, i1 = (I ? I[t * 3 + 1] : t * 3 + 1) * sp, i2 = (I ? I[t * 3 + 2] : t * 3 + 2) * sp;
+        if (i0 + 2 >= P.length || i1 + 2 >= P.length || i2 + 2 >= P.length) continue;
+        const o9 = k * 9;
+        tri[o9] = P[i0]; tri[o9 + 1] = P[i0 + 1]; tri[o9 + 2] = P[i0 + 2];
+        tri[o9 + 3] = P[i1]; tri[o9 + 4] = P[i1 + 1]; tri[o9 + 5] = P[i1 + 2];
+        tri[o9 + 6] = P[i2]; tri[o9 + 7] = P[i2 + 1]; tri[o9 + 8] = P[i2 + 2];
+        const ax = tri[o9 + 3] - tri[o9], ay = tri[o9 + 4] - tri[o9 + 1], az = tri[o9 + 5] - tri[o9 + 2];
+        const bx = tri[o9 + 6] - tri[o9], by = tri[o9 + 7] - tri[o9 + 1], bz = tri[o9 + 8] - tri[o9 + 2];
+        const e1x = m[0] * ax + m[4] * ay + m[8] * az, e1y = m[1] * ax + m[5] * ay + m[9] * az, e1z = m[2] * ax + m[6] * ay + m[10] * az;
+        const e2x = m[0] * bx + m[4] * by + m[8] * bz, e2y = m[1] * bx + m[5] * by + m[9] * bz, e2z = m[2] * bx + m[6] * by + m[10] * bz;
+        const area = 0.5 * Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
+        acc += area > 0 && isFinite(area) ? area : 0;
+        cum[k++] = acc;
+      }
+      e.tri = tri; e.cum = cum; e.nt = k; e.area = acc * step; total += e.area;
+    }
+    let seed = 0x9e3779b9;
+    const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+    const parts = [];
+    for (const e of cands) {
+      const m = e.m;
+      if (e.pts) {
+        const st4 = e.stride || 3, stepS = Math.max(1, Math.ceil(e.k / budget));
+        let pts = e.pts, k = e.k;
+        if (stepS > 1) { k = Math.floor(e.k / stepS); pts = new Float32Array(k * st4); for (let i = 0; i < k; i++) for (let c = 0; c < st4; c++) pts[i * st4 + c] = e.pts[i * stepS * st4 + c]; }
+        if (k > 0) parts.push({ pts, k, stride: st4, m });
+        continue;
+      }
+      if (!(total > 0) || !(e.area > 0) || !isFinite(e.area)) continue;
+      const k = Math.max(8, Math.round((budget * e.area) / total)), pts = new Float32Array(k * 3);
+      if (!e.P) {
+        for (let i = 0; i < k; i++) for (let c = 0; c < 3; c++) pts[i * 3 + c] = e.min[c] + rnd() * (e.max[c] - e.min[c]);
+      } else {
+        const tri = e.tri, cum = e.cum, nt = e.nt, top = nt ? cum[nt - 1] : 0;
+        if (!(top > 0)) continue;
+        for (let i = 0; i < k; i++) {
+          const r = rnd() * top;
+          let lo = 0, hi = nt - 1;
+          while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid] < r) lo = mid + 1; else hi = mid; }
+          let u = rnd(), v = rnd();
+          if (u + v > 1) { u = 1 - u; v = 1 - v; }
+          const o9 = lo * 9;
+          for (let c = 0; c < 3; c++) pts[i * 3 + c] = tri[o9 + c] + u * (tri[o9 + 3 + c] - tri[o9 + c]) + v * (tri[o9 + 6 + c] - tri[o9 + c]);
+        }
+        e.tri = e.cum = null;
+      }
+      parts.push({ pts, k, stride: 3, m });
+    }
+    return parts;
+  }
+  // Is this part STAGE, not subject (adapters' coreSet)? (wx, wy, wz, wr): its world bounding sphere;
+  // (ex, ey, ez): its box extents in any consistent units; F = { px, py, pz (camera), tx, ty, tz (the
+  // frame's centre at the target), Rf (the frame's half-size there, Infinity when unknown) }.
+  // Returns 0 (subject) or why it is stage: 1 holds the camera (a dome, a room, a big floor), 3 a flat
+  // part larger than the frame (a floor, a backdrop) — the furniture of a model viewer — or 2 far larger
+  // than the frame, 4 wholly off the frame: OTHER GEOMETRY, which makes the page more than one object
+  // (adapters count 2 and 4 in set.other; objectVerdict).
+  function isStage(wx, wy, wz, wr, ex, ey, ez, F) {
+    if (Math.hypot(wx - F.px, wy - F.py, wz - F.pz) <= wr) return 1;
+    const big = Math.max(ex, ey, ez), thin = Math.min(ex, ey, ez);
+    if (thin < 0.03 * big && wr > 1.5 * F.Rf) return 3;
+    if (wr > 4 * F.Rf) return 2;
+    return Math.hypot(wx - F.tx, wy - F.ty, wz - F.tz) - wr > 1.5 * F.Rf ? 4 : 0;
+  }
+  // The frame for isStage, from a sampler and the convergence distance.
+  function stageFrame(s, d) {
+    const cw = s.cameraPose, fl = Math.hypot(cw[8], cw[9], cw[10]) || 1;
+    const tanV = s.tanHalfFov !== undefined ? s.tanHalfFov : Math.tan(s.verticalFov / 2);
+    return { px: cw[12], py: cw[13], pz: cw[14], tx: cw[12] - (cw[8] / fl) * d, ty: cw[13] - (cw[9] / fl) * d, tz: cw[14] - (cw[10] / fl) * d,
+      Rf: d > 0 ? d * tanV * Math.max(1, s.aspect || 1) : Infinity };
+  }
+  // The k-th smallest of a[0..n) (quickselect, in place).
+  function selectKth(a, n, k) {
+    let lo = 0, hi = n - 1;
+    while (lo < hi) {
+      const pv = a[(lo + hi) >> 1];
+      let i = lo, j = hi;
+      while (i <= j) {
+        while (a[i] < pv) i++;
+        while (a[j] > pv) j--;
+        if (i <= j) { const t = a[i]; a[i] = a[j]; a[j] = t; i++; j--; }
+      }
+      if (k <= j) hi = j; else if (k >= i) lo = i; else return a[k];
+    }
+    return a[k];
+  }
 
   // ------------------------------------------------------------ the display rig's pivot
   // RULE (David, panel 2026-09-29): in the display rig the virtual display's centre IS the pivot of
@@ -1075,7 +1507,9 @@ function dxrCore(cfg, cap, S) {
   const PIVOT_CUT_COS = Math.cos(Math.PI / 6);
   const ZERO3 = Object.freeze([0, 0, 0]);
   function pivotOffset(st, m) {
-    if (rigMode() !== 'display' || T.displayPivot === false || !m) { st.piv = null; return null; }
+    // Core glass: the portal rides the page camera and the subject turns about the PAGE's pivot,
+    // which then sits behind the glass (the Model Viewer's turntable, panel 2026-11-27).
+    if (rigMode() !== 'display' || T.displayPivot === false || !m || (st.glass && st.glass.d > 0)) { st.piv = null; return null; }
     const d = scaleDistance(st), P = st.piv; // the portal's distance (buildRig places it at the scale distance)
     if (P && P.d === d) {
       let same = true;
@@ -1135,7 +1569,9 @@ function dxrCore(cfg, cap, S) {
     if (st.openLatched) return;
     st.openLatched = true; st.openWhy = why; st.openByWalk = /^walk/.test(why);
     info(`open scene: ${why} — fixed focus for the rest of this page`);
-    if (site.rigChoice === 'auto' && site.rig === 'display') setAutoRig('camera', `open scene: ${why}`);
+    demote(st, `open scene: ${why}`);
+    st.objLike = false;
+    if (site.rigChoice === 'auto' && site.rig === 'display') fadeRig(st, 'camera', `open scene: ${why}`);
   }
   function walkTick(st) {
     if (T.openWalk === false || st.openLatched || !st.active) return;
@@ -1751,7 +2187,7 @@ function dxrCore(cfg, cap, S) {
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
     newState, noteFlat, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
     realSizeFor, fitEyes, virtualizeCanvas, unvirtualizeCanvas,
-    buildRig, pivotOffset, eyePose, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
+    buildRig, pivotOffset, eyePose, sampleSurface, isStage, stageFrame, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, surfaces, surfaceOf, readGlEye: surfaces.readGlEye,
     rigMode, depthOf, convSource, convText, rampK, flatNote, statusOf, setEnabled,
   };

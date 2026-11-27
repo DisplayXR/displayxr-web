@@ -174,6 +174,7 @@ function dxrThree(core) {
         forEachBounds: (cb) => forEachBounds(scene, cam, cb),
       };
     },
+    coreSet: (st, s, ref) => coreSet(st, s, ref),
     fakeViewParams(st) {
       const cam = st.mainCam;
       return {
@@ -1444,6 +1445,81 @@ function dxrThree(core) {
       if (cb(xfX(m, p[i], p[i + 1], p[i + 2]), xfY(m, p[i], p[i + 1], p[i + 2]), xfZ(m, p[i], p[i + 1], p[i + 2]), p[i + 3] * sc, true) === false) return false;
     }
     return true;
+  }
+
+  // ------------------------------------------------------------ the core surface (core.coreGlass, v0.8.0)
+  // Points spread over the subject's surface BY AREA, per mesh in the mesh's local space (its live
+  // matrixWorld is applied by the core, so a turning subject needs no resample). Area weighting is what
+  // makes a thin tail / strap / antenna count for little. The STAGE is left out: anything whose bounding
+  // sphere holds the camera (a dome, a room, a big floor), shadow catchers, a flat part far larger than
+  // the framed subject (a floor, a backdrop), and parts wholly outside the frame at the target.
+  // Read once and cached; looked at again at most every CORE_CHECK_MS, and rebuilt when the set of
+  // meshes (or their geometry) changed: a model that loads late is picked up.
+  // Fallbacks: a mesh whose vertex data cannot be read (freed after upload), a skinned or instanced
+  // mesh -> points spread through its bounding box; Spark splats -> their sampled centres.
+  const CORE_POINTS = 12000, CORE_TRIS = 24000, CORE_CHECK_MS = 500;
+  const coreCache = new WeakMap(); // state -> { at, key, set }
+  // A position attribute as a plain xyz Float32Array (its own array when it already is one).
+  function positionsOf(pos) {
+    if (!pos || !(pos.count >= 3)) return null;
+    const arr = pos.array;
+    if (arr instanceof Float32Array && pos.itemSize === 3 && !pos.isInterleavedBufferAttribute && !pos.normalized) return arr.length >= 9 ? arr : null;
+    const has = arr ? arr.length > 0 : !!(pos.data && pos.data.array && pos.data.array.length);
+    if (!has || typeof pos.getX !== 'function') return null;
+    const out = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) { out[i * 3] = pos.getX(i); out[i * 3 + 1] = pos.getY(i); out[i * 3 + 2] = pos.getZ(i); }
+    return out;
+  }
+  function coreSet(st, s, ref) {
+    const scene = st.lastScene, cam = st.mainCam;
+    if (!scene || !cam) return null;
+    const now = performance.now(), C = coreCache.get(st);
+    if (C && now - C.at < CORE_CHECK_MS) return C.set;
+    const F = core.stageFrame(s, ref && ref.d > 0 ? ref.d : 0);
+    const found = [];
+    let key = '', skipped = 0, other = 0;
+    scene.traverseVisible((o) => {
+      const splat = isSplatMesh(o);
+      if (!splat && !(o.isMesh || o.isPoints)) return;
+      if (isSparkRenderer(o)) return;
+      if (cam.layers && o.layers && typeof cam.layers.test === 'function' && !cam.layers.test(o.layers)) return;
+      const m = o.matrixWorld.elements, sc = maxScale(m);
+      if (splat) {
+        const S = splatSample(o);
+        if (!S) return;
+        const wx = xfX(m, S.cx, S.cy, S.cz), wy = xfY(m, S.cx, S.cy, S.cz), wz = xfZ(m, S.cx, S.cy, S.cz);
+        if (Math.hypot(wx - F.px, wy - F.py, wz - F.pz) <= S.r * sc) { skipped++; return; } // a splat world: no core
+        found.push({ o, splat: S }); key += `s${o.id}:${S.n};`;
+        return;
+      }
+      const g = o.geometry, mat = Array.isArray(o.material) ? o.material[0] : o.material;
+      if (!g || (mat && (mat.isShadowMaterial || mat.visible === false || (mat.transparent && mat.opacity < 0.05)))) return;
+      if (!g.boundingBox && typeof g.computeBoundingBox === 'function') { try { g.computeBoundingBox(); } catch (e) { /* ignore */ } }
+      if (!g.boundingSphere && typeof g.computeBoundingSphere === 'function') { try { g.computeBoundingSphere(); } catch (e) { /* ignore */ } }
+      const bs = o.boundingSphere || g.boundingSphere, bb = o.boundingBox || g.boundingBox;
+      if (!bs || !bb || !(bs.radius > 0) || !isFinite(bs.radius)) return;
+      const c = bs.center;
+      const sg = core.isStage(xfX(m, c.x, c.y, c.z), xfY(m, c.x, c.y, c.z), xfZ(m, c.x, c.y, c.z), bs.radius * sc, bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z, F);
+      if (sg) { skipped++; if (sg === 2 || sg === 4) other++; return; }
+      const pos = g.attributes && g.attributes.position;
+      found.push({ o, g, pos, bb });
+      key += `${o.id}:${g.id}:${pos ? pos.count + '.' + (pos.version || 0) : 0};`;
+    });
+    if (C && C.key === key) { C.at = now; return C.set; }
+    const t0 = performance.now(), cands = [];
+    let boxed = 0;
+    for (const e of found) {
+      const m = e.o.matrixWorld.elements;
+      if (e.splat) { cands.push({ m, pts: e.splat.pts, k: e.splat.k, stride: 4 }); continue; }
+      const P = e.o.isSkinnedMesh || e.o.isInstancedMesh ? null : positionsOf(e.pos);
+      if (e.o.isPoints) { if (P) cands.push({ m, pts: P, k: Math.floor(P.length / 3), stride: 3 }); continue; }
+      if (!P) { boxed++; cands.push({ m, min: [e.bb.min.x, e.bb.min.y, e.bb.min.z], max: [e.bb.max.x, e.bb.max.y, e.bb.max.z] }); continue; }
+      cands.push({ m, P, I: e.g.index && e.g.index.count >= 3 ? e.g.index.array : null });
+    }
+    const parts = core.sampleSurface(cands, CORE_POINTS, CORE_TRIS);
+    const set = parts.length ? { parts, other, note: `${found.length} mesh(es) read${boxed ? `, ${boxed} by bounding box` : ''}, ${skipped} left out as stage (${other} of them other geometry); ${(performance.now() - t0).toFixed(1)} ms` } : null;
+    coreCache.set(st, { at: now, key, set });
+    return set;
   }
 
   info(`three.js adapter armed (core v${core.VERSION})`);

@@ -160,6 +160,9 @@ async function runCase(browser, base, c) {
   // rig 'camera' unless the case brings its own (cases/autorig.mjs) or a stored site (seed): the cases
   // were written for the camera rig, and since v0.7.13 a dev host with no rig gets the automatic one.
   const rigDefault = c.seed || (c.cfg && 'rig' in c.cfg) ? {} : { rig: 'camera' };
+  // ... and for the 0.7.x glass (the portal at the scale distance, the camera rig converged on the page's
+  // target): the core glass (v0.8.0) has its own cases, which ask for it.
+  if (!(c.cfg && 'coreGlass' in c.cfg)) rigDefault.coreGlass = false;
   await page.evaluateOnNewDocument(`window.__dxrAuto3DTestCfg = ${JSON.stringify({ guardFps: HARNESS_GUARD_FPS, ...rigDefault, ...(c.cfg || {}) })}; window.__fakeXROpts = ${JSON.stringify(c.fake || {})};${c.commits ? ' window.__fakeXRTrackCommits = true;' : ''}`);
   if (c.seed) await page.evaluateOnNewDocument(`if (!sessionStorage.getItem('dxrSeeded')) { sessionStorage.setItem('dxrSeeded', '1'); localStorage.setItem('dxrAuto3D', ${JSON.stringify(JSON.stringify(c.seed))}); }`);
   await page.evaluateOnNewDocument(FAKE);

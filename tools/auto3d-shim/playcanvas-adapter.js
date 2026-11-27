@@ -300,6 +300,7 @@ function dxrPlayCanvas(core) {
         forEachBounds: (cb) => forEachBounds(st, cb),
       };
     },
+    coreSet: (st, s, ref) => coreSet(st, s, ref),
     fakeViewParams(st) { const p = pageCam(st); return { near: p.near, far: p.far, t: p.near * Math.tan(p.vfov / 2), aspect: p.aspect }; },
     beforeActive(st) {
       // The canvas still holds the page's mono store here: a page that sizes it by writing
@@ -1321,6 +1322,100 @@ function dxrPlayCanvas(core) {
       if (!(r >= 0) || !isFinite(r)) continue;
       more = cb(wx, wy, wz, r, false, true) !== false; // a splat volume: holding the camera, it is a world (core estimateSubjectDistance)
     }
+  }
+
+  // ------------------------------------------------------------ the core surface (core.coreGlass, v0.8.0)
+  // As the three.js adapter's: the subject's surface points by area, the stage left out (core.isStage).
+  // Mesh instances: Mesh.getPositions / getIndices (the engine keeps vertex storage unless the page
+  // freed it; then, and for a skinned mesh, the mesh's local box). gsplat components seen from outside:
+  // the resource's centres (one point per splat, thinned).
+  const CORE_POINTS = 12000, CORE_TRIS = 24000, CORE_CHECK_MS = 500;
+  const coreCache = new WeakMap(); // state -> { at, key, set }
+  function splatCentres(g) {
+    const cands = [g.resource, g._resource, g.instance && g.instance.resource, g.instance && g.instance.splat, g._placement && g._placement.resource, g._assetReference && g._assetReference.asset && g._assetReference.asset.resource, g.asset && st0AssetResource(g)];
+    for (const r of cands) {
+      if (!r) continue;
+      let c = null;
+      try { c = r.centers || r._centers || (r.gsplatData && (r.gsplatData._centers || (typeof r.gsplatData.getCenters === 'function' ? r.gsplatData.getCenters() : null))); } catch (e) { c = null; }
+      if (c && c.length >= 48) return c;
+    }
+    return null;
+  }
+  function st0AssetResource(g) {
+    try { const a = typeof g.asset === 'object' ? g.asset : null; return a && a.resource ? a.resource : null; } catch (e) { return null; }
+  }
+  function coreSet(st, s, ref) {
+    const now = performance.now(), C = coreCache.get(st);
+    if (C && now - C.at < CORE_CHECK_MS) return C.set;
+    const root = st.app.root, camLayers = st.cam.layers;
+    const F = core.stageFrame(s, ref && ref.d > 0 ? ref.d : 0);
+    const found = [];
+    let key = '', skipped = 0, other = 0;
+    const meshes = (comp) => {
+      if (!comp || !comp.enabled || !comp.entity || !comp.entity.enabled || !layersMeet(comp.layers, camLayers)) return;
+      for (const mi of comp.meshInstances || []) {
+        if (!mi || mi.visible === false || !mi.mesh || !mi.node) continue;
+        const bb = mi.aabb;
+        if (!bb) continue;
+        const h = bb.halfExtents, r = Math.hypot(h.x, h.y, h.z);
+        if (!(r > 0) || !isFinite(r)) continue;
+        const sg = core.isStage(bb.center.x, bb.center.y, bb.center.z, r, h.x, h.y, h.z, F);
+        if (sg) { skipped++; if (sg === 2 || sg === 4) other++; continue; }
+        found.push({ mi });
+        key += `${mi.mesh.id}:${mi.node._guid || ''};`;
+      }
+    };
+    for (const c of root.findComponents('render')) meshes(c);
+    for (const c of root.findComponents('model')) meshes(c);
+    for (const g of root.findComponents('gsplat')) {
+      if (!g.enabled || !g.entity.enabled || !layersMeet(g.layers, camLayers)) continue;
+      const ctr = splatCentres(g);
+      let bb = g.customAabb || (g.instance && g.instance.resource && g.instance.resource.aabb) || (g.resource && g.resource.aabb) || null;
+      if (!bb) continue;
+      // No centres on the CPU (a compressed / streamed splat keeps them in textures): its bounding box.
+      const m = g.entity.getWorldTransform().data, c = bb.center;
+      const sc = Math.sqrt(Math.max(m[0] * m[0] + m[1] * m[1] + m[2] * m[2], m[4] * m[4] + m[5] * m[5] + m[6] * m[6], m[8] * m[8] + m[9] * m[9] + m[10] * m[10]));
+      const wx = m[0] * c.x + m[4] * c.y + m[8] * c.z + m[12], wy = m[1] * c.x + m[5] * c.y + m[9] * c.z + m[13], wz = m[2] * c.x + m[6] * c.y + m[10] * c.z + m[14];
+      if (Math.hypot(wx - F.px, wy - F.py, wz - F.pz) <= Math.hypot(bb.halfExtents.x, bb.halfExtents.y, bb.halfExtents.z) * sc) { skipped++; continue; } // a splat world: no core
+      found.push({ g, ctr, m, bb });
+      key += `g${g.entity._guid || ''}:${ctr ? ctr.length : 'box'};`;
+    }
+    if (C && C.key === key) { C.at = now; return C.set; }
+    const t0 = performance.now(), cands = [];
+    let boxed = 0;
+    for (const e of found) {
+      if (e.g && e.ctr) { cands.push({ m: e.m, pts: e.ctr, k: Math.floor(e.ctr.length / 3), stride: 3 }); continue; }
+      if (e.g) {
+        const c = e.bb.center, h = e.bb.halfExtents;
+        boxed++;
+        cands.push({ m: e.m, min: [c.x - h.x, c.y - h.y, c.z - h.z], max: [c.x + h.x, c.y + h.y, c.z + h.z] });
+        continue;
+      }
+      const mi = e.mi, mesh = mi.mesh, m = mi.node.getWorldTransform().data;
+      let P = null, I = null;
+      if (!mi.skinInstance) {
+        try {
+          const pa = [];
+          if (mesh.getPositions(pa) >= 3 && pa.length >= 9) {
+            P = pa;
+            const prim = mesh.primitive && mesh.primitive[0];
+            if (prim && prim.indexed) { const ia = []; if (mesh.getIndices(ia) >= 3) I = prim.base || prim.count < ia.length ? ia.slice(prim.base || 0, (prim.base || 0) + prim.count) : ia; }
+          }
+        } catch (err) { P = null; }
+      }
+      if (!P) {
+        const lb = mesh.aabb;
+        if (!lb) continue;
+        boxed++;
+        cands.push({ m, min: [lb.center.x - lb.halfExtents.x, lb.center.y - lb.halfExtents.y, lb.center.z - lb.halfExtents.z], max: [lb.center.x + lb.halfExtents.x, lb.center.y + lb.halfExtents.y, lb.center.z + lb.halfExtents.z] });
+        continue;
+      }
+      cands.push({ m, P, I });
+    }
+    const parts = core.sampleSurface(cands, CORE_POINTS, CORE_TRIS);
+    const set = parts.length ? { parts, other, note: `${found.length} part(s) read${boxed ? `, ${boxed} by bounding box` : ''}, ${skipped} left out as stage (${other} of them other geometry); ${(performance.now() - t0).toFixed(1)} ms` } : null;
+    coreCache.set(st, { at: now, key, set });
+    return set;
   }
 
   // ------------------------------------------------------------ math (the SDK adapter's, verbatim where it has one)

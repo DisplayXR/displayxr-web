@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- TEST PAGE — a product viewer: one subject (a torus knot with a long thin "tail") on a large floor,
+     under a sky dome, OrbitControls with autoRotate about the subject. The strict object test
+     (core objectVerdict) should call it a simple object. Variants, by query:
+       ?hotspot=1  a DOM label that follows a 3D point (placed with the page's own camera): not certain
+       ?extra=1    other geometry beside the subject (a second prop off the frame): not certain
+       ?follow=1   the orbit target drifts through the world (a follow camera): not an object
+       ?late=1500  the subject is added after this many ms (a model that loads late)
+       ?still=1    no autoRotate -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three turntable (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#8a8f98}canvas{display:block}
+#stage{position:relative;width:100%;height:100%}
+.hot{position:absolute;left:0;top:0;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;background:#fff;border:2px solid #223;pointer-events:none}</style>
+<script type="importmap">{ "imports": { "three": "/deps/three/three.module.js" } }</script>
+</head><body><div id="stage"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from '/deps/three/OrbitControls.js';
+const q = new URLSearchParams(location.search);
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+stage.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8a8f98);
+const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 1.4, 6);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x555566, 1.3));
+const sun = new THREE.DirectionalLight(0xffffff, 2); sun.position.set(3, 6, 4); scene.add(sun);
+// The stage: a floor far larger than the frame, and a dome that holds the camera.
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshStandardMaterial({ color: 0x6d737d }));
+floor.rotation.x = -Math.PI / 2; scene.add(floor);
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(80, 24, 12), new THREE.MeshBasicMaterial({ color: 0x9aa0aa, side: THREE.BackSide })));
+// The subject: a body and a long thin tail (little area).
+const subject = new THREE.Group();
+const body = new THREE.Mesh(new THREE.TorusKnotGeometry(0.55, 0.2, 128, 16), new THREE.MeshStandardMaterial({ color: 0xff7a2f, roughness: 0.4 }));
+body.position.y = 1;
+const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.6, 8), new THREE.MeshStandardMaterial({ color: 0x2fb4ff }));
+tail.rotation.z = Math.PI / 2; tail.position.set(1.5, 1, 0);
+subject.add(body, tail);
+const addSubject = () => { scene.add(subject); window.__subjectAt = performance.now(); };
+if (+q.get('late') > 0) setTimeout(addSubject, +q.get('late')); else addSubject();
+if (q.get('extra')) {
+  const prop = new THREE.Mesh(new THREE.BoxGeometry(1.5, 3, 1.5), new THREE.MeshStandardMaterial({ color: 0x9dff4a }));
+  prop.position.set(9, 1.5, -6); scene.add(prop);
+}
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1, 0);
+controls.autoRotate = !q.get('still'); controls.autoRotateSpeed = 6;
+controls.update();
+window.__expectedConvergenceSource = 'target';
+let hot = null;
+if (q.get('hotspot')) { hot = document.createElement('div'); hot.className = 'hot'; stage.appendChild(hot); }
+const P = new THREE.Vector3();
+let frames = 0;
+renderer.setAnimationLoop((t) => {
+  if (q.get('follow')) controls.target.x = Math.sin(t / 700) * 1.5;
+  controls.update();
+  renderer.render(scene, camera);
+  if (hot) { // the page's own projection of a 3D point, as hotspot libraries do
+    P.set(0.75, 1.2, 0).project(camera);
+    hot.style.transform = `translate(${((P.x + 1) / 2) * innerWidth}px, ${((1 - P.y) / 2) * innerHeight}px)`;
+  }
+  if (++frames > 20) window.__ready = true;
+});
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+window.__cam = camera; window.__controls = controls;
+</script>
+</body></html>
