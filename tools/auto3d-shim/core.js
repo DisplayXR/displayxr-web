@@ -111,7 +111,11 @@ function dxrCore(cfg, cap, S) {
     morphMs: 700,        // a rig change after go-live is a MORPH of this length (rigMorph); 0: a cut
     resumeMs: 2000,      // an object page that was demoted (a fly, a fly-through) is decided AGAIN after this long back outside the subject, looking at it, with no walk hint
     overlayEveryFrames: 30, // page elements over the canvas that move with the camera (hotspots, labels): looked for this often
-    glassFront: 1 / 3,   // the share of the core surface in front of the glass
+    glassFront: 1 / 3,   // the share of the core's DEPTH RANGE in front of the glass ...
+    glassTrim: 0.05,     // ... the range taken between this percentile of the surface (by area) and its complement: a thin tail falls
+                         // outside it. (Panel 2026-11-27, a watch: a third of the surface AREA put the glass on the dial, the
+                         // bracelet all behind, because most of its area is in the case, hidden movement included.)
+    glassRule: 'range',  // 'surface' = the share of the surface area in front (the first cut; A/B)
     displayPivot: true, // display rig: the page's rotations pivot about the virtual display's centre (pivotOffset); false = the portal rides the page camera (0.5.4), harness A/B only
     convRoomPercentile: 0.7, // 'percentile' mode: converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance). 'fixed' mode reads it only for the scale-sanity note
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
@@ -1145,6 +1149,7 @@ function dxrCore(cfg, cap, S) {
     }
     const R = selectKth(r, n, Math.min(n - 1, Math.floor(0.95 * (n - 1))));
     V.R = R; V.Rf = F.Rf;
+    V.F = F; // the frame the subject was recognised in: the stage test keeps using it (a zoom must not change which parts count)
     const fit = R / F.Rf;
     if (!(fit <= T.objFitMax)) return finish(false, false, `the scene is larger than the frame (${fit.toFixed(2)} x)`);
     if (!(fit >= T.objFitMin)) return finish(false, false, `the subject is a speck in the frame (${fit.toFixed(3)} x)`);
@@ -1414,7 +1419,7 @@ function dxrCore(cfg, cap, S) {
     try { s = st.ad.sampler(st); } catch (e) { s = null; }
     if (!s) return st.glass ? st.glass.d : 0;
     const vm = s.viewMatrix || invert4(s.cameraPose);
-    try { set = st.ad.coreSet(st, s, { d: st.conv.d || 0 }); } catch (e) { warnOnce('core-set', 'could not read the scene surface: the glass stays at the scale distance', e); set = null; }
+    try { set = st.ad.coreSet(st, s, { d: st.conv.d || 0, F: st.verdict && st.verdict.done ? st.verdict.F : null }); } catch (e) { warnOnce('core-set', 'could not read the scene surface: the glass stays at the scale distance', e); set = null; }
     if (!set || !set.parts || !set.parts.length) { st.glass = null; return 0; }
     let sig = set.parts.length;
     for (let i = 0; i < 16; i++) sig = sig * 31 + vm[i];
@@ -1432,17 +1437,23 @@ function dxrCore(cfg, cap, S) {
       // Row 2 of (view x world): view depth = -(a x + b y + c z + e).
       const a = vm[2] * m[0] + vm[6] * m[1] + vm[10] * m[2], b = vm[2] * m[4] + vm[6] * m[5] + vm[10] * m[6];
       const c = vm[2] * m[8] + vm[6] * m[9] + vm[10] * m[10], e = vm[2] * m[12] + vm[6] * m[13] + vm[10] * m[14] + vm[14];
+      let zlo = Infinity, zhi = -Infinity;
       for (let i = 0, end = p.k * st4; i < end; i += st4) {
         const d = -(a * q[i] + b * q[i + 1] + c * q[i + 2] + e);
-        if (d > near && isFinite(d)) z[n++] = d;
+        if (d > near && isFinite(d)) { z[n++] = d; if (d < zlo) zlo = d; if (d > zhi) zhi = d; }
       }
+      p.zlo = zlo; p.zhi = zhi;
     }
     if (n < 16) { G.d = 0; return 0; }
-    const d = clamp(selectKth(z, n, Math.min(n - 1, Math.floor(clamp(+T.glassFront || 1 / 3, 0.02, 0.98) * (n - 1)))), near * 2, (s.far || Infinity) * 0.9);
+    const gf = clamp(+T.glassFront || 1 / 3, 0.02, 0.98), tr = clamp(+T.glassTrim || 0, 0, 0.3);
+    let dz;
+    if (T.glassRule === 'surface') dz = selectKth(z, n, Math.min(n - 1, Math.floor(gf * (n - 1))));
+    else { const lo = selectKth(z, n, Math.floor(tr * (n - 1))), hi = selectKth(z, n, Math.floor((1 - tr) * (n - 1))); G.lo = lo; G.hi = hi; dz = lo + gf * (hi - lo); }
+    const d = clamp(dz, near * 2, (s.far || Infinity) * 0.9);
     G.d = d; G.n = n;
     if (!G.logged) {
       G.logged = true;
-      info(`glass: core surface, ${Math.round(clamp(+T.glassFront || 1 / 3, 0.02, 0.98) * 100)}% in front at every angle (${n} points over ${set.parts.length} part(s)${set.note ? '; ' + set.note : ''}); now ${d.toPrecision(3)} units`);
+      info(`glass: core ${T.glassRule === 'surface' ? 'surface' : 'depth range'}, ${Math.round(gf * 100)}% in front at every angle (${n} points over ${set.parts.length} part(s)${set.note ? '; ' + set.note : ''}); now ${d.toPrecision(3)} units`);
     }
     return d;
   }
@@ -1495,7 +1506,7 @@ function dxrCore(cfg, cap, S) {
         const st4 = e.stride || 3, stepS = Math.max(1, Math.ceil(e.k / budget));
         let pts = e.pts, k = e.k;
         if (stepS > 1) { k = Math.floor(e.k / stepS); pts = new Float32Array(k * st4); for (let i = 0; i < k; i++) for (let c = 0; c < st4; c++) pts[i * st4 + c] = e.pts[i * stepS * st4 + c]; }
-        if (k > 0) parts.push({ pts, k, stride: st4, m });
+        if (k > 0) parts.push({ pts, k, stride: st4, m, name: e.name });
         continue;
       }
       if (!(total > 0) || !(e.area > 0) || !isFinite(e.area)) continue;
@@ -1516,7 +1527,7 @@ function dxrCore(cfg, cap, S) {
         }
         e.tri = e.cum = null;
       }
-      parts.push({ pts, k, stride: 3, m });
+      parts.push({ pts, k, stride: 3, m, name: e.name });
     }
     return parts;
   }
@@ -2121,10 +2132,16 @@ function dxrCore(cfg, cap, S) {
       if (st.coverForced && st.stats.stereo > (st.stereo0 || 0)) { st.coverForced = false; if (st.rampK < 1 && !st.ramp && st.rigScale) startRamp(st, 1); }
       return;
     }
-    if (!cv.out && st.layerAt > 0 && t - st.layerAt >= T.holdMs && st.stats.stereo > 0) {
+    // THE BROWSER'S WORD (v0.8.0): where it reports XRDisplayLayer.wovenState, the cover stays until the
+    // layer reads 'woven' (the canvas has been joined into the weave), up to T.coverMaxMs. A fixed hold
+    // is a guess: on a heavy page (a product viewer in an iframe, panel 2026-11-27) the join took 1.3 s,
+    // 0.1 s after the 1.2 s hold, and the raw side-by-side pair showed in between.
+    let joined = true, ws = null;
+    try { if (st.layer && 'wovenState' in st.layer) { ws = st.layer.wovenState; joined = ws === 'woven'; } } catch (e) { joined = true; }
+    if (!cv.out && st.layerAt > 0 && t - st.layerAt >= T.holdMs && st.stats.stereo > 0 && joined) {
       dropCover(st); // a hard cut, never a fade: the picture under it is flat (rampK 0) and fades in from here
       st.coverDropAt = t; // the frame-rate guard's warm-up counts from here
-      info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms)`);
+      info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms${ws ? `, the browser reports the canvas ${ws}` : ''})`);
       if (st.rampK < 1 && st.rigScale) startRamp(st, 1); // else it fades in once the scale is set (scaleReady)
       return;
     }

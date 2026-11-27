@@ -1348,7 +1348,7 @@ function dxrPlayCanvas(core) {
     const now = performance.now(), C = coreCache.get(st);
     if (C && now - C.at < CORE_CHECK_MS) return C.set;
     const root = st.app.root, camLayers = st.cam.layers;
-    const F = core.stageFrame(s, ref && ref.d > 0 ? ref.d : 0);
+    const F = (ref && ref.F) || core.stageFrame(s, ref && ref.d > 0 ? ref.d : 0);
     const found = [];
     let key = '', skipped = 0, other = 0;
     const meshes = (comp) => {

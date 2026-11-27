@@ -1475,7 +1475,7 @@ function dxrThree(core) {
     if (!scene || !cam) return null;
     const now = performance.now(), C = coreCache.get(st);
     if (C && now - C.at < CORE_CHECK_MS) return C.set;
-    const F = core.stageFrame(s, ref && ref.d > 0 ? ref.d : 0);
+    const F = (ref && ref.F) || core.stageFrame(s, ref && ref.d > 0 ? ref.d : 0);
     const found = [];
     let key = '', skipped = 0, other = 0;
     scene.traverseVisible((o) => {
@@ -1514,7 +1514,7 @@ function dxrThree(core) {
       const P = e.o.isSkinnedMesh || e.o.isInstancedMesh ? null : positionsOf(e.pos);
       if (e.o.isPoints) { if (P) cands.push({ m, pts: P, k: Math.floor(P.length / 3), stride: 3 }); continue; }
       if (!P) { boxed++; cands.push({ m, min: [e.bb.min.x, e.bb.min.y, e.bb.min.z], max: [e.bb.max.x, e.bb.max.y, e.bb.max.z] }); continue; }
-      cands.push({ m, P, I: e.g.index && e.g.index.count >= 3 ? e.g.index.array : null });
+      { const mt = Array.isArray(e.o.material) ? e.o.material[0] : e.o.material; cands.push({ m, P, I: e.g.index && e.g.index.count >= 3 ? e.g.index.array : null, name: `${e.o.name || e.o.type}|${mt ? mt.type + (mt.transparent ? ' transp ' + (+mt.opacity).toFixed(2) : '') + (mt.depthWrite === false ? ' noDepthWrite' : '') : ''}|ro${e.o.renderOrder}` }); }
     }
     const parts = core.sampleSurface(cands, CORE_POINTS, CORE_TRIS);
     const set = parts.length ? { parts, other, note: `${found.length} mesh(es) read${boxed ? `, ${boxed} by bounding box` : ''}, ${skipped} left out as stage (${other} of them other geometry); ${(performance.now() - t0).toFixed(1)} ms` } : null;
