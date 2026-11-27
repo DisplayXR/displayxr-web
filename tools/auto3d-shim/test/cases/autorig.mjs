@@ -22,6 +22,7 @@ const pollRig = (ms, until) => new Function(`return (async () => {
   }
   const rig = window.__fakeXR.lastRig;
   return { rigMode: S && S.rigMode, rigType: rig && rig.type, src: R && R.convergenceSource, via: R && R.convergenceVia, latched: R && R.openLatched,
+    store: R && R.real, box: [document.querySelector('canvas').clientWidth * devicePixelRatio, document.querySelector('canvas').clientHeight * devicePixelRatio],
     glass: R && R.glass, verdict: R && R.verdict, overlay: R && R.overlayTracked, conv: R && R.convergence, vdh: rig && rig.virtualDisplayHeight,
     pz: rig && rig.position && rig.position.z, diopters: rig && rig.convergenceDiopters, scale: R && R.rigScale, waited: Math.round(performance.now() - t0) };
 })();`);
@@ -30,7 +31,7 @@ function rigCase(id, name, url, want, why, extra) {
   const x = extra || {};
   const until = x.until || `R.rigScale && R.verdict && S.rigMode === ${JSON.stringify(want)}`;
   return {
-    id, name, url, expect: 'convert', fovDeg: x.fovDeg || 40, ready: 'window.__ready || window.__frozen', ...x, cfg: { rig: 'auto', coreGlass: true, ...(x.cfg || {}) },
+    id, name, url, expect: 'convert', fovDeg: x.fovDeg || 40, ready: 'window.__ready || window.__frozen', ...x, cfg: { rig: 'auto', coreGlass: true, eyeScale: 1, ...(x.cfg || {}) },
     probe: pollRig(x.ms || 10000, until),
     check(r, t) {
       t('converted within 60 s', r.ok, `${r.ms} ms`);
@@ -40,6 +41,7 @@ function rigCase(id, name, url, want, why, extra) {
       t(`rig: ${want}, pushed to the layer`, p.rigMode === want && p.rigType === want, JSON.stringify({ rigMode: p.rigMode, rigType: p.rigType, src: p.src, verdict: p.verdict, scale: p.scale, waited: p.waited }));
       const all = r.log.filter((l) => /style: |object test: /.test(l)).join(' | ');
       if (why) t(`the console names the reason (${why})`, new RegExp(why).test(all), all || 'no line');
+      if (x.store) { const st = p.store || [], k = st[0] && p.box[1] ? (st[0] * p.box[1]) / (st[1] * p.box[0]) : 0; t('the store is 2:1 against the canvas box (the shape the browser joins, browser-pvt#257)', Math.abs(k - 2) < 0.06, `store ${st[0]}x${st[1]} for a ${Math.round(p.box[0])}x${Math.round(p.box[1])} box: ${k.toFixed(3)}`); }
       if (x.verdict) t(`object test: object ${x.verdict.object}, object-like ${x.verdict.like}`, p.verdict && p.verdict.object === x.verdict.object && p.verdict.like === x.verdict.like, JSON.stringify(p.verdict));
       if (x.glass === 'display') t('core glass: read from the surface, the portal at it', p.glass && p.glass.d > 0 && Math.abs(-p.pz - p.glass.d) < 1e-3 * p.glass.d, JSON.stringify({ glass: p.glass, conv: p.conv, pz: p.pz, vdh: p.vdh }));
       if (x.glass === 'camera') t('core glass on the camera rig: the convergence is the glass', p.glass && p.glass.d > 0 && Math.abs(1 / p.diopters - p.glass.d) < 1e-3 * p.glass.d, JSON.stringify({ glass: p.glass, conv: p.conv, diopters: p.diopters }));
@@ -58,7 +60,7 @@ export default function cases({ P, NEW }) {
   return [
     // THE positive case: a product on a turntable, a floor and a dome around it.
     rigCase('rig-object', 'product viewer (OrbitControls, autoRotate, floor + dome): a simple object -> display rig, core glass', TT, 'display', 'a simple object',
-      { fovDeg: 30, verdict: { object: true, like: true }, glass: 'display', stage: '2 left out as stage \\(0 of them other', front: true, lines: 1 }),
+      { fovDeg: 30, verdict: { object: true, like: true }, glass: 'display', stage: '2 left out as stage \\(0 of them other', front: true, lines: 1, store: true }),
     rigCase('rig-object-still', 'the same, no autoRotate (nothing moves): still a simple object', TT + '?still=1', 'display', 'a simple object', { fovDeg: 30, verdict: { object: true, like: true }, glass: 'display' }),
     rigCase('rig-object-late', 'the same, the subject added 1.5 s after load: decided after it arrives', TT + '?late=1500', 'display', 'a simple object', { fovDeg: 30, verdict: { object: true, like: true }, glass: 'display', ms: 14000 }),
     // Not certain: the camera rig, with the core focus.
@@ -67,7 +69,7 @@ export default function cases({ P, NEW }) {
     rigCase('rig-extra', 'product viewer with another prop off the frame: object-like, camera rig, core focus', TT + '?extra=1', 'camera', 'other part',
       { fovDeg: 30, verdict: { object: false, like: true }, glass: 'camera' }),
     // Not an object.
-    rigCase('rig-follow', 'the orbit target drifts through the world (a follow camera): not an object', TT + '?follow=1', 'camera', 'target moves', { fovDeg: 30, verdict: { object: false, like: false }, glass: 'none' }),
+    rigCase('rig-follow', 'the orbit target drifts through the world (a follow camera): not an object', TT + '?follow=1', 'camera', 'target moves', { fovDeg: 30, verdict: { object: false, like: false }, glass: 'none', ms: 16000 }),
     rigCase('rig-auto-orbit', 'three.js OrbitControls whose target is off the subject (camera close to the scene): not an object', 'three-orbit.html', 'camera', 'object test: not an object', { glass: 'none' }),
     rigCase('rig-auto-pc-orbit', 'PlayCanvas CameraControls focusPoint off the subject: not an object', 'pc-orbit.html', 'camera', 'object test: not an object', { glass: 'none' }),
     rigCase('rig-auto-estimator', 'model on a floor, NO page target (the estimator), seen from outside: a simple object -> display rig', 'three-walk.html?scene=model&cam=still', 'display', 'an object seen from outside',
@@ -83,7 +85,7 @@ export default function cases({ P, NEW }) {
     // and its field of view moves between the display's own and the page's.
     {
       id: 'rig-morph', name: 'product viewer, the camera pans off the subject and comes back: display -> camera -> display by a morph, never flat',
-      url: 'three-turntable.html?still=1&panAt=3500&backAt=6000', expect: 'convert', fovDeg: 30, ready: 'window.__ready', cfg: { rig: 'auto', coreGlass: true },
+      url: 'three-turntable.html?still=1&panAt=3500&backAt=6000', expect: 'convert', fovDeg: 30, ready: 'window.__ready', cfg: { rig: 'auto', coreGlass: true, eyeScale: 1 },
       probe: new Function(`return (async () => {
         const out = [], t0 = performance.now();
         while (performance.now() - t0 < 9500) {
@@ -110,6 +112,34 @@ export default function cases({ P, NEW }) {
         t('the eye scale moves in small steps', range > 0 && Math.max(...steps) < 0.5 * range, `range ${range.toPrecision(3)}, largest step ${Math.max(...steps).toPrecision(3)}`);
         const lines = r.log.filter((l) => /object test:|style:/.test(l)).map((l) => l.replace(/^.*dxr-auto3d\] /, '')).join(' | ');
         t('the console tells the story', /no longer an object/.test(lines) && /deciding again/.test(lines), lines);
+      },
+    },
+    // ZOOM: the page dollies its camera to half the distance at 3.5 s. The glass follows the subject (it is
+    // read from the live camera), so the portal comes to half the distance and half the height: the
+    // subject stays on the glass and is twice as large. (It froze once: a change detector that overflowed.)
+    {
+      id: 'rig-zoom', name: 'product viewer, the page zooms in (camera to half the distance): the glass follows, the portal halves',
+      url: 'three-turntable.html?still=1&zoomAt=3500', expect: 'convert', fovDeg: 30, ready: 'window.__ready', cfg: { rig: 'auto', coreGlass: true, eyeScale: 1 },
+      probe: new Function(`return (async () => {
+        const read = () => { const S = window.__dxrAuto3D.state(), R = S.renderers.find((x) => x.active); return R && R.glass && R.rigNow ? { mode: S.rigMode, target: R.convergence, glass: R.glass.d, z: R.rigNow.z, vdh: R.rigNow.vdh, zoomed: !!window.__zoomed, verdict: R.verdict } : null; };
+        let a = null, b = null; const t0 = performance.now();
+        while (performance.now() - t0 < 9000) {
+          const r = read();
+          if (r && !r.zoomed) a = r;
+          if (r && r.zoomed && a) { await new Promise((q) => setTimeout(q, 1200)); b = read(); break; }
+          await new Promise((q) => setTimeout(q, 100));
+        }
+        return { a, b };
+      })();`),
+      check(r, t) {
+        t('converted within 60 s', r.ok, `${r.ms} ms`);
+        const { a, b } = r.probe || {};
+        if (!a || !b) { t('read before and after the zoom', false, JSON.stringify(r.probe)); return; }
+        t('still the display rig, still an object', b.mode === 'display' && b.verdict && b.verdict.object, JSON.stringify({ mode: b.mode, verdict: b.verdict }));
+        t('the target distance halved', Math.abs(b.target / a.target - 0.5) < 0.03, `${a.target.toFixed(2)} -> ${b.target.toFixed(2)}`);
+        const front = (x) => x.target - x.glass;
+        t('the glass followed: it sits the same distance in front of the target as before', Math.abs(front(b) - front(a)) < 0.05 * Math.abs(a.target - a.glass) + 0.02 && Math.abs(-b.z - b.glass) < 1e-3 * b.glass, `in front of the target by ${front(a).toFixed(3)} -> ${front(b).toFixed(3)}; glass ${a.glass.toFixed(2)} -> ${b.glass.toFixed(2)}`);
+        t('the virtual display height shrank with it', b.vdh < 0.6 * a.vdh, `${a.vdh.toFixed(3)} -> ${b.vdh.toFixed(3)}`);
       },
     },
     // A/B: the 0.7.13 rule.

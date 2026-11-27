@@ -57,6 +57,10 @@ const P = new THREE.Vector3();
 let frames = 0;
 renderer.setAnimationLoop((t) => {
   if (q.get('follow')) controls.target.x = Math.sin(t / 700) * 1.5;
+  // ?zoomAt=ms: the camera dollies to half its distance from the target (a wheel zoom).
+  if (+q.get('zoomAt') > 0 && !window.__zoomed && performance.now() - (window.__t0 || (window.__t0 = performance.now())) > +q.get('zoomAt')) {
+    window.__zoomed = true; camera.position.sub(controls.target).multiplyScalar(0.5).add(controls.target);
+  }
   // ?panAt=ms[&backAt=ms]: a pan away from the subject (camera and target move together), and back.
   if (+q.get('panAt') > 0) {
     const since = performance.now() - (window.__t0 || (window.__t0 = performance.now()));

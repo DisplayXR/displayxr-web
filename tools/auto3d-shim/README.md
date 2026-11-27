@@ -1143,6 +1143,65 @@ On the camera rig that is `metersToVirtual` (it scales both); on the display rig
 `ipdFactor = parallaxFactor = depth`. When a page is left 2D for
 a structural reason (WebGPU, post effects, several cameras), the HUD shows that reason too.
 
+### v0.8.0: the strict object test, the core glass, the rig morph, the raw-pair guard
+
+Decided on the panel on 2026-11-27 (Model Viewer runs on a helmet, an elongated fox and a long-tailed
+dinosaur; then a watch product viewer, three.js samples and two superspl.at scenes in the browser).
+This replaces the v0.7.13 rule below ("any page target is an object").
+
+**The strict object test (`objectVerdict`).** The display rig replaces the author's perspective with the
+viewer's own, so it is used only for *a simple object that is the point of the page*. All of:
+
+| test | measured | rules out |
+|---|---|---|
+| settled | the surface set unchanged for `settleMs`, the page not loading, the target at rest frame to frame | a model that loads late, an intro still running |
+| compact | the subject's radius about the frame centre is `objFitMin`..`objFitMax` x the frame's half-size, and the camera stands `objStandoff` radii away | rooms, landscapes, close-ups |
+| alone | nothing left out as stage but a floor under it or a dome around it (`set.other === 0`) | an object in a scene |
+| no overlay | no page element over the canvas whose positions, seen from cameras >= 12 degrees apart, all point at one 3D point (`pinnedTo3D`) | hotspots and labels placed with the page's own camera maths |
+
+No page target is needed (a splat viewer with its own controls qualifies). A page that fails only
+"alone" or "no overlay" is **object-like**: it keeps the camera rig but takes its focus from the same
+core glass. The page is watched afterwards (`verdictWatch`): the camera going inside the subject, looking
+away from it, or the scene latching open (a fly mode: pointer lock) **demotes** it; back outside the
+subject and looking at it with no walk hint for `resumeMs` **promotes** it again.
+
+**The core glass (`coreGlass`).** On the display rig (and on the camera rig of an object-like page) the
+glass sits a third (`glassFront`) of the way into the subject's **depth range**, the range taken between
+the `glassTrim` percentiles of its surface *by area* (adapters' `coreSet` -> `core.sampleSurface`), read
+from the page's live camera whenever the camera or the subject moves. By area: a thin tail, strap or
+antenna falls outside the range. The stage (anything that holds the camera, a flat part larger than the
+frame, parts off the frame) is left out, and the set is frozen at the verdict. Every angle: a long
+subject is never recessed side-on nor pushed far out end-on, and a zoom (the page's camera moving in) is
+a smaller virtual display, so the subject stays on the glass. It is a fixed function of shape and view:
+it never hunts. Two cuts were tried and dropped: a fixed offset from the pivot (recessed side-on), and a
+third of the surface *area* in front (a watch whose area is mostly in its case put the glass on the dial).
+Fallbacks: unreadable vertex data, skinned or instanced meshes, and compressed splats whose centres are
+on the GPU use the part's bounding box.
+
+**The rig morph (`rigMorph`).** The two rigs are one family (the contract: runtime
+`docs/specs/extensions/XR_DXR_view_rig.md` section 4; the code: displayxr-common `dxr_rig_transition`). An
+automatic rig change after go-live writes the rig that was showing in camera form and moves every
+parameter to the new rig's (position and eye scales linearly, convergence in diopters, field of view in
+angle); the eye anchor's weight rides along. No flat phase. Needs the panel size and the nominal viewer;
+without them the change is the old fade.
+
+**The raw-pair guard.** A canvas must never reach the screen as its raw side-by-side store:
+
+- **A 2:1 store** (`eyeScale: 1`): the store is twice as wide as the canvas box. The browser's join
+  recognises a canvas by that shape (browser-pvt#257's rescue, patch 0390); with the 0.7.x store (the
+  box's own shape) a mis-join at the first page of a fresh browser showed each eye the whole store,
+  persistently, and nothing a page can read reports it. Panel: 3 of 3 fresh launches wrong before,
+  11 of 11 right after.
+- **The cover is never an opaque occluder** (`coverOpacity` 0.996): under an opaque cover the compositor
+  drops the canvas's quad and the join cannot start until the cover goes.
+- **The cover waits for the browser's word** (`XRDisplayLayer.wovenState === 'woven'`), not only `holdMs`.
+- **No join by `coverMaxMs`:** back to 2D (the store is mono before the cover goes), not an uncovered pair.
+- **A live canvas reported `withheld` for `withheldMs`:** back to 2D, and another try in 3 s.
+
+The harness keeps the 0.7.x store, glass and rig for its older cases (`run.mjs`: `eyeScale 0.5`,
+`coreGlass false`, `rig 'camera'`); `test/cases/autorig.mjs` runs the product defaults. `test/probe-live.mjs
+<url>` runs the dev build on a live page in headless Chrome and prints what it decided.
+
 ### Rigs: camera by default, display on Ctrl+Alt+P
 
 **The automatic rig (v0.7.13, David: "obviously an object-centric scene").** Until the user picks a

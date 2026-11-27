@@ -10,12 +10,14 @@ function dxrCore(cfg, cap, S) {
   const CONV_SCALE_MIN = 0.05, CONV_SCALE_MAX = 20;
 
   const TUNING = {
-    eyeScale: 0.5,      // per-eye width / element DEVICE width: the SBS store is the element's full device size, each eye squeezed to half width (a 2-view lenticular resolves about half anyway; the weave un-squeezes)
+    eyeScale: 1,        // per-eye width / element DEVICE width: the SBS store is the element's full device size, each eye squeezed to half width (a 2-view lenticular resolves about half anyway; the weave un-squeezes)
     maxEyeDpr: 3,       // the device-pixel ratio the eye is sized at, at most
     maxSbsWidth: 3072,  // browser-pvt#24: wider SBS canvases drop off the zero-copy weave path
     maxSbsArea: 5760 * 5760, // Chromium's WebGL drawing-buffer area cap (kMaxArea): past it the buffer is silently scaled down while canvas.width keeps the value (@displayxr/inline3d MAX_DRAWING_BUFFER_AREA)
     minCssPx: 120,      // smaller canvases stay flat (icons, thumbnails)
     holdMs: 1200,       // keep the cover this long after the layer exists (woven-canvas rules, rule 5)
+    withheldMs: 300,    // a live canvas the browser reports 'withheld' (not woven) for this long goes back to 2D; 0: off
+    coverOpacity: 0.996, // the go-live cover's opacity: just under 1, so it is never an opaque occluder of the canvas (takeCover); 1 = opaque (A/B)
     coverMaxMs: 5000,   // ... but never longer than this, stereo or not (R6: a display with nobody seated)
     releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
     bindMaxMs: 500,     // go-live: create the layer this long after the flip at the latest, pair drawn or not (#339)
@@ -555,6 +557,19 @@ function dxrCore(cfg, cap, S) {
       if (T.strictObject !== false && st.stats.xrFrames % 6 === 0) verdictWatch(st);
       tickRamp(st, t);
       tickRigSwitch(st);
+      if (T.withheldMs > 0 && !st.cover && !st.releasing && st.layer) {
+        let wsNow = null;
+        try { if ('wovenState' in st.layer) wsNow = st.layer.wovenState; } catch (e) { wsNow = null; }
+        if (wsNow !== 'withheld') st.withheldAt = 0;
+        else if (!st.withheldAt) st.withheldAt = t;
+        else if (t - st.withheldAt >= T.withheldMs) {
+          st.withheldAt = 0;
+          info(`the browser stopped weaving the canvas (withheld for ${T.withheldMs} ms): back to 2D, trying again shortly`);
+          st.nextTry = now() + 3000;
+          stand(st, 'the browser stopped weaving the canvas (wovenState withheld)');
+          return;
+        }
+      }
       if (HAS_RIG && st.layer) { try { st.layer.setViewRig(buildRig(st, ad.rigFov(st))); } catch (e) { warnOnce('rig', 'setViewRig failed', e); } }
     }
     ad.redraw(st);
@@ -762,12 +777,13 @@ function dxrCore(cfg, cap, S) {
     const t = now(), late = t - V.t0 >= T.settleMaxMs, d = st.conv.d || 0;
     if (!s || !(d > 0)) return late ? finish(false, false, 'no camera target to measure from') : null;
     const F = stageFrame(s, d);
-    if (!V.tgt) V.tgt = [F.tx, F.ty, F.tz];
-    else if (Math.hypot(F.tx - V.tgt[0], F.ty - V.tgt[1], F.tz - V.tgt[2]) > (st.conv.src === 'target' ? T.targetDrift : 3 * T.targetDrift) * d) V.moved = true;
+    if (!V.tgt || Math.hypot(F.tx - V.tgt[0], F.ty - V.tgt[1], F.tz - V.tgt[2]) > 0.001 * d) V.tgtAt = now();
+    V.tgt = [F.tx, F.ty, F.tz];
+    V.moved = now() - V.tgtAt < T.settleMs;
     try { set = st.ad.coreSet(st, s, { d }); } catch (e) { set = null; }
     if (set !== V.set) { V.set = set; V.since = t; }
     const quiet = !(guard.loading && guard.loading(t));
-    if (!late && (!set || t - V.since < T.settleMs || !quiet)) return null;
+    if (!late && (!set || t - V.since < T.settleMs || !quiet || V.moved)) return null;
     if (!late && !st.overlayTracked && !(st.ovl && st.ovl.looks >= 3) && t - V.t0 < 2500) return null;
     if (!set) return finish(false, false, 'no subject found in the scene');
     if (V.moved) return finish(false, false, 'the camera target moves (a follow camera, a pan or a scripted path)');
@@ -1004,12 +1020,15 @@ function dxrCore(cfg, cap, S) {
     const vm = s.viewMatrix || invert4(s.cameraPose);
     try { set = st.ad.coreSet(st, s, { d: st.conv.d || 0, F: st.verdict && st.verdict.done ? st.verdict.F : null }); } catch (e) { warnOnce('core-set', 'could not read the scene surface: the glass stays at the scale distance', e); set = null; }
     if (!set || !set.parts || !set.parts.length) { st.glass = null; return 0; }
-    let sig = set.parts.length;
-    for (let i = 0; i < 16; i++) sig = sig * 31 + vm[i];
-    for (const p of set.parts) { sig = sig * 31 + p.k; for (let i = 0; i < 16; i++) sig = sig * 31 + p.m[i]; }
-    const G = st.glass || (st.glass = { sig: NaN, d: 0, buf: null, n: 0, logged: false });
-    if (G.sig === sig && G.set === set) return G.d;
-    G.sig = sig; G.set = set;
+    const G = st.glass || (st.glass = { key: null, d: 0, buf: null, n: 0, logged: false });
+    const kn = 16 * (set.parts.length + 1);
+    let same = G.set === set && G.key && G.key.length === kn;
+    if (!G.key || G.key.length !== kn) G.key = new Float64Array(kn);
+    const K = G.key;
+    for (let i = 0; i < 16; i++) { if (K[i] !== vm[i]) { same = false; K[i] = vm[i]; } }
+    for (let j = 0; j < set.parts.length; j++) { const m = set.parts[j].m, o = 16 * (j + 1); for (let i = 0; i < 16; i++) { if (K[o + i] !== m[i]) { same = false; K[o + i] = m[i]; } } }
+    if (same) return G.d;
+    G.set = set;
     let total = 0;
     for (const p of set.parts) total += p.k;
     if (!G.buf || G.buf.length < total) G.buf = new Float32Array(total);
@@ -1304,7 +1323,7 @@ function dxrCore(cfg, cap, S) {
         }
       } else if (!(d > 0) || !isFinite(d)) d = st.conv.d || Math.max(s.near * 50, 1);
     }
-    d = clamp(d, s.near * 2, s.far * 0.9);
+    d = src === 'fixed' || !(s.far * 0.9 > s.near * 2) ? Math.max(d, s.near * 2) : clamp(d, s.near * 2, s.far * 0.9);
     st.conv.d = snap || !st.conv.d || src === 'fixed' ? d : st.conv.d + (d - st.conv.d) * 0.25;
     const was = st.conv.src;
     st.conv.src = src;
@@ -1500,6 +1519,7 @@ function dxrCore(cfg, cap, S) {
         if (ready) ready = ready.then(() => { img.src = c.toDataURL('image/png'); });
         else img.src = c.toDataURL('image/png');
         img.style.cssText = c.style.cssText; img.style.objectFit = 'fill';
+        if (!eyeOnly && T.coverOpacity > 0 && T.coverOpacity < 1) img.style.opacity = String(T.coverOpacity);
         if (pre) return { el: img, fixed, ready: (ready || Promise.resolve()).then(() => (typeof img.decode === 'function' ? img.decode() : null)).then(() => true, () => true) };
         if (!eyeOnly) insertCover(cv, img); // the out-cover is inserted by its caller, once decoded
         st.cover = ready ? { el: img, fixed, out: !!eyeOnly, ready } : { el: img, fixed, out: !!eyeOnly };
@@ -1527,6 +1547,12 @@ function dxrCore(cfg, cap, S) {
       st.coverDropAt = t; // the frame-rate guard's warm-up counts from here
       info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms${ws ? `, the browser reports the canvas ${ws}` : ''})`);
       if (st.rampK < 1 && st.rigScale) startRamp(st, 1); // else it fades in once the scale is set (scaleReady)
+      return;
+    }
+    if (!cv.out && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt >= T.coverMaxMs && ws !== null && !joined && st.stats.stereo > 0) {
+      info(`the browser did not weave the canvas within ${T.coverMaxMs} ms (it reports ${ws}): staying 2D`);
+      st.nextTry = now() + 30000;
+      stand(st, `the browser did not weave the canvas (wovenState ${ws})`);
       return;
     }
     if (!cv.out && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt >= T.coverMaxMs) {
