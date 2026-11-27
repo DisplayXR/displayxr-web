@@ -78,6 +78,40 @@ export default function cases({ P, NEW }) {
     rigCase('rig-choice-camera', 'product viewer, but the site chose the camera rig: no automatic rig', TT, 'camera', null, { fovDeg: 30, cfg: { rig: 'camera' }, lines: 0, until: 'R.rigScale && R.verdict' }),
     rigCase('rig-choice-display', 'model on a floor (estimator), the site chose the display rig: no automatic rig, core glass', 'three-walk.html?scene=model&cam=still', 'display', null,
       { cfg: { rig: 'display' }, lines: 0, glass: 'display', stage: '1 left out as stage', until: 'R.rigScale && R.glass' }),
+    // THE MORPH: a product viewer whose camera pans off the subject at 3.5 s and comes back at 6 s. The
+    // rig goes display -> camera -> display with no flat phase: the rig pushed is never at zero depth,
+    // and its field of view moves between the display's own and the page's.
+    {
+      id: 'rig-morph', name: 'product viewer, the camera pans off the subject and comes back: display -> camera -> display by a morph, never flat',
+      url: 'three-turntable.html?still=1&panAt=3500&backAt=6000', expect: 'convert', fovDeg: 30, ready: 'window.__ready', cfg: { rig: 'auto', coreGlass: true },
+      probe: new Function(`return (async () => {
+        const out = [], t0 = performance.now();
+        while (performance.now() - t0 < 9500) {
+          const S = window.__dxrAuto3D.state(), R = S.renderers.find((x) => x.active);
+          if (R && R.rigNow) out.push({ t: Math.round(performance.now() - t0), mode: S.rigMode, morph: R.morphing, ...R.rigNow, k: R.rampK });
+          await new Promise((r) => setTimeout(r, 40));
+        }
+        return out;
+      })();`),
+      check(r, t) {
+        t('converted within 60 s', r.ok, `${r.ms} ms`);
+        const s = r.probe || [];
+        const modes = s.map((x) => x.mode).filter((m, i, a) => i === 0 || m !== a[i - 1]);
+        t('rig sequence display -> camera -> display', modes.join('>') === 'display>camera>display', modes.join('>'));
+        const morphs = s.filter((x) => x.morph);
+        t('both changes were morphs (a camera-form rig in flight)', morphs.length >= 6 && morphs.every((x) => x.type === 'camera'), `${morphs.length} morph samples`);
+        const depth = (x) => (x.type === 'display' ? x.ipd : x.ipd * (x.m2v || 1));
+        const flat = s.filter((x) => !(depth(x) > 0) || (x.k !== undefined && x.k !== null && x.k < 1));
+        t('never flat: the eye scale stays above zero and the depth fade is not used', flat.length === 0, flat.length ? JSON.stringify(flat[0]) : 'ok');
+        const fovs = morphs.map((x) => (x.vfov * 180) / Math.PI);
+        t('in flight the field of view is between the display own and the page 30 deg', fovs.every((f) => f > 5 && f < 30.5), `${Math.min(...fovs).toFixed(1)}..${Math.max(...fovs).toFixed(1)} deg`);
+        // Continuity of the camera-form eye scale across the first morph (no step larger than a third of its range).
+        const e = morphs.map((x) => x.ipd * x.m2v), steps = e.slice(1).map((v, i) => Math.abs(v - e[i])), range = Math.max(...e) - Math.min(...e);
+        t('the eye scale moves in small steps', range > 0 && Math.max(...steps) < 0.5 * range, `range ${range.toPrecision(3)}, largest step ${Math.max(...steps).toPrecision(3)}`);
+        const lines = r.log.filter((l) => /object test:|style:/.test(l)).map((l) => l.replace(/^.*dxr-auto3d\] /, '')).join(' | ');
+        t('the console tells the story', /no longer an object/.test(lines) && /deciding again/.test(lines), lines);
+      },
+    },
     // A/B: the 0.7.13 rule.
     rigCase('rig-loose', 'A/B strictObject false: any page target is an object (0.7.13)', 'three-orbit.html', 'display', 'object on a turntable', { cfg: { strictObject: false }, until: 'R.rigScale && S.rigMode === "display"' }),
   ].map(fix);

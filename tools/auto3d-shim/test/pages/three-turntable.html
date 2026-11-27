@@ -6,7 +6,8 @@
        ?extra=1    other geometry beside the subject (a second prop off the frame): not certain
        ?follow=1   the orbit target drifts through the world (a follow camera): not an object
        ?late=1500  the subject is added after this many ms (a model that loads late)
-       ?still=1    no autoRotate -->
+       ?still=1    no autoRotate
+       ?panAt=ms&backAt=ms  the camera pans off the subject at panAt and comes back at backAt -->
 <html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three turntable (test)</title>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#8a8f98}canvas{display:block}
 #stage{position:relative;width:100%;height:100%}
@@ -56,6 +57,12 @@ const P = new THREE.Vector3();
 let frames = 0;
 renderer.setAnimationLoop((t) => {
   if (q.get('follow')) controls.target.x = Math.sin(t / 700) * 1.5;
+  // ?panAt=ms[&backAt=ms]: a pan away from the subject (camera and target move together), and back.
+  if (+q.get('panAt') > 0) {
+    const since = performance.now() - (window.__t0 || (window.__t0 = performance.now()));
+    const away = since > +q.get('panAt') && !(+q.get('backAt') > 0 && since > +q.get('backAt'));
+    if (away !== !!window.__away) { const dx = away ? 5 : -5; controls.target.x += dx; camera.position.x += dx; window.__away = away; }
+  }
   controls.update();
   renderer.render(scene, camera);
   if (hot) { // the page's own projection of a 3D point, as hotspot libraries do

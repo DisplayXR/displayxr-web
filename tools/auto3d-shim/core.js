@@ -108,6 +108,7 @@ function dxrCore(cfg, cap, S) {
     objFitMin: 0.08,     // ... at least this x (a speck is not the point of the page) ...
     objStandoff: 1.2,    // ... and the camera stands at least this x that radius from the target
     targetDrift: 0.05,   // the target may move at most this x its distance while we watch
+    morphMs: 700,        // a rig change after go-live is a MORPH of this length (rigMorph); 0: a cut
     resumeMs: 2000,      // an object page that was demoted (a fly, a fly-through) is decided AGAIN after this long back outside the subject, looking at it, with no walk hint
     overlayEveryFrames: 30, // page elements over the canvas that move with the camera (hotspots, labels): looked for this often
     glassFront: 1 / 3,   // the share of the core surface in front of the glass
@@ -506,7 +507,7 @@ function dxrCore(cfg, cap, S) {
     const dr = depthRangeFor(st);
     st.near = dr.near; st.far = dr.far;
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
-    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.rigSwitch = null; st.glass = null; // a new activation decides the rig's scale again (setScaleOnce)
+    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.rigSwitch = null; st.glass = null; st.morph = null; st.anchorW = 1; // a new activation decides the rig's scale again (setScaleOnce)
     estimateConvergence(st, true);
     st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
     buildRig(st, ad.rigFov(st));
@@ -897,7 +898,13 @@ function dxrCore(cfg, cap, S) {
     st.ramp = null;
     if (r.done) st.outCoverDue = r.done; // the out-cover is made after this frame's draw, in the drawing task
   }
+  // The rig pushed to the layer: the active mode's, or, while a rig change is in flight, the MORPH
+  // from the rig that was showing to the active mode's (rigMorph).
   function buildRig(st, verticalFov) {
+    const r = buildRigMode(st, verticalFov, rigMode());
+    return st.morph ? rigMorph(st, r) : ((st.anchorW = 1), r);
+  }
+  function buildRigMode(st, verticalFov, mode) {
     if (!st.rigs) {
       st.rigs = {
         camera: st.rig,
@@ -910,8 +917,8 @@ function dxrCore(cfg, cap, S) {
     const k = st.rigScale ? rampK(st) : 0;
     // The core glass: on the display rig always; on the camera rig for an object-like page (objectVerdict)
     // whose convergence is the page's target, so its focus is placed by the same rule.
-    const dg = rigMode() === 'display' || (st.objLike && st.conv.src !== 'fixed') ? coreGlass(st) * site.convScale : (st.glass = null, 0);
-    if (rigMode() === 'display') {
+    const dg = mode === 'display' || (st.objLike && st.conv.src !== 'fixed') ? coreGlass(st) * site.convScale : (st.glass = null, 0);
+    if (mode === 'display') {
       // DISPLAY rig, for object-centric scenes (the P key of legacy WebXR apps): the canvas is a
       // portal onto a virtual display. Framing: the portal sits on the convergence plane, square to
       // the page camera, and is exactly as tall as the page camera's view there — what the author
@@ -1203,6 +1210,17 @@ function dxrCore(cfg, cap, S) {
       estimateConvergence(st, true);
     };
     if (!st.active || rampK(st) <= 0) { reset(); return; }
+    // A morph when it can: what is showing is frozen as the morph's start, the scene is decided again
+    // at once (the verdict it had is kept: the subject is the same one), and the rig moves to the answer.
+    const V = st.verdict;
+    if (V && V.was && startMorph(st)) {
+      st.openLatched = false; st.openWhy = null; st.openByWalk = false; st.surroundRuns = 0; st.walk = null;
+      V.done = V.was; V.was = null; st.objLike = V.done.like;
+      estimateConvergence(st, true);
+      st.rigScale = { d: Math.max(1e-6, st.conv.d || 1), basis: 'orbit resumed' };
+      if (site.rigChoice === 'auto') setAutoRig(V.done.object ? 'display' : 'camera', `orbit resumed: ${V.done.why}`, false);
+      return;
+    }
     st.rigSwitch = { reset };
     startRamp(st, 0);
   }
@@ -1311,6 +1329,7 @@ function dxrCore(cfg, cap, S) {
   function fadeRig(st, rig, why) {
     if (site.rig === rig && !st.rigSwitch) return;
     if (!st.active || !st.rigScale || rampK(st) <= 0) { st.rigSwitch = null; setAutoRig(rig, why, false); return; }
+    if (startMorph(st)) { st.rigSwitch = null; setAutoRig(rig, why, false); return; }   // a morph, not a fade
     st.rigSwitch = { rig, why };
     startRamp(st, 0);
   }
@@ -1321,6 +1340,65 @@ function dxrCore(cfg, cap, S) {
     if (W.reset) { W.reset(); return; }   // the scale decision fades it back in (scaleReady)
     setAutoRig(W.rig, W.why, false);
     startRamp(st, 1);
+  }
+
+  // ------------------------------------------------------------ the rig morph (v0.8.0)
+  // THE TWO RIGS ARE ONE FAMILY (David 2026-11-27; the contract: runtime docs/specs/extensions/
+  // XR_DXR_view_rig.md section 4, the code: displayxr-common dxr_view_rig_display_to_camera /
+  // dxr_rig_transition). With H the canvas's physical height and N the nominal viewer distance, a
+  // display rig {pose, vH, perspective p, ipd, parallax} is EXACTLY the camera rig
+  //   tan(vfov/2) = (H / 2N) / p,  convergence distance D = es N (es = p vH / H),  pose = the plane + D
+  //   along +Z,  metersToVirtual 1,  ipd and parallax x es
+  // (every eye and frustum the same, for every viewer position). So an automatic rig change after
+  // go-live is not a cut and needs no flat phase: the rig that was showing is written in camera form,
+  // and every parameter is moved to the new rig's, each in the space where equal steps look equal
+  // (the camera's position and the eye scales linearly, the convergence in diopters, the field of view
+  // in angle), as dxr_rig_transition does. What sits on the convergence plane keeps its size throughout.
+  // The eye anchor (anchorEyes: the camera rig's nominal viewer on the page camera) is not part of a
+  // display rig, so its weight st.anchorW rides the morph too. At the end the new rig is declared in
+  // its own form. Without H and N (a browser that does not report the panel) the change is a fade.
+  function rigDisplayInfo(st) {
+    const di = st.di, nom = nominalOf(st);
+    const Hpx = di && di.displayPixelHeight, hm = di && di.displayHeightMeters;
+    if (!nom || !(Hpx > 0 && hm > 0) || !(nom.z > 0)) return null;
+    let h = 0;
+    try { h = st.canvas.getBoundingClientRect().height * (window.devicePixelRatio || 1); } catch (e) { h = 0; }
+    const H = (hm * h) / Hpx;
+    return H > 0 && isFinite(H) ? { H, N: nom.z } : null;
+  }
+  // A rig in canonical camera form: { z (camera position along its own axis, page-camera space),
+  // tanV, invd, e (ipd x m2v), q (parallax x m2v), w (the eye anchor's weight) }.
+  function cameraForm(rig, w, I) {
+    if (rig.type === 'display') {
+      const p = rig.perspectiveFactor > 0 ? rig.perspectiveFactor : 1, es = (p * rig.virtualDisplayHeight) / I.H;
+      return { z: rig.position.z + es * I.N, tanV: I.H / (2 * I.N) / p, invd: 1 / (es * I.N), e: (+rig.ipdFactor || 0) * es, q: (+rig.parallaxFactor || 0) * es, w: 0 };
+    }
+    const m = rig.metersToVirtual > 0 ? rig.metersToVirtual : 1;
+    return { z: rig.position.z, tanV: Math.tan(rig.verticalFov / 2), invd: +rig.convergenceDiopters || 0, e: (+rig.ipdFactor || 0) * m, q: (+rig.parallaxFactor || 0) * m, w };
+  }
+  function startMorph(st) {
+    const I = T.morphMs > 0 && st.active && st.rig && st.rigScale && rampK(st) >= 1 && !st.ramp ? rigDisplayInfo(st) : null;
+    if (!I) return false;
+    // The rig that is showing (mid-morph: where the morph has got to), frozen in the page camera's space.
+    st.morph = { from: st.morph && st.morph.at ? { ...st.morph.at } : cameraForm(st.rig, st.rig.type === 'camera' ? 1 : 0, I), t0: now(), at: null };
+    return true;
+  }
+  function rigMorph(st, target) {
+    const M = st.morph, I = rigDisplayInfo(st);
+    const u0 = T.morphMs > 0 ? clamp((now() - M.t0) / T.morphMs, 0, 1) : 1;
+    if (!I || u0 >= 1) { st.morph = null; st.anchorW = 1; return target; }
+    const u = u0 * u0 * (3 - 2 * u0), a = M.from, b = cameraForm(target, target.type === 'camera' ? 1 : 0, I);
+    const lerp = (x, y) => x + (y - x) * u;
+    const c = { z: lerp(a.z, b.z), tanV: Math.tan(lerp(Math.atan(a.tanV), Math.atan(b.tanV))), invd: lerp(a.invd, b.invd), e: lerp(a.e, b.e), q: lerp(a.q, b.q), w: lerp(a.w, b.w) };
+    M.at = c;
+    const r = st.rigs.morph || (st.rigs.morph = { type: 'camera', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } });
+    // The scale goes in metersToVirtual so that both factors stay within [0, 1].
+    const m = Math.max(c.e, c.q, 1e-9);
+    r.position.z = c.z; r.verticalFov = 2 * Math.atan(c.tanV); r.convergenceDiopters = c.invd;
+    r.metersToVirtual = m; r.ipdFactor = c.e / m; r.parallaxFactor = c.q / m;
+    st.anchorW = c.w;
+    st.rig = r;
+    return r;
   }
 
   // ------------------------------------------------------------ the core glass (v0.8.0)
@@ -1637,7 +1715,9 @@ function dxrCore(cfg, cap, S) {
     const nom = nominalOf(st);
     if (!nom) return;
     const m2v = rig.metersToVirtual > 0 ? rig.metersToVirtual : 1, pf = +rig.parallaxFactor || 0, invd = +rig.convergenceDiopters || 0;
-    const r = [m2v * pf * (nom.x - nom.cx), m2v * pf * (nom.y - nom.cy), 0];
+    const aw = st.anchorW === undefined ? 1 : clamp(st.anchorW, 0, 1); // 1; < 1 only while a rig morph is in flight (rigMorph)
+    if (!(aw > 0)) return;
+    const r = [aw * m2v * pf * (nom.x - nom.cx), aw * m2v * pf * (nom.y - nom.cy), 0];
     const A = st.V[0].pose, Bp = st.V[1].pose;
     const c = [(A[12] + Bp[12]) / 2, (A[13] + Bp[13]) / 2, (A[14] + Bp[14]) / 2];
     const dev = [c[0] - r[0], c[1] - r[1], c[2] - r[2]];
@@ -1650,7 +1730,7 @@ function dxrCore(cfg, cap, S) {
       const nr = Math.min(st.conv.d > 0 ? st.conv.d : Infinity, st.nearSurf > 0 ? st.nearSurf : Infinity);
       if (isFinite(nr)) lim = (+T.eyeLeanMax || 0.5) * nr;
     }
-    const k = dl > lim ? lim / dl : 1;
+    const k = 1 + ((dl > lim ? lim / dl : 1) - 1) * aw;
     for (const V of st.V) {
       const e = V.pose, P = V.proj;
       const n = [dev[0] * k + e[12] - c[0], dev[1] * k + e[13] - c[1], dev[2] * k + e[14] - c[2]];

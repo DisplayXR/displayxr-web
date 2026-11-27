@@ -532,6 +532,7 @@ function dxrCore(cfg, cap, S) {
     objFitMin: 0.08,     // ... at least this x (a speck is not the point of the page) ...
     objStandoff: 1.2,    // ... and the camera stands at least this x that radius from the target
     targetDrift: 0.05,   // the target may move at most this x its distance while we watch
+    morphMs: 700,        // a rig change after go-live is a MORPH of this length (rigMorph); 0: a cut
     resumeMs: 2000,      // an object page that was demoted (a fly, a fly-through) is decided AGAIN after this long back outside the subject, looking at it, with no walk hint
     overlayEveryFrames: 30, // page elements over the canvas that move with the camera (hotspots, labels): looked for this often
     glassFront: 1 / 3,   // the share of the core surface in front of the glass
@@ -814,7 +815,7 @@ function dxrCore(cfg, cap, S) {
     const dr = depthRangeFor(st);
     st.near = dr.near; st.far = dr.far;
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
-    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.rigSwitch = null; st.glass = null; // a new activation decides the rig's scale again (setScaleOnce)
+    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.rigSwitch = null; st.glass = null; st.morph = null; st.anchorW = 1; // a new activation decides the rig's scale again (setScaleOnce)
     estimateConvergence(st, true);
     st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
     buildRig(st, ad.rigFov(st));
@@ -1111,6 +1112,10 @@ function dxrCore(cfg, cap, S) {
     if (r.done) st.outCoverDue = r.done; // the out-cover is made after this frame's draw, in the drawing task
   }
   function buildRig(st, verticalFov) {
+    const r = buildRigMode(st, verticalFov, rigMode());
+    return st.morph ? rigMorph(st, r) : ((st.anchorW = 1), r);
+  }
+  function buildRigMode(st, verticalFov, mode) {
     if (!st.rigs) {
       st.rigs = {
         camera: st.rig,
@@ -1119,8 +1124,8 @@ function dxrCore(cfg, cap, S) {
     }
     const d = rigDistance(st), ds = scaleDistance(st);
     const k = st.rigScale ? rampK(st) : 0;
-    const dg = rigMode() === 'display' || (st.objLike && st.conv.src !== 'fixed') ? coreGlass(st) * site.convScale : (st.glass = null, 0);
-    if (rigMode() === 'display') {
+    const dg = mode === 'display' || (st.objLike && st.conv.src !== 'fixed') ? coreGlass(st) * site.convScale : (st.glass = null, 0);
+    if (mode === 'display') {
       const r = st.rigs.display;
       const dp = dg > 0 ? dg : ds;
       r.position.x = r.position.y = 0; r.position.z = -dp;
@@ -1317,6 +1322,15 @@ function dxrCore(cfg, cap, S) {
       estimateConvergence(st, true);
     };
     if (!st.active || rampK(st) <= 0) { reset(); return; }
+    const V = st.verdict;
+    if (V && V.was && startMorph(st)) {
+      st.openLatched = false; st.openWhy = null; st.openByWalk = false; st.surroundRuns = 0; st.walk = null;
+      V.done = V.was; V.was = null; st.objLike = V.done.like;
+      estimateConvergence(st, true);
+      st.rigScale = { d: Math.max(1e-6, st.conv.d || 1), basis: 'orbit resumed' };
+      if (site.rigChoice === 'auto') setAutoRig(V.done.object ? 'display' : 'camera', `orbit resumed: ${V.done.why}`, false);
+      return;
+    }
     st.rigSwitch = { reset };
     startRamp(st, 0);
   }
@@ -1412,6 +1426,7 @@ function dxrCore(cfg, cap, S) {
   function fadeRig(st, rig, why) {
     if (site.rig === rig && !st.rigSwitch) return;
     if (!st.active || !st.rigScale || rampK(st) <= 0) { st.rigSwitch = null; setAutoRig(rig, why, false); return; }
+    if (startMorph(st)) { st.rigSwitch = null; setAutoRig(rig, why, false); return; }   // a morph, not a fade
     st.rigSwitch = { rig, why };
     startRamp(st, 0);
   }
@@ -1422,6 +1437,46 @@ function dxrCore(cfg, cap, S) {
     if (W.reset) { W.reset(); return; }   // the scale decision fades it back in (scaleReady)
     setAutoRig(W.rig, W.why, false);
     startRamp(st, 1);
+  }
+
+  function rigDisplayInfo(st) {
+    const di = st.di, nom = nominalOf(st);
+    const Hpx = di && di.displayPixelHeight, hm = di && di.displayHeightMeters;
+    if (!nom || !(Hpx > 0 && hm > 0) || !(nom.z > 0)) return null;
+    let h = 0;
+    try { h = st.canvas.getBoundingClientRect().height * (window.devicePixelRatio || 1); } catch (e) { h = 0; }
+    const H = (hm * h) / Hpx;
+    return H > 0 && isFinite(H) ? { H, N: nom.z } : null;
+  }
+  function cameraForm(rig, w, I) {
+    if (rig.type === 'display') {
+      const p = rig.perspectiveFactor > 0 ? rig.perspectiveFactor : 1, es = (p * rig.virtualDisplayHeight) / I.H;
+      return { z: rig.position.z + es * I.N, tanV: I.H / (2 * I.N) / p, invd: 1 / (es * I.N), e: (+rig.ipdFactor || 0) * es, q: (+rig.parallaxFactor || 0) * es, w: 0 };
+    }
+    const m = rig.metersToVirtual > 0 ? rig.metersToVirtual : 1;
+    return { z: rig.position.z, tanV: Math.tan(rig.verticalFov / 2), invd: +rig.convergenceDiopters || 0, e: (+rig.ipdFactor || 0) * m, q: (+rig.parallaxFactor || 0) * m, w };
+  }
+  function startMorph(st) {
+    const I = T.morphMs > 0 && st.active && st.rig && st.rigScale && rampK(st) >= 1 && !st.ramp ? rigDisplayInfo(st) : null;
+    if (!I) return false;
+    st.morph = { from: st.morph && st.morph.at ? { ...st.morph.at } : cameraForm(st.rig, st.rig.type === 'camera' ? 1 : 0, I), t0: now(), at: null };
+    return true;
+  }
+  function rigMorph(st, target) {
+    const M = st.morph, I = rigDisplayInfo(st);
+    const u0 = T.morphMs > 0 ? clamp((now() - M.t0) / T.morphMs, 0, 1) : 1;
+    if (!I || u0 >= 1) { st.morph = null; st.anchorW = 1; return target; }
+    const u = u0 * u0 * (3 - 2 * u0), a = M.from, b = cameraForm(target, target.type === 'camera' ? 1 : 0, I);
+    const lerp = (x, y) => x + (y - x) * u;
+    const c = { z: lerp(a.z, b.z), tanV: Math.tan(lerp(Math.atan(a.tanV), Math.atan(b.tanV))), invd: lerp(a.invd, b.invd), e: lerp(a.e, b.e), q: lerp(a.q, b.q), w: lerp(a.w, b.w) };
+    M.at = c;
+    const r = st.rigs.morph || (st.rigs.morph = { type: 'camera', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } });
+    const m = Math.max(c.e, c.q, 1e-9);
+    r.position.z = c.z; r.verticalFov = 2 * Math.atan(c.tanV); r.convergenceDiopters = c.invd;
+    r.metersToVirtual = m; r.ipdFactor = c.e / m; r.parallaxFactor = c.q / m;
+    st.anchorW = c.w;
+    st.rig = r;
+    return r;
   }
 
   function coreGlass(st) {
@@ -1646,7 +1701,9 @@ function dxrCore(cfg, cap, S) {
     const nom = nominalOf(st);
     if (!nom) return;
     const m2v = rig.metersToVirtual > 0 ? rig.metersToVirtual : 1, pf = +rig.parallaxFactor || 0, invd = +rig.convergenceDiopters || 0;
-    const r = [m2v * pf * (nom.x - nom.cx), m2v * pf * (nom.y - nom.cy), 0];
+    const aw = st.anchorW === undefined ? 1 : clamp(st.anchorW, 0, 1); // 1; < 1 only while a rig morph is in flight (rigMorph)
+    if (!(aw > 0)) return;
+    const r = [aw * m2v * pf * (nom.x - nom.cx), aw * m2v * pf * (nom.y - nom.cy), 0];
     const A = st.V[0].pose, Bp = st.V[1].pose;
     const c = [(A[12] + Bp[12]) / 2, (A[13] + Bp[13]) / 2, (A[14] + Bp[14]) / 2];
     const dev = [c[0] - r[0], c[1] - r[1], c[2] - r[2]];
@@ -1657,7 +1714,7 @@ function dxrCore(cfg, cap, S) {
       const nr = Math.min(st.conv.d > 0 ? st.conv.d : Infinity, st.nearSurf > 0 ? st.nearSurf : Infinity);
       if (isFinite(nr)) lim = (+T.eyeLeanMax || 0.5) * nr;
     }
-    const k = dl > lim ? lim / dl : 1;
+    const k = 1 + ((dl > lim ? lim / dl : 1) - 1) * aw;
     for (const V of st.V) {
       const e = V.pose, P = V.proj;
       const n = [dev[0] * k + e[12] - c[0], dev[1] * k + e[13] - c[1], dev[2] * k + e[14] - c[2]];
@@ -2831,7 +2888,7 @@ function dxrDev(core, ctl) {
           real: [realW(st.canvas), realH(st.canvas)],
           eye: st.R ? [st.R.eyeW, st.R.eyeH] : null,
           active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews, eyesOn: !!st.eyesOn, noDisplay: !!(st.nd || st.noDisplay),
-          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via, verdict: st.verdict && st.verdict.done ? { ...st.verdict.done, R: st.verdict.R, Rf: st.verdict.Rf } : null, overlayTracked: !!st.overlayTracked, glass: st.glass && st.glass.d > 0 ? { d: st.glass.d, n: st.glass.n, parts: st.glass.set ? st.glass.set.parts.length : 0, note: st.glass.set ? st.glass.set.note : null } : null, openLatched: !!st.openLatched, openWhy: st.openWhy || null, anchor: st.anchor ? { ...st.anchor } : null, nearSurf: st.nearSurf || null, eyeShear: st.haveViews ? st.V.map((v) => [v.proj[8], v.proj[9]]) : null, eyeMid: st.haveViews ? [0, 1, 2].map((k) => (st.V[0].pose[12 + k] + st.V[1].pose[12 + k]) / 2) : null, rigScale: st.rigScale ? { ...st.rigScale } : null,
+          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via, verdict: st.verdict && st.verdict.done ? { ...st.verdict.done, R: st.verdict.R, Rf: st.verdict.Rf } : null, overlayTracked: !!st.overlayTracked, morphing: !!st.morph, rigNow: st.rig ? { type: st.rig.type, z: st.rig.position ? st.rig.position.z : 0, vfov: st.rig.verticalFov, diopters: st.rig.convergenceDiopters, m2v: st.rig.metersToVirtual, ipd: st.rig.ipdFactor, par: st.rig.parallaxFactor, vdh: st.rig.virtualDisplayHeight } : null, glass: st.glass && st.glass.d > 0 ? { d: st.glass.d, n: st.glass.n, parts: st.glass.set ? st.glass.set.parts.length : 0, note: st.glass.set ? st.glass.set.note : null } : null, openLatched: !!st.openLatched, openWhy: st.openWhy || null, anchor: st.anchor ? { ...st.anchor } : null, nearSurf: st.nearSurf || null, eyeShear: st.haveViews ? st.V.map((v) => [v.proj[8], v.proj[9]]) : null, eyeMid: st.haveViews ? [0, 1, 2].map((k) => (st.V[0].pose[12 + k] + st.V[1].pose[12 + k]) / 2) : null, rigScale: st.rigScale ? { ...st.rigScale } : null,
           rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing, lifted: st.lifted || null,
           pivot: st.piv ? { t: [...st.piv.t], c: [...st.piv.c], d: st.piv.d } : null,
           eyeAt: st.eyeAt ? Array.from(st.eyeAt) : null, // eye 0's world position, as last composed by the adapter
