@@ -1,9 +1,9 @@
-// DisplayXR auto-3D 0.8.2 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.8.3 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap, S) {
 'use strict';
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.8.2'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.8.3'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -26,6 +26,7 @@ function dxrCore(cfg, cap, S) {
     scaleSamples: 3,    // the rig's scale (m2v) is set ONCE per activation (v0.7.11): from this many consecutive estimator samples ...
     scaleSpread: 0.1,   // ... within this fraction of their median, on a quiet page (no resource for guardLoadQuietMs) ...
     scaleMaxWaitMs: 8000, // ... or from what there is this long after the flip (a page that never stops loading). Flat until then.
+    scaleLoadMaxMs: 45000, // ... but with NO estimate yet on a page still loading (a model streaming in), wait up to this long instead
     openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
     openSceneConvM: 2,      // 'fixed': converge this far in front of the page camera, scene units read as METRES (Marble worlds and most three.js scenes are metric)
     openSceneRealDepth: 0.5, // 'fixed': the camera-rig depth that means the viewer's REAL IPD (ipdFactor 1); less scales the eye separation down (0.25 halves it)
@@ -50,6 +51,7 @@ function dxrCore(cfg, cap, S) {
     targetDrift: 0.05,   // the target may move at most this x its distance while we watch
     cursorDepth: true,   // the 3D cursor (cursorTick): report the depth under the pointer where the browser draws its cursor at depth
     zoomLocal: true,     // display rig: the portal distance is applied to the located eyes in the frame the page camera moves (eyeScale); false: through the rig, three frames late
+    flatMorph: true,     // display rig: the depth fade (rampK) is also the MORPH to the page's own camera, so flat IS the page's 2D picture (rigFlatten); false: flat = the portal seen from the nominal viewer (0.8.2)
     glassMetric: 'radial', morphMs: 700,        // a rig change after go-live is a MORPH of this length (rigMorph); 0: a cut
     overlayEveryFrames: 30, // page elements over the canvas that move with the camera (hotspots, labels): looked for this often
     glassFront: 1 / 3,   // the share of the core's DEPTH RANGE in front of the glass ...
@@ -73,6 +75,8 @@ function dxrCore(cfg, cap, S) {
     glLimit: 0,         // TEST ONLY: > 0 stands in for the surface's size limit (WebGL or WebGPU) in realSizeFor
     gpuDepthRange: true, // TEST ONLY (A/B): false hands a WebGPU engine the runtime's GL-clip projection as is (no surface.toClip)
     gpuVerified: null,   // TEST ONLY: overrides three-adapter's GPU_VERIFIED (case three-webgpu-newer: a revision above it still converts, with the note)
+    gpuUnannounced: false, // a WebGPURenderer whose build never announces its revision: true converts it on the driver's hooks alone (v0.8.3: off, see three-adapter)
+    replayViewport: true, replayByFrame: true, // idle replays: each pass with the viewport it ran with; the page's last paint, in its own order
     gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
     pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
     pcPostEffects: true, // TEST ONLY (A/B): false keeps a PlayCanvas camera with legacy post effects (camera.postEffects) 2D; 'unsplit' converts it with ONE chain over the pair (v0.7.9 runs the chain per eye)
@@ -238,6 +242,38 @@ function dxrCore(cfg, cap, S) {
   function surfaceOf(st) {
     if (!st.surf) { let s = null; try { s = st.ad.surface ? st.ad.surface(st) : null; } catch (e) { s = null; } st.surf = s || null; }
     return st.surf;
+  }
+
+  function overCanvas(canvas) {
+    const chain = new Set(), out = new Set();
+    for (let n = canvas; n; n = n.parentNode || n.host) chain.add(n);
+    let r = null;
+    try { r = canvas.getBoundingClientRect(); } catch (e) { return []; }
+    for (const [fx, fy] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+      let L = [];
+      try { L = document.elementsFromPoint(r.left + r.width * fx, r.top + r.height * fy); } catch (e) { L = []; }
+      for (const e of L) {
+        if (chain.has(e)) break;
+        let ours = false;
+        try { for (const at of e.attributes) if (at.name.startsWith('data-dxr-auto3d')) { ours = true; break; } } catch (e2) { ours = false; }
+        if (!ours) out.add(e);
+      }
+    }
+    return [...out];
+  }
+  function waitUncovered(st, els) {
+    if (st.occl) clearInterval(st.occl.id);
+    st.occlTries = (st.occlTries || 0) + 1;
+    if (st.occlTries > 4) { st.occl = null; return; }
+    const o = (st.occl = { els, id: 0, t0: now() });
+    o.id = setInterval(() => {
+      if (st.occl !== o) { clearInterval(o.id); return; }
+      const cur = new Set(overCanvas(st.canvas));
+      const gone = o.els.some((e) => !cur.has(e));
+      if (!gone && now() - o.t0 < 120000) return;
+      clearInterval(o.id); st.occl = null;
+      if (gone && on() && !owner && !st.active && !st.pending) { info(`the canvas is uncovered: trying 3D again on ${desc(st.canvas)}`); st.nextTry = 0; st.tries = 0; wake(st); }
+    }, 500);
   }
 
   function considerActivation(st) {
@@ -461,7 +497,11 @@ function dxrCore(cfg, cap, S) {
     info('auto-3D', on() ? 'ON' : 'OFF', 'for', location.origin);
     if (!on() && owner) turnOff(owner, 'turned off for this site');
     if (on() && owner) owner.offTok = null; // a turn-off still fading / covering out does not stand any more
-    if (on() && owner && owner.active && owner.ramp && owner.ramp.to === 0) startRamp(owner, 1); // turned back on mid-fade: fade back up
+    if (on() && owner && owner.active && !owner.releasing) {
+      if (owner.cover && owner.cover.out) dropCover(owner);
+      if (!owner.cover && !owner.coverForced &&
+          ((owner.ramp && owner.ramp.to === 0) || (!owner.ramp && owner.rigScale && rampK(owner) < 1))) { owner.outCoverDue = null; startRamp(owner, 1); }
+    }
     if (on()) {
       for (const w of tracked) {
         const st = w.deref();
@@ -647,7 +687,9 @@ function dxrCore(cfg, cap, S) {
   }
   function buildRig(st, verticalFov) {
     const r = buildRigMode(st, verticalFov, rigMode());
-    return st.morph ? rigMorph(st, r) : ((st.anchorW = 1), r);
+    if (st.morph) return rigMorph(st, r);
+    st.anchorW = 1;
+    return r.type === 'display' ? rigFlatten(st, r, verticalFov) : r;
   }
   const lockedObject = (st) => !!(st.verdict && st.verdict.done && ((st.verdict.done.object && site.rig === 'display') || (st.verdict.done.like && !st.verdict.done.object)));
   function buildRigMode(st, verticalFov, mode) {
@@ -664,7 +706,8 @@ function dxrCore(cfg, cap, S) {
       const r = st.rigs.display;
       const dp = dg > 0 ? dg : ds;
       let dq = dp;
-      if (dg > 0 && T.zoomLocal !== false) { if (st.morph || !(st.dp0 > 0)) st.dp0 = dp; dq = st.dp0; } else st.dp0 = 0;
+      st.dpLive = dp;
+      if (dg > 0 && T.zoomLocal !== false) { if (st.morph || k < 1 || !(st.dp0 > 0)) st.dp0 = dp; dq = st.dp0; } else st.dp0 = 0;
       r.position.x = r.position.y = 0; r.position.z = -dq;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
       r.virtualDisplayHeight = 2 * dq * Math.tan(verticalFov / 2);
@@ -719,11 +762,12 @@ function dxrCore(cfg, cap, S) {
       const t = now(), xs = W.xs.slice().sort((a, b) => a - b), med = xs.length ? xs[xs.length >> 1] : 0;
       const consistent = xs.length >= T.scaleSamples && med > 0 && xs[xs.length - 1] - xs[0] <= T.scaleSpread * med;
       const quiet = !(guard.loading && guard.loading(t));
-      const late = t - W.t0 >= T.scaleMaxWaitMs; // from this activation's first estimate (the flip)
+      const waitMs = med > 0 || (quiet && st.inView > 0) ? T.scaleMaxWaitMs : Math.max(T.scaleMaxWaitMs, +T.scaleLoadMaxMs || 0);
+      const late = t - W.t0 >= waitMs; // from this activation's first estimate (the flip)
       if (!(consistent && quiet) && !late) return;
       if (T.strictObject !== false && site.rigChoice === 'auto' && src === 'estimator' && !st.openLatched && !late && !objectVerdict(st)) return;
-      const d = med > 0 ? med : st.conv.d || 1;
-      st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(T.scaleMaxWaitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
+      const d = med > 0 ? med : st.conv.d > 0 && isFinite(st.conv.d) ? st.conv.d : 1;
+      st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(waitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
     }
     decideAutoRig(st, src);
     info(`scale set: ${scaleText(st, st.rigScale)} (${st.rigScale.basis}; distance ${st.rigScale.d.toPrecision(3)} units)`);
@@ -1043,20 +1087,35 @@ function dxrCore(cfg, cap, S) {
     const u0 = T.morphMs > 0 ? clamp((now() - M.t0) / T.morphMs, 0, 1) : 1;
     if (!I || u0 >= 1) { st.morph = null; st.anchorW = 1; return target; }
     const u = u0 * u0 * (3 - 2 * u0), a = M.from, b = cameraForm(target, target.type === 'camera' ? 1 : 0, I);
+    const c = (M.at = blendForm(a, b, u));
+    return declareForm(st, c, Math.max(c.e, c.q, 1e-9));
+  }
+  function blendForm(a, b, u) {
     const lerp = (x, y) => x + (y - x) * u;
     const c = { z: lerp(a.z, b.z), tanV: Math.tan(lerp(Math.atan(a.tanV), Math.atan(b.tanV))), invd: lerp(a.invd, b.invd), e: lerp(a.e, b.e), q: lerp(a.q, b.q), w: lerp(a.w, b.w) };
     const dt = a.tanV - b.tanV, xs = Math.abs(dt) > 1e-9 ? (b.z * b.tanV - a.z * a.tanV) / dt : NaN;
     if (isFinite(xs) && xs > 0 && c.tanV > 1e-9) c.z = ((xs + a.z) * a.tanV) / c.tanV - xs;
     const pa = a.invd > 0 ? 1 / a.invd - a.z : 0, pb = b.invd > 0 ? 1 / b.invd - b.z : 0;
     if (pa > 0 && pb > 0) { const pc = 1 / lerp(1 / pa, 1 / pb); if (pc + c.z > 1e-9) c.invd = 1 / (pc + c.z); }
-    M.at = c;
+    return c;
+  }
+  function declareForm(st, c, m) {
     const r = st.rigs.morph || (st.rigs.morph = { type: 'camera', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } });
-    const m = Math.max(c.e, c.q, 1e-9);
     r.position.z = c.z; r.verticalFov = 2 * Math.atan(c.tanV); r.convergenceDiopters = c.invd;
-    r.metersToVirtual = m; r.ipdFactor = c.e / m; r.parallaxFactor = c.q / m;
+    r.metersToVirtual = m; r.ipdFactor = clamp(c.e / m, 0, 1); r.parallaxFactor = clamp(c.q / m, 0, 1);
     st.anchorW = c.w;
     st.rig = r;
     return r;
+  }
+  function rigFlatten(st, r, verticalFov) {
+    const k = st.rigScale ? rampK(st) : 0, dp = st.dpLive;
+    if (k >= 1 || T.flatMorph === false || !(dp > 0)) return r;
+    const I = rigDisplayInfo(st);
+    if (!I) return r;
+    const dep = depthOf('display'), tv = Math.tan(verticalFov / 2);
+    const a = cameraForm({ type: 'display', position: { z: -dp }, virtualDisplayHeight: 2 * dp * tv, perspectiveFactor: 1, ipdFactor: dep, parallaxFactor: dep }, 0, I);
+    const c = blendForm({ z: 0, tanV: tv, invd: 1 / dp, e: 0, q: 0, w: 1 }, a, clamp(k, 0, 1));
+    return declareForm(st, c, Math.max(a.e, a.q, 1e-9));
   }
 
   function coreGlass(st) {
@@ -1367,6 +1426,11 @@ function dxrCore(cfg, cap, S) {
     }
     return { x: +nv.x || 0, y: +nv.y || 0, z: +nv.z, cx: st.nomC.cx, cy: st.nomC.cy };
   }
+  function convRange(s) {
+    const n = s.near > 0 && isFinite(s.near) ? s.near : 0, f = s.far > n && isFinite(s.far) ? s.far : Infinity;
+    const lo = n * 2, hi = f * 0.9;
+    return hi > lo ? [lo, hi] : [0, Infinity];
+  }
   function estimateConvergence(st, snap, targetOnly) {
     const s = st.ad.sampler(st);
     if (!s) return false;
@@ -1377,6 +1441,7 @@ function dxrCore(cfg, cap, S) {
       const o = {};
       d = st.openLatched ? 0 : estimateSubjectDistance(s, o);
       raw = d > 0 && isFinite(d) ? d : 0; // a real estimate (not the fallback below)
+      st.inView = st.openLatched ? -1 : o.inView | 0; // setScaleOnce: nothing in view yet = keep waiting
       if (!st.openLatched) {
         if (o.near > 0) st.nearSurf = o.near; // the nearest surface in view (anchorEyes' lean clamp)
         if (o.extent > 0) st.sceneExtent = o.extent; // the bounded items' size (walkTick's scale)
@@ -1390,13 +1455,14 @@ function dxrCore(cfg, cap, S) {
           st.scaleWarned = true;
           info(`open scene: the ${Math.round(clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95) * 100)}th-percentile depth in view is ${o.p.toPrecision(3)} units: the scene may not be metric; use Focus nearer / farther`);
         }
-      } else if (!(d > 0) || !isFinite(d)) d = st.conv.d || Math.max(s.near * 50, 1);
+      } else if (!(d > 0) || !isFinite(d)) d = st.conv.d > 0 && isFinite(st.conv.d) ? st.conv.d : Math.max((s.near > 0 && isFinite(s.near) ? s.near : 0) * 50, 1);
     }
-    d = src === 'fixed' || !(s.far * 0.9 > s.near * 2) ? Math.max(d, s.near * 2) : clamp(d, s.near * 2, s.far * 0.9);
+    const [lo, hi] = convRange(s);
+    d = src === 'fixed' ? Math.max(d, lo) : clamp(d, lo, hi);
     st.conv.d = snap || !st.conv.d || src === 'fixed' || (src === 'target' && st.conv.src === 'target') ? d : st.conv.d + (d - st.conv.d) * 0.25;
     const was = st.conv.src;
     st.conv.src = src;
-    setScaleOnce(st, src, clamp(raw, s.near * 2, s.far * 0.9) || 0);
+    setScaleOnce(st, src, raw > 0 ? clamp(raw, lo, hi) : 0);
     if (was !== src && st.active) notify(); // the chip shows the source ('fixed')
     if (st.active && st.convLogged) settleLog(st);
     return true;
@@ -1421,7 +1487,8 @@ function dxrCore(cfg, cap, S) {
     const vx = vm[0] * t.x + vm[4] * t.y + vm[8] * t.z + vm[12];
     const vy = vm[1] * t.x + vm[5] * t.y + vm[9] * t.z + vm[13];
     const z = -(vm[2] * t.x + vm[6] * t.y + vm[10] * t.z + vm[14]);
-    if (!(z > s.near * 2) || !(z < s.far * 0.9)) return 0;
+    const [lo, hi] = convRange(s);
+    if (!(z > lo) || !(z < hi)) return 0;
     const tanV = s.tanHalfFov !== undefined ? s.tanHalfFov : Math.tan(s.verticalFov / 2);
     if (Math.hypot(vx, vy) / z > 0.25 * tanV) return 0;
     st.conv.via = t.via || null;
@@ -1485,6 +1552,7 @@ function dxrCore(cfg, cap, S) {
       return true;
     });
     if (out) {
+      out.inView = items.length; // what the estimate had to go on (0: nothing in view yet)
       let nr = Infinity;
       for (const it of items) if (!it.v) nr = Math.min(nr, Math.max(it.z - it.r, near));
       out.near = isFinite(nr) ? nr : 0;
@@ -1619,8 +1687,10 @@ function dxrCore(cfg, cap, S) {
       return;
     }
     if (!cv.out && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt >= T.coverMaxMs && ws !== null && !joined && st.stats.stereo > 0) {
-      info(`the browser did not weave the canvas within ${T.coverMaxMs} ms (it reports ${ws}): staying 2D`);
+      const over = T.waitUncovered === false ? [] : overCanvas(st.canvas);
+      info(`the browser did not weave the canvas within ${T.coverMaxMs} ms (it reports ${ws}): staying 2D` + (over.length ? `; ${over.length} page element(s) lie over the canvas (${desc(over[0])}), trying again when that changes` : ''));
       st.nextTry = now() + 30000;
+      if (over.length) waitUncovered(st, over);
       stand(st, `the browser did not weave the canvas (wovenState ${ws})`);
       return;
     }
@@ -2511,11 +2581,11 @@ function dxrDev(core, ctl) {
           real: [realW(st.canvas), realH(st.canvas)],
           eye: st.R ? [st.R.eyeW, st.R.eyeH] : null,
           active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews, eyesOn: !!st.eyesOn, noDisplay: !!(st.nd || st.noDisplay),
-          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via, verdict: st.verdict && st.verdict.done ? { ...st.verdict.done, R: st.verdict.R, Rf: st.verdict.Rf } : null, overlayTracked: !!st.overlayTracked, cursor: st.cur ? { support: st.cur.support, over: st.cur.over, last: st.cur.last } : null, morphing: !!st.morph, rigNow: st.rig ? { type: st.rig.type, k: st.rig.type === 'display' && st.eyeK > 0 ? st.eyeK : 1, z: (st.rig.position ? st.rig.position.z : 0) * (st.rig.type === 'display' && st.eyeK > 0 ? st.eyeK : 1), vfov: st.rig.verticalFov, diopters: st.rig.convergenceDiopters, m2v: st.rig.metersToVirtual, ipd: st.rig.ipdFactor, par: st.rig.parallaxFactor, vdh: st.rig.virtualDisplayHeight * (st.rig.type === 'display' && st.eyeK > 0 ? st.eyeK : 1) } : null, glass: st.glass && st.glass.d > 0 ? { d: st.glass.d, lo: st.glass.lo, hi: st.glass.hi, n: st.glass.n, parts: st.glass.set ? st.glass.set.parts.length : 0, note: st.glass.set ? st.glass.set.note : null, list: st.glass.set ? st.glass.set.parts.map((p) => [p.name || '', p.k, +(+p.zlo).toFixed(1), +(+p.zhi).toFixed(1)]) : null } : null, openLatched: !!st.openLatched, openWhy: st.openWhy || null, anchor: st.anchor ? { ...st.anchor } : null, nearSurf: st.nearSurf || null, eyeShear: st.haveViews ? st.V.map((v) => [v.proj[8], v.proj[9]]) : null, eyeMid: st.haveViews ? [0, 1, 2].map((k) => (st.V[0].pose[12 + k] + st.V[1].pose[12 + k]) / 2) : null, rigScale: st.rigScale ? { ...st.rigScale } : null,
+          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via, verdict: st.verdict && st.verdict.done ? { ...st.verdict.done, R: st.verdict.R, Rf: st.verdict.Rf } : null, overlayTracked: !!st.overlayTracked, cursor: st.cur ? { support: st.cur.support, over: st.cur.over, last: st.cur.last } : null, morphing: !!st.morph, rigNow: st.rig ? { type: st.rig.type, k: st.rig.type === 'display' && st.eyeK > 0 ? st.eyeK : 1, z: (st.rig.position ? st.rig.position.z : 0) * (st.rig.type === 'display' && st.eyeK > 0 ? st.eyeK : 1), vfov: st.rig.verticalFov, diopters: st.rig.convergenceDiopters, m2v: st.rig.metersToVirtual, ipd: st.rig.ipdFactor, par: st.rig.parallaxFactor, ipd: st.rig.ipdFactor, fov: st.rig.verticalFov, m2v: st.rig.metersToVirtual, vdh: st.rig.virtualDisplayHeight * (st.rig.type === 'display' && st.eyeK > 0 ? st.eyeK : 1) } : null, glass: st.glass && st.glass.d > 0 ? { d: st.glass.d, lo: st.glass.lo, hi: st.glass.hi, n: st.glass.n, parts: st.glass.set ? st.glass.set.parts.length : 0, note: st.glass.set ? st.glass.set.note : null, list: st.glass.set ? st.glass.set.parts.map((p) => [p.name || '', p.k, +(+p.zlo).toFixed(1), +(+p.zhi).toFixed(1)]) : null } : null, openLatched: !!st.openLatched, openWhy: st.openWhy || null, anchor: st.anchor ? { ...st.anchor } : null, nearSurf: st.nearSurf || null, eyeShear: st.haveViews ? st.V.map((v) => [v.proj[8], v.proj[9]]) : null, eyeMid: st.haveViews ? [0, 1, 2].map((k) => (st.V[0].pose[12 + k] + st.V[1].pose[12 + k]) / 2) : null, rigScale: st.rigScale ? { ...st.rigScale } : null,
           rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing, lifted: st.lifted || null,
           pivot: st.piv ? { t: [...st.piv.t], c: [...st.piv.c], d: st.piv.d } : null,
           eyeAt: st.eyeAt ? Array.from(st.eyeAt) : null, // eye 0's world position, as last composed by the adapter
-          rampK: st.active ? rampK(st) : null, ramping: !!st.ramp, drawnAt: st.drawnAt || null,
+          occl: st.occl ? { n: st.occl.els.length, ms: Math.round(now() - st.occl.t0) } : null, occlTries: st.occlTries || 0, nextTryIn: isFinite(st.nextTry) ? Math.round(st.nextTry - now()) : null, pending: !!st.pending, ops: (st.idleOps || st.lastOps || (st.frame && st.frame.ops) || []).map((op) => (op[0] === 'clear' ? ['clear', op[1], op[2], op[3]] : { cam: op[2] && op[2].type, fov: op[2] && op[2].fov, stereo: !!op[3], post: !!op[4], chain: !!op[5], ac: op.draw && op.draw.ac, bg: op.draw ? (op.draw.bg ? (op.draw.bg.isColor ? 'color' : 'other') : null) : undefined, layers: op.draw && op.draw.layers, view: op.draw && op.draw.view })), rampK: st.active ? rampK(st) : null, ramping: !!st.ramp, drawnAt: st.drawnAt || null,
           why: st.lastWhy, flatReason: st.flatReason, stats: { ...st.stats },
           ...(d.extra || {}),
         });
@@ -2569,14 +2639,17 @@ function dxrThree(core) {
     if (seenCommon.has(r)) return;
     seenCommon.add(r);
     if (!(r.domElement instanceof HTMLCanvasElement)) { warnOnce('webgpu', 'WebGPURenderer seen (no canvas element) — not converted, left 2D'); return; }
-    const rev = parseInt(revision, 10);
+    const rev = revision == null ? null : parseInt(revision, 10);
+    const tag = rev == null ? 'r? (revision not announced)' : `r${rev}`;
     const miss = missingHooks(r);
     let why = null;
-    if (!(rev >= GPU_MIN)) why = `WebGPURenderer r${revision || '?'} — the driver needs r${GPU_MIN} or later`;
-    else if (miss.length) why = `WebGPURenderer r${rev} without what the driver uses: ${miss.join(', ')}`;
+    if (rev == null && core.T.gpuUnannounced !== true) why = 'WebGPURenderer with no revision announced (the build dropped the register event of three)';
+    else if (rev != null && !(rev >= GPU_MIN)) why = `WebGPURenderer r${revision} — the driver needs r${GPU_MIN} or later`;
+    else if (miss.length) why = `WebGPURenderer ${tag} without what the driver uses: ${miss.join(', ')}`;
     if (why) { core.noteFlat('three.js', r.domElement, why); return; }
     const verified = core.T.gpuVerified || GPU_VERIFIED;
-    if (rev > verified) warnOnce('webgpu-rev', `WebGPURenderer r${rev} is newer than the last verified r${verified}; converting (every hook the driver uses is present)`);
+    if (rev == null) warnOnce('webgpu-rev', `WebGPURenderer ${tag}: the page's build dropped three's register event; converting (every hook the driver uses is present)`);
+    else if (rev > verified) warnOnce('webgpu-rev', `WebGPURenderer r${rev} is newer than the last verified r${verified}; converting (every hook the driver uses is present)`);
     track(r, true);
   }
   const onRegister = (e) => { if (core.retired) return; if (e && e.detail && e.detail.revision) revision = e.detail.revision; };
@@ -2657,14 +2730,14 @@ function dxrThree(core) {
     },
     firstDraw(st) {
       if (st.idleOps) {
-        const ops = st.idleOps.map((op) => (op[0] === 'clear' ? op : ['render', op[1], op[2], isMainPerspective(st, op[2]), false, st.chainQuads.has(op[1])]));
+        const ops = st.idleOps.map((op) => (op[0] === 'clear' ? op : carryDraw(op, ['render', op[1], op[2], isMainPerspective(st, op[2]), false, st.chainQuads.has(op[1])])));
         st.idleOps = null;
         replay(st, ops);
         st.lastOps = ops;
         return;
       }
       if (st.postfx && st.monoOps && st.monoOps.length) {
-        const ops = st.monoOps.map((op) => (op[0] === 'clear' ? op : ['render', op[1], op[2], false]));
+        const ops = st.monoOps.map((op) => (op[0] === 'clear' ? op : carryDraw(op, ['render', op[1], op[2], false])));
         replay(st, ops);
         st.lastOps = ops;
         return;
@@ -2680,8 +2753,13 @@ function dxrThree(core) {
       st.lastOps = [['render', st.lastScene, st.mainCam, true]];
     },
     redraw(st) {
+      paintMark();
       if (st.frame.drew) st.lastOps = st.frame.ops.length <= 32 ? st.frame.ops : null;
-      else if (st.lastOps) replay(st, st.lastOps);
+      else {
+        const k = st.tick;
+        if (k && k.ops.length && k.ops.length <= 32 && k.stamp !== frameStamp() && core.T.replayByFrame !== false) { st.lastOps = k.ops; st.tick = null; }
+        if (st.lastOps) replay(st, st.lastOps);
+      }
       st.frame = { drew: false, ops: [] };
     },
     coverAfterDraw: true,
@@ -2704,7 +2782,7 @@ function dxrThree(core) {
     },
     restore(st, wasLive) {
       const last = st.lastOps;
-      st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null;
+      st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null; st.tick = null;
       disposeChain(st);
       core.unvirtualizeCanvas(st);
       if (wasLive) {
@@ -2902,7 +2980,7 @@ function dxrThree(core) {
       if (!top() || rt !== null) return st.call('clear', color, depth, stencil);
       if (!st.active) { recordMono(st, ['clear', color, depth, stencil]); return st.call('clear', color, depth, stencil); }
       st.frame.drew = true;
-      st.frame.ops.push(['clear', color, depth, stencil]);
+      pushOp(st, ['clear', color, depth, stencil]);
       forEyes(st, () => st.call('clear', color, depth, stencil));
     });
     W('render', (scene, camera) => {
@@ -2915,17 +2993,19 @@ function dxrThree(core) {
       const toScreen = target === null;
       const xrLive = !!(r.xr && r.xr.enabled && r.xr.isPresenting);
       if (!st.active) {
-        const before = st.r.info && st.r.info.autoReset === false ? drawnSoFar(st) : 0;
+        const before = drawnSoFar(st);
         const out = st.call('render', scene, camera);
         if (!toScreen && !xrLive) {
           const why = seedWhy(st, target, camera);
-          if (why === null) markSeed(st, scene, camera, target, drawnSoFar(st) - before);
+          if (why === null) markSeed(st, scene, camera, target, drawnSince(st, before));
           else if (why) noteSeedMiss(st, why);
         }
         if (toScreen && !xrLive) {
-          recordMono(st, ['render', scene, camera]);
+          recordMono(st, snapDraw(st, ['render', scene, camera], scene, camera));
           const persp = camera.isPerspectiveCamera && !camera.isArrayCamera;
-          if (persp) {
+          const overlay = persp && overlayDraw(st, drawnSince(st, before));
+          if (overlay) { /* a bigger perspective draw in this task is the scene: keep it */ }
+          else if (persp) {
             if (st.seedTask) st.seedTask.direct = true; // the scene also went straight to the screen: not a composer
             st.lastMono = { scene, camera }; st.sawPersp = true;
             hookLookAt(camera); // fallback for a page that built no Scene before its camera (rare)
@@ -2961,9 +3041,9 @@ function dxrThree(core) {
         if (st.postfx) {
           if (isSeed(st, target, camera)) {
             st.mainCam = camera; st.chainStereo = st.haveViews;
-            const before = st.r.info && st.r.info.autoReset === false ? drawnSoFar(st) : 0;
+            const before = drawnSoFar(st);
             const out = renderIntoChain(st, scene, camera, target, true);
-            markSeed(st, scene, camera, target, drawnSoFar(st) - before);
+            markSeed(st, scene, camera, target, drawnSince(st, before));
             st.lastScene = st.seedTask.main.scene;
             return out;
           }
@@ -2973,20 +3053,20 @@ function dxrThree(core) {
       }
       st.frame.drew = true;
       if (st.gpuChain && st.chainQuads.has(scene)) {
-        st.frame.ops.push(['render', scene, camera, false, false, true]);
+        pushOp(st, ['render', scene, camera, false, false, true]);
         const out = renderGpuChain(st, scene, camera);
         takeCover(st);
         return out;
       }
       if (st.postfx && !isMainPerspective(st, camera) && taintedSwaps(st, scene)) {
-        st.frame.ops.push(['render', scene, camera, false, true]);
+        pushOp(st, snapDraw(st, ['render', scene, camera, false, true], scene, camera));
         const out = renderPostScreen(st, scene, camera);
         takeCover(st);
         return out;
       }
       const stereo = isMainPerspective(st, camera);
-      st.frame.ops.push(['render', scene, camera, stereo]);
-      const out = stereo ? renderStereo(st, scene, camera) : renderFlat(st, scene, camera);
+      pushOp(st, snapDraw(st, ['render', scene, camera, stereo], scene, camera));
+      const out = stereo ? renderStereo(st, scene, camera, st.frame.main || (st.frame.main = { drawn: -1 })) : renderFlat(st, scene, camera);
       if (stereo) takeCover(st); // after the scene draw, never after a background/HUD pass alone
       if (st.common && !stereo && st.nestPersp && st.nestPersp.camera === st.mainCam) {
         const why = gpuChainWhy(st);
@@ -3115,6 +3195,60 @@ function dxrThree(core) {
     if (st.gpuTemporal) { const why = whyUnsplit(st.gpuTemporal); gpuPostfx(st, why); core.stand(st, why); }
     core.drew(st);
   }
+  function snapDraw(st, op, scene, camera) {
+    const r = st.r;
+    const L = st.L;
+    op.draw = { ac: [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil], bg: scene.background, layers: camera.layers ? camera.layers.mask : undefined,
+      view: L && L.vp && L.sc && L.w > 0 && L.h > 0 ? { vp: L.vp.slice(), sc: L.sc.slice(), scTest: !!L.scTest, w: L.w, h: L.h } : null };
+    return op;
+  }
+  const carryDraw = (from, to) => { if (from.draw) to.draw = from.draw; return to; };
+  function withDraw(st, op, fn) {
+    const d = op.draw;
+    if (!d) return fn();
+    const r = st.r, scene = op[1], camera = op[2];
+    const L = st.L;
+    const was = { ac: [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil], bg: scene.background, layers: camera.layers ? camera.layers.mask : undefined,
+      view: d.view && L && L.vp && L.sc ? { vp: L.vp, sc: L.sc, scTest: !!L.scTest, w: L.w, h: L.h } : null };
+    const put = (v) => {
+      [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil] = v.ac;
+      if (scene.background !== v.bg) scene.background = v.bg;
+      if (camera.layers && v.layers !== undefined) camera.layers.mask = v.layers;
+      const V = v.view;
+      if (V && was.view && core.T.replayViewport !== false) {
+        const kx = L.w / V.w, ky = L.h / V.h, sc4 = (a) => [a[0] * kx, a[1] * ky, a[2] * kx, a[3] * ky];
+        L.vp = v === was ? V.vp : sc4(V.vp); L.sc = v === was ? V.sc : sc4(V.sc); L.scTest = V.scTest;
+        if (!st.active) { st.call('setViewport', ...L.vp); st.call('setScissor', ...L.sc); st.call('setScissorTest', L.scTest); } // mono: the renderer's own
+      }
+    };
+    put(d);
+    try { return fn(); } finally { put(was); }
+  }
+  function overlayDraw(st, drawn) {
+    const t = st.perspTask;
+    if (t) { if (drawn <= t.drawn) return true; t.drawn = drawn; return false; }
+    st.perspTask = { drawn };
+    queueMicrotask(() => { st.perspTask = null; });
+    return false;
+  }
+  let paintGroup = 1, paintPosted = false, paintChan = null;
+  function paintMark() {
+    if (paintPosted) return;
+    paintPosted = true;
+    const done = () => { paintPosted = false; paintGroup++; };
+    try {
+      if (!paintChan && typeof MessageChannel === 'function') { paintChan = new MessageChannel(); paintChan.port1.onmessage = () => paintChan.cb && paintChan.cb(); }
+      if (paintChan) { paintChan.cb = done; paintChan.port2.postMessage(0); } else setTimeout(done, 0);
+    } catch (e) { setTimeout(done, 0); }
+  }
+  const frameStamp = () => paintGroup;
+  function pushOp(st, op) {
+    st.frame.ops.push(op);
+    const ts = frameStamp();
+    if (ts == null) { st.tick = null; return; }
+    if (!st.tick || st.tick.stamp !== ts) st.tick = { stamp: ts, ops: [] };
+    st.tick.ops.push(op);
+  }
   function recordMono(st, op) {
     if (!st.monoOpen) {
       st.monoOpen = true;
@@ -3127,7 +3261,7 @@ function dxrThree(core) {
     const prevRT = st.call('getRenderTarget');
     if (prevRT !== null) st.call('setRenderTarget', null);
     try {
-      for (const op of ops) { if (op[0] === 'clear') st.call('clear', op[1], op[2], op[3]); else st.call('render', op[1], op[2]); }
+      for (const op of ops) { if (op[0] === 'clear') st.call('clear', op[1], op[2], op[3]); else withDraw(st, op, () => st.call('render', op[1], op[2])); }
     } finally { if (prevRT !== null) st.call('setRenderTarget', prevRT); }
   }
 
@@ -3252,8 +3386,9 @@ function dxrThree(core) {
       o.onBeforeRender = function () { sparkIn++; try { return f.apply(this, arguments); } finally { sparkIn--; } };
     }
   }
-  function renderStereo(st, scene, camera) {
-    st.mainCam = camera; st.lastScene = scene;
+  function renderStereo(st, scene, camera, fm = null) {
+    const before = fm ? drawnSoFar(st) : 0;
+    if (!fm || fm.drawn < 0) { st.mainCam = camera; st.lastScene = scene; }
     hookSpark(st, scene);
     if (!st.haveViews) { // no eyes yet: flat into both halves, never a blank tile
       if (st.stats.twoView > 0) st.stats.flatAfterEyes++;
@@ -3292,6 +3427,10 @@ function dxrThree(core) {
       if (sm) sm.autoUpdate = smAuto;
       st.call('setScissorTest', false);
     }
+    if (fm) { // eye 1's own count (WebGLRenderer, autoReset), or both eyes' (accumulating): one measure per frame
+      const d = drawnSince(st, before);
+      if (d > fm.drawn) { fm.drawn = d; st.mainCam = camera; st.lastScene = scene; }
+    }
     st.stats.stereo++;
     core.drew(st);
   }
@@ -3325,12 +3464,13 @@ function dxrThree(core) {
     if (prevRT !== null) st.call('setRenderTarget', null);
     let drew = false;
     try {
+      const fm = { drawn: -1 }; // the replayed frame's scene: its largest stereo draw (renderStereo)
       for (const op of ops) {
         if (op[0] === 'clear') forEyes(st, () => st.call('clear', op[1], op[2], op[3]));
-        else if (op[5]) renderGpuChain(st, op[1], op[2]);
-        else if (op[4]) renderPostScreen(st, op[1], op[2]);
-        else if (op[3]) renderStereo(st, op[1], op[2]);
-        else renderFlat(st, op[1], op[2]);
+        else if (op[5]) withDraw(st, op, () => renderGpuChain(st, op[1], op[2]));
+        else if (op[4]) withDraw(st, op, () => renderPostScreen(st, op[1], op[2]));
+        else if (op[3]) withDraw(st, op, () => renderStereo(st, op[1], op[2], fm));
+        else withDraw(st, op, () => renderFlat(st, op[1], op[2]));
       }
       st.stats.replays++;
       drew = true;
@@ -3390,6 +3530,11 @@ function dxrThree(core) {
     if (sd.toScreen && st.mirrorX !== undefined && !st.active && !st.pending && !st.armed) { st.qualifyCam = sd.main.camera; core.considerActivation(st); }
   }
   const drawnSoFar = (st) => { const ri = st.r.info && st.r.info.render; return ri ? (ri.triangles || 0) + (ri.points || 0) + (ri.lines || 0) : 0; };
+  function drawnSince(st, before) {
+    const a = drawnSoFar(st), info = st.r.info;
+    if (!(st.common || (info && info.autoReset === false))) return a;
+    return a >= before ? a - before : a;
+  }
   function noteSeedMiss(st, why) {
     if (st.seedMiss === null) queueMicrotask(() => { st.seedMiss = null; });
     st.seedMiss = why;

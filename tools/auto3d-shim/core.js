@@ -71,6 +71,7 @@ function dxrCore(cfg, cap, S) {
     scaleSamples: 3,    // the rig's scale (m2v) is set ONCE per activation (v0.7.11): from this many consecutive estimator samples ...
     scaleSpread: 0.1,   // ... within this fraction of their median, on a quiet page (no resource for guardLoadQuietMs) ...
     scaleMaxWaitMs: 8000, // ... or from what there is this long after the flip (a page that never stops loading). Flat until then.
+    scaleLoadMaxMs: 45000, // ... but with NO estimate yet on a page still loading (a model streaming in), wait up to this long instead
     // OPEN scenes (no target, and every sampled bound holds the camera: a room-scale splat world, a
     // sky + floor). David's call, 2026-09-28: no dynamic convergence; a FIXED focus, as legacy WebXR.
     openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
@@ -112,6 +113,7 @@ function dxrCore(cfg, cap, S) {
     targetDrift: 0.05,   // the target may move at most this x its distance while we watch
     cursorDepth: true,   // the 3D cursor (cursorTick): report the depth under the pointer where the browser draws its cursor at depth
     zoomLocal: true,     // display rig: the portal distance is applied to the located eyes in the frame the page camera moves (eyeScale); false: through the rig, three frames late
+    flatMorph: true,     // display rig: the depth fade (rampK) is also the MORPH to the page's own camera, so flat IS the page's 2D picture (rigFlatten); false: flat = the portal seen from the nominal viewer (0.8.2)
     glassMetric: 'radial', morphMs: 700,        // a rig change after go-live is a MORPH of this length (rigMorph); 0: a cut
     overlayEveryFrames: 30, // page elements over the canvas that move with the camera (hotspots, labels): looked for this often
     glassFront: 1 / 3,   // the share of the core's DEPTH RANGE in front of the glass ...
@@ -139,6 +141,8 @@ function dxrCore(cfg, cap, S) {
     glLimit: 0,         // TEST ONLY: > 0 stands in for the surface's size limit (WebGL or WebGPU) in realSizeFor
     gpuDepthRange: true, // TEST ONLY (A/B): false hands a WebGPU engine the runtime's GL-clip projection as is (no surface.toClip)
     gpuVerified: null,   // TEST ONLY: overrides three-adapter's GPU_VERIFIED (case three-webgpu-newer: a revision above it still converts, with the note)
+    gpuUnannounced: false, // a WebGPURenderer whose build never announces its revision: true converts it on the driver's hooks alone (v0.8.3: off, see three-adapter)
+    replayViewport: true, replayByFrame: true, // idle replays: each pass with the viewport it ran with; the page's last paint, in its own order
     gpuClearFix: true,   // TEST ONLY (A/B): false draws three's WebGPURenderer eye pair on its direct (no frame-buffer target) path without the eye-1 clear fix (three-adapter eyeBegin)
     pcFootprint: true,  // TEST ONLY (A/B): false leaves the PlayCanvas gsplat footprint shaders (GLSL and WGSL) unpatched
     pcPostEffects: true, // TEST ONLY (A/B): false keeps a PlayCanvas camera with legacy post effects (camera.postEffects) 2D; 'unsplit' converts it with ONE chain over the pair (v0.7.9 runs the chain per eye)
@@ -408,6 +412,43 @@ function dxrCore(cfg, cap, S) {
     return st.surf;
   }
 
+  // The page's elements in front of the canvas (hit order) at its centre and quarter points; ours
+  // (cover, chip, HUD) left out.
+  function overCanvas(canvas) {
+    const chain = new Set(), out = new Set();
+    for (let n = canvas; n; n = n.parentNode || n.host) chain.add(n);
+    let r = null;
+    try { r = canvas.getBoundingClientRect(); } catch (e) { return []; }
+    for (const [fx, fy] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+      let L = [];
+      try { L = document.elementsFromPoint(r.left + r.width * fx, r.top + r.height * fy); } catch (e) { L = []; }
+      for (const e of L) {
+        if (chain.has(e)) break;
+        let ours = false;
+        try { for (const at of e.attributes) if (at.name.startsWith('data-dxr-auto3d')) { ours = true; break; } } catch (e2) { ours = false; }
+        if (!ours) out.add(e);
+      }
+    }
+    return [...out];
+  }
+  // After a canvas the browser would not weave: watch the elements that lay over it, and try again when
+  // one of them is no longer there (on a timer: the page may not be drawing). At most 4 times per
+  // canvas, for 2 minutes each.
+  function waitUncovered(st, els) {
+    if (st.occl) clearInterval(st.occl.id);
+    st.occlTries = (st.occlTries || 0) + 1;
+    if (st.occlTries > 4) { st.occl = null; return; }
+    const o = (st.occl = { els, id: 0, t0: now() });
+    o.id = setInterval(() => {
+      if (st.occl !== o) { clearInterval(o.id); return; }
+      const cur = new Set(overCanvas(st.canvas));
+      const gone = o.els.some((e) => !cur.has(e));
+      if (!gone && now() - o.t0 < 120000) return;
+      clearInterval(o.id); st.occl = null;
+      if (gone && on() && !owner && !st.active && !st.pending) { info(`the canvas is uncovered: trying 3D again on ${desc(st.canvas)}`); st.nextTry = 0; st.tries = 0; wake(st); }
+    }, 500);
+  }
+
   // ------------------------------------------------------------ activation
   function considerActivation(st) {
     const t = now();
@@ -675,7 +716,17 @@ function dxrCore(cfg, cap, S) {
     info('auto-3D', on() ? 'ON' : 'OFF', 'for', location.origin);
     if (!on() && owner) turnOff(owner, 'turned off for this site');
     if (on() && owner) owner.offTok = null; // a turn-off still fading / covering out does not stand any more
-    if (on() && owner && owner.active && owner.ramp && owner.ramp.to === 0) startRamp(owner, 1); // turned back on mid-fade: fade back up
+    // Turned back on mid-fade: fade back up. Also once the fade has ENDED and the swap has not been made
+    // yet (a render-on-demand page waits up to a second for a draw to take the out-cover from): with
+    // the turn-off cancelled above, nothing else would bring the depth back (it stayed flat, v0.8.2).
+    // And once the out-cover is up with the swap still to come (two frames and an image decode; long
+    // on a slow page): the cover goes, a cut between two identical flat pictures, and the depth returns
+    // (it stayed flat under the still for good, panel 2026-11-28).
+    if (on() && owner && owner.active && !owner.releasing) {
+      if (owner.cover && owner.cover.out) dropCover(owner);
+      if (!owner.cover && !owner.coverForced &&
+          ((owner.ramp && owner.ramp.to === 0) || (!owner.ramp && owner.rigScale && rampK(owner) < 1))) { owner.outCoverDue = null; startRamp(owner, 1); }
+    }
     if (on()) {
       // A render-on-demand page draws nothing until input, so nothing would ever reach
       // considerActivation: ask each adapter for one frame (finding 1 of the first panel run).
@@ -927,7 +978,9 @@ function dxrCore(cfg, cap, S) {
   // from the rig that was showing to the active mode's (rigMorph).
   function buildRig(st, verticalFov) {
     const r = buildRigMode(st, verticalFov, rigMode());
-    return st.morph ? rigMorph(st, r) : ((st.anchorW = 1), r);
+    if (st.morph) return rigMorph(st, r);
+    st.anchorW = 1;
+    return r.type === 'display' ? rigFlatten(st, r, verticalFov) : r;
   }
   // ONE RIG PER PAGE (David 2026-11-27: "we don't want those rig transitions in the middle of the
   // experience"). A page decided a simple object keeps the display rig whatever its controls do (orbit,
@@ -980,7 +1033,8 @@ function dxrCore(cfg, cap, S) {
       // distance is applied to the located eyes when the adapter composes them (eyeScale): the same
       // views, in the frame the camera moved. The projections do not depend on d.
       let dq = dp;
-      if (dg > 0 && T.zoomLocal !== false) { if (st.morph || !(st.dp0 > 0)) st.dp0 = dp; dq = st.dp0; } else st.dp0 = 0;
+      st.dpLive = dp;
+      if (dg > 0 && T.zoomLocal !== false) { if (st.morph || k < 1 || !(st.dp0 > 0)) st.dp0 = dp; dq = st.dp0; } else st.dp0 = 0;
       r.position.x = r.position.y = 0; r.position.z = -dq;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
       r.virtualDisplayHeight = 2 * dq * Math.tan(verticalFov / 2);
@@ -1065,11 +1119,17 @@ function dxrCore(cfg, cap, S) {
       const t = now(), xs = W.xs.slice().sort((a, b) => a - b), med = xs.length ? xs[xs.length >> 1] : 0;
       const consistent = xs.length >= T.scaleSamples && med > 0 && xs[xs.length - 1] - xs[0] <= T.scaleSpread * med;
       const quiet = !(guard.loading && guard.loading(t));
-      const late = t - W.t0 >= T.scaleMaxWaitMs; // from this activation's first estimate (the flip)
+      // No real estimate yet, on a page still loading or with nothing in view yet (its model is
+      // streaming in): wait for one, up to T.scaleLoadMaxMs, rather than freezing a guess for the
+      // whole activation (lepoly.com: 20 s+ to its first mesh, through one long request the loading
+      // test does not see). The rig stays flat meanwhile, as before any decision; with nothing in
+      // view, flat costs nothing visible.
+      const waitMs = med > 0 || (quiet && st.inView > 0) ? T.scaleMaxWaitMs : Math.max(T.scaleMaxWaitMs, +T.scaleLoadMaxMs || 0);
+      const late = t - W.t0 >= waitMs; // from this activation's first estimate (the flip)
       if (!(consistent && quiet) && !late) return;
       if (T.strictObject !== false && site.rigChoice === 'auto' && src === 'estimator' && !st.openLatched && !late && !objectVerdict(st)) return;
-      const d = med > 0 ? med : st.conv.d || 1;
-      st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(T.scaleMaxWaitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
+      const d = med > 0 ? med : st.conv.d > 0 && isFinite(st.conv.d) ? st.conv.d : 1;
+      st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(waitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
     }
     decideAutoRig(st, src);
     info(`scale set: ${scaleText(st, st.rigScale)} (${st.rigScale.basis}; distance ${st.rigScale.d.toPrecision(3)} units)`);
@@ -1479,6 +1539,11 @@ function dxrCore(cfg, cap, S) {
     const u0 = T.morphMs > 0 ? clamp((now() - M.t0) / T.morphMs, 0, 1) : 1;
     if (!I || u0 >= 1) { st.morph = null; st.anchorW = 1; return target; }
     const u = u0 * u0 * (3 - 2 * u0), a = M.from, b = cameraForm(target, target.type === 'camera' ? 1 : 0, I);
+    const c = (M.at = blendForm(a, b, u));
+    return declareForm(st, c, Math.max(c.e, c.q, 1e-9));
+  }
+  // Two rigs in camera form, a fraction u of the way from a to b.
+  function blendForm(a, b, u) {
     const lerp = (x, y) => x + (y - x) * u;
     const c = { z: lerp(a.z, b.z), tanV: Math.tan(lerp(Math.atan(a.tanV), Math.atan(b.tanV))), invd: lerp(a.invd, b.invd), e: lerp(a.e, b.e), q: lerp(a.q, b.q), w: lerp(a.w, b.w) };
     // A DOLLY ZOOM, not two independent moves (panel 2026-11-27: with z and the angle each on its own
@@ -1490,15 +1555,36 @@ function dxrCore(cfg, cap, S) {
     // The convergence plane moves in diopters as seen from the PAGE camera (not from the moving one).
     const pa = a.invd > 0 ? 1 / a.invd - a.z : 0, pb = b.invd > 0 ? 1 / b.invd - b.z : 0;
     if (pa > 0 && pb > 0) { const pc = 1 / lerp(1 / pa, 1 / pb); if (pc + c.z > 1e-9) c.invd = 1 / (pc + c.z); }
-    M.at = c;
+    return c;
+  }
+  // A camera form declared as the rig. The scale m goes in metersToVirtual so that both factors stay
+  // within [0, 1].
+  function declareForm(st, c, m) {
     const r = st.rigs.morph || (st.rigs.morph = { type: 'camera', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } });
-    // The scale goes in metersToVirtual so that both factors stay within [0, 1].
-    const m = Math.max(c.e, c.q, 1e-9);
     r.position.z = c.z; r.verticalFov = 2 * Math.atan(c.tanV); r.convergenceDiopters = c.invd;
-    r.metersToVirtual = m; r.ipdFactor = c.e / m; r.parallaxFactor = c.q / m;
+    r.metersToVirtual = m; r.ipdFactor = clamp(c.e / m, 0, 1); r.parallaxFactor = clamp(c.q / m, 0, 1);
     st.anchorW = c.w;
     st.rig = r;
     return r;
+  }
+  // FLAT IS THE PAGE (T.flatMorph, v0.8.3; David 2026-11-27: "3D loses depth, once flat switch to 2D,
+  // and conversely", and 2D is the page's own picture). A display rig with its factors at 0 is not the
+  // page's picture: it is the portal seen from the nominal viewer, with the display's field of view,
+  // and only the glass plane agrees with the page (everything off the glass jumped when the lens
+  // switched). So on the display rig the depth fade is ALSO the dolly zoom to the page's own camera:
+  // at rampK 1 the display rig as declared, at 0 the page camera itself (both eyes on it, its field of
+  // view), and between them the same family in camera form (blendForm), the glass plane keeping its
+  // size. The 2D -> 3D fade in is the same move backwards. Without the panel size and the nominal
+  // viewer (rigDisplayInfo) the display rig is faded by its factors alone, as before.
+  function rigFlatten(st, r, verticalFov) {
+    const k = st.rigScale ? rampK(st) : 0, dp = st.dpLive;
+    if (k >= 1 || T.flatMorph === false || !(dp > 0)) return r;
+    const I = rigDisplayInfo(st);
+    if (!I) return r;
+    const dep = depthOf('display'), tv = Math.tan(verticalFov / 2);
+    const a = cameraForm({ type: 'display', position: { z: -dp }, virtualDisplayHeight: 2 * dp * tv, perspectiveFactor: 1, ipdFactor: dep, parallaxFactor: dep }, 0, I);
+    const c = blendForm({ z: 0, tanV: tv, invd: 1 / dp, e: 0, q: 0, w: 1 }, a, clamp(k, 0, 1));
+    return declareForm(st, c, Math.max(a.e, a.q, 1e-9));
   }
 
   // ------------------------------------------------------------ the core glass (v0.8.0)
@@ -1941,6 +2027,16 @@ function dxrCore(cfg, cap, S) {
   // 30 frames as the viewer walked: the depth kept changing on the panel. The page's explicit target
   // still wins over the latch, as over the open rule. (The 0.7.x rule 'a subject appearing in an open
   // scene takes over again' is gone with it.)
+  // Where a convergence may sit: inside the page camera's depth range (2 x near .. 0.9 x far). A page
+  // that fits near / far to its content's bounds has no usable range until the content exists:
+  // lepoly.com's camera reports far = -Infinity while its model streams in, which made every clamp
+  // -Infinity, and that became the convergence and then the frozen scale (m2v 1e-6: a flat rig for
+  // the whole activation). An unusable side (not finite, not positive, far <= near) bounds nothing.
+  function convRange(s) {
+    const n = s.near > 0 && isFinite(s.near) ? s.near : 0, f = s.far > n && isFinite(s.far) ? s.far : Infinity;
+    const lo = n * 2, hi = f * 0.9;
+    return hi > lo ? [lo, hi] : [0, Infinity];
+  }
   // Returns false when there was nothing to go on (targetOnly: no usable target).
   function estimateConvergence(st, snap, targetOnly) {
     const s = st.ad.sampler(st);
@@ -1952,6 +2048,7 @@ function dxrCore(cfg, cap, S) {
       const o = {};
       d = st.openLatched ? 0 : estimateSubjectDistance(s, o);
       raw = d > 0 && isFinite(d) ? d : 0; // a real estimate (not the fallback below)
+      st.inView = st.openLatched ? -1 : o.inView | 0; // setScaleOnce: nothing in view yet = keep waiting
       if (!st.openLatched) {
         if (o.near > 0) st.nearSurf = o.near; // the nearest surface in view (anchorEyes' lean clamp)
         if (o.extent > 0) st.sceneExtent = o.extent; // the bounded items' size (walkTick's scale)
@@ -1968,12 +2065,14 @@ function dxrCore(cfg, cap, S) {
           st.scaleWarned = true;
           info(`open scene: the ${Math.round(clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95) * 100)}th-percentile depth in view is ${o.p.toPrecision(3)} units: the scene may not be metric; use Focus nearer / farther`);
         }
-      } else if (!(d > 0) || !isFinite(d)) d = st.conv.d || Math.max(s.near * 50, 1);
+      } else if (!(d > 0) || !isFinite(d)) d = st.conv.d > 0 && isFinite(st.conv.d) ? st.conv.d : Math.max((s.near > 0 && isFinite(s.near) ? s.near : 0) * 50, 1);
     }
-    // Kept inside the page's clip range, except the FIXED focus: it is a distance in front of the viewer,
-    // not a point of the scene, and a page that moves its far plane about (the supersplat viewer in fly
-    // mode had far 0.01 for a moment: the focus read 0.009 units, panel 2026-11-27) must not drag it.
-    d = src === 'fixed' || !(s.far * 0.9 > s.near * 2) ? Math.max(d, s.near * 2) : clamp(d, s.near * 2, s.far * 0.9);
+    // Kept inside the page's clip range (convRange: only on the sides that are usable), except the FIXED
+    // focus: it is a distance in front of the viewer, not a point of the scene, and a page that moves
+    // its far plane about (the supersplat viewer in fly mode had far 0.01 for a moment: the focus read
+    // 0.009 units, panel 2026-11-27) must not drag it.
+    const [lo, hi] = convRange(s);
+    d = src === 'fixed' ? Math.max(d, lo) : clamp(d, lo, hi);
     // Eased: a convergence that snaps pulls the whole scene through the glass in one frame. The
     // fixed focus is constant and snaps (entering it changes the rig's scale in the same frame anyway).
     // The page's own target is exact, and the page's controls are the only thing that moves it: followed
@@ -1982,7 +2081,7 @@ function dxrCore(cfg, cap, S) {
     st.conv.d = snap || !st.conv.d || src === 'fixed' || (src === 'target' && st.conv.src === 'target') ? d : st.conv.d + (d - st.conv.d) * 0.25;
     const was = st.conv.src;
     st.conv.src = src;
-    setScaleOnce(st, src, clamp(raw, s.near * 2, s.far * 0.9) || 0);
+    setScaleOnce(st, src, raw > 0 ? clamp(raw, lo, hi) : 0);
     if (was !== src && st.active) notify(); // the chip shows the source ('fixed')
     if (st.active && st.convLogged) settleLog(st);
     return true;
@@ -2018,7 +2117,8 @@ function dxrCore(cfg, cap, S) {
     const vx = vm[0] * t.x + vm[4] * t.y + vm[8] * t.z + vm[12];
     const vy = vm[1] * t.x + vm[5] * t.y + vm[9] * t.z + vm[13];
     const z = -(vm[2] * t.x + vm[6] * t.y + vm[10] * t.z + vm[14]);
-    if (!(z > s.near * 2) || !(z < s.far * 0.9)) return 0;
+    const [lo, hi] = convRange(s);
+    if (!(z > lo) || !(z < hi)) return 0;
     const tanV = s.tanHalfFov !== undefined ? s.tanHalfFov : Math.tan(s.verticalFov / 2);
     if (Math.hypot(vx, vy) / z > 0.25 * tanV) return 0;
     st.conv.via = t.via || null;
@@ -2111,6 +2211,7 @@ function dxrCore(cfg, cap, S) {
       return true;
     });
     if (out) {
+      out.inView = items.length; // what the estimate had to go on (0: nothing in view yet)
       // The nearest surface in view (bounding spheres: conservative), and the bounded items' size.
       let nr = Infinity;
       for (const it of items) if (!it.v) nr = Math.min(nr, Math.max(it.z - it.r, near));
@@ -2294,8 +2395,14 @@ function dxrCore(cfg, cap, S) {
     // is the raw side-by-side store: go back to 2D instead (the store is mono again before the cover
     // goes), and leave the page alone for a while.
     if (!cv.out && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt >= T.coverMaxMs && ws !== null && !joined && st.stats.stereo > 0) {
-      info(`the browser did not weave the canvas within ${T.coverMaxMs} ms (it reports ${ws}): staying 2D`);
+      // Something of the page's over the canvas (a loading overlay: an opaque cover makes the compositor
+      // drop the canvas's quad, and the browser has nothing to join): try again as soon as it is gone,
+      // not in 30 s on a page that may have stopped drawing by then (an asset viewer that streams its
+      // model under a full-size overlay stayed 2D for good, panel 2026-11-28).
+      const over = T.waitUncovered === false ? [] : overCanvas(st.canvas);
+      info(`the browser did not weave the canvas within ${T.coverMaxMs} ms (it reports ${ws}): staying 2D` + (over.length ? `; ${over.length} page element(s) lie over the canvas (${desc(over[0])}), trying again when that changes` : ''));
       st.nextTry = now() + 30000;
+      if (over.length) waitUncovered(st, over);
       stand(st, `the browser did not weave the canvas (wovenState ${ws})`);
       return;
     }

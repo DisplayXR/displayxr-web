@@ -304,6 +304,8 @@ in 5 s is most likely a second browser instance, `XR_ERROR_LIMIT_REACHED`): the 
 outline pill with the tooltip *3D display not available to this window*, and the report is
 `{ status: 'flat', reason: 'no-display' }` (never `'live'`) until a two-view frame arrives.
 
+On the display rig the fade is also the morph to the page's camera, in both directions (v0.8.3, below: *flat is the page*).
+
 **3D → 2D (`Ctrl+Alt+3` off).** The depth fades out to `rampK` 0 first and holds two frames (a rig
 drives the NEXT locate). Then the **out-cover** goes over the canvas: one eye of that flat pair, which
 IS the mono picture. The mono draw and the layer release (mono first, release after, above) happen
@@ -331,6 +333,7 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 | render-on-demand (draws only on input) | **3D**, idle frames replayed |
 | reversed-depth renderer (`reversedDepthBuffer: true`) | **3D** (eye projection converted to reversed-Z) |
 | extra screen passes after the scene (HUD, overlay) | **3D** scene, flat overlay |
+| a second full-view perspective pass over the scene with a camera of its own, `autoClear` off and `scene.background` null for it, both restored after (lepoly.com's gizmo pass) | **3D** since v0.8.3: both passes per eye; the scene camera (the pass that drew the most) stays the page camera, and idle replays draw each pass with the `autoClear` flags, background and camera layer mask it ran with. Harness case `a-gizmo`. Before: replays ran the overlay with the restored `autoClear`, which cleared each eye (only the background showed), and its camera became the page camera (rig FOV, a convergence estimator that saw nothing) |
 | several viewports in one canvas | flat per viewport |
 | post-processing chain: the scene into a render target, full-screen passes, a final pass to the screen (EffectComposer, pmndrs postprocessing, a page's own) | **3D** through per-eye render-target twins (below). Harness case `e-postfx`; **not yet seen on the panel** |
 | a camera the page frames with `setViewOffset` and keeps (a lens shift, a crop zoom: `visual-learning.app/sandworm`, `/strandbeest`, `/robotic-bee`), through a chain or straight to the screen | **3D** since v0.6.3: the view window is carried into each eye's projection (see [view windows](#view-windows-setviewoffset-v063)). Harness cases `e-postfx-view0`, `e-postfx-shift`, `e-postfx-crop`, `e-direct-shift`. Before: a chain stayed 2D (`not converting … the screen camera is not a PerspectiveCamera`), and a direct draw converted but never drew a stereo frame |
@@ -343,6 +346,7 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 | the same, with a node that carries a history from frame to frame (`TRAANode`, `TAAUNode`, `AfterImageNode`, `RecurrentDenoiseNode`, `TemporalReprojectNode`) or makes its own stereo pair (`StereoPassNode`, `AnaglyphPassNode`, `ParallaxBarrierPassNode`, `StereoCompositePassNode`) | **2D**, reported `flat` with `WebGPU RenderPipeline with a node of type … — not split (…)`. Harness case `three-webgpu-chain-temporal` |
 | `WebGPURenderer` + the page's own chain of top-level `render()` calls into targets, then a quad to the screen | **2D**, reported `flat` with `WebGPU post chain drawn as top-level render() calls into targets — not split …` |
 | `WebGPURenderer` newer than the last verified revision (`GPU_VERIFIED`, r187) | **3D** since v0.7.3, with one console note (`WebGPURenderer r188 is newer than the last verified r187; converting …`), as long as every hook the driver uses is present. Through v0.7.2 a revision ceiling (r186) left every newer release 2D, which is how threejs.org's `webgpu_loader_gltf` went 2D when the examples moved to r187. Harness case `three-webgpu-newer` |
+| `WebGPURenderer` from a build that dropped three's module-level `register` event (tree-shaken side effects: lepoly.com, r187 through Vite / Rolldown), so no revision is ever known | **3D** since v0.8.3: the renderer still announces itself from its constructor, which three does from r178 on only, so it is gated on the hooks alone, with one console note (`WebGPURenderer r? (revision not announced): …; converting`). Harness case `three-webgpu-norev` (the test page's `?norev=1` drops the event). Before: 2D, `WebGPURenderer r? — the driver needs r178 or later` |
 | `WebGPURenderer` below r178 (never announced in practice), or one missing a hook the driver uses (the common `Renderer` API, `hasInitialized()` / `_initialized`, `needsFrameBufferTarget` / `_getFrameBufferTarget()`) | **2D**, reported `flat` with the reason, naming what is missing (`WebGPURenderer r190 without what the driver uses: …`). Nothing on the renderer or its canvas is touched. Harness cases `p-webgpu`, `p-webgpu-api` |
 | r104 and older, OffscreenCanvas / worker rendering | **2D** / not seen |
 | a second renderer in the same document | 2D (one converted canvas per document) |
@@ -1059,6 +1063,7 @@ dev build only.
 | `eyeAnchor` / `eyeLeanMax` | `true` / `0.5` | v0.7.12: the nominal viewer on the page camera (camera rig); the scaled head deviation clamped to this × the nearest surface in view (estimator / target scale) |
 | `openSceneMode` | `'fixed'` | open scenes (no target, the camera inside a world; latched, v0.7.11): `'fixed'` focus at real scale, or `'percentile'` (the 0.5.3 room rule) |
 | `scaleSamples` / `scaleSpread` / `scaleMaxWaitMs` | 3 / 0.1 / 8000 | the rig's scale is decided once per activation: from this many consistent estimates within this spread, on a quiet page, or after this long (v0.7.11) |
+| `scaleLoadMaxMs` | 45000 | v0.8.3: with no real estimate yet, on a loading page or with nothing in view, the wait before the fallback scale |
 | `openSceneConvM` | 2 | `'fixed'`: the focus distance in front of the page camera, in scene units read as metres |
 | `openSceneRealDepth` | 0.5 | `'fixed'`: the camera-rig depth that means the viewer's real IPD (`ipdFactor` 1); less scales it down linearly |
 | `convRoomPercentile` | 0.7 | `'percentile'`: the percentile of the in-view apparent-size-weighted depths; `'fixed'`: only the scale-sanity note |
@@ -1144,6 +1149,47 @@ parallax together, so less depth flattens the stereo and damps the look-around b
 On the camera rig that is `metersToVirtual` (it scales both); on the display rig it is
 `ipdFactor = parallaxFactor = depth`. When a page is left 2D for
 a structural reason (WebGPU, post effects, several cameras), the HUD shows that reason too.
+
+### v0.8.3: flat is the page (the 2D <-> 3D switch on the display rig)
+
+The switch is a depth fade: 3D loses its depth, and once flat the lens switches (and the reverse on the
+way in). "Flat" has to be the page's own 2D picture, since that is what the page draws once the layer
+is gone. On the camera rig it always was (both eyes on the page camera). On the display rig it was
+not: with its factors at 0 the display rig is the portal seen from the nominal viewer, with the
+display's field of view, and only the glass plane agrees with the page, so everything off the glass
+changed size when the cover came off.
+
+Since v0.8.3 (`flatMorph`, `rigFlatten`) the display rig's depth fade is also the dolly zoom to the
+page's camera, through the rig correspondence the rig morph uses (`blendForm`): at `rampK` 1 the
+display rig as declared, at 0 the page camera itself, and between them one camera-form rig whose
+glass plane keeps its size. Both directions use it; nothing changes on the camera rig. It needs the
+panel size and the nominal viewer (`rigDisplayInfo`); without them the display rig fades by its
+factors alone, as before. `flatMorph: false` restores 0.8.2. Cases `rig-flat`, `rig-flat-off`.
+
+**A canvas under a loading overlay (`waitUncovered`, `overCanvas`).** An opaque page element over the
+canvas makes the compositor drop the canvas's quad, so the browser reports it `withheld` and, at the
+cover's maximum, the canvas goes back to 2D. It used to try again 30 s later, and only if the page was
+still drawing: a viewer that streams its model under a full-size overlay stayed 2D for good. Now the
+elements lying over the canvas at that moment are watched (on a timer) and 3D is tried again as soon as
+one of them is gone; at most 4 times per canvas. Nothing is guessed up front: only a canvas the browser
+refused is watched. Cases `rig-uncover`, `rig-uncover-off`.
+
+**3D turned back on during the switch to 2D** no longer stays flat: after the fade has ended and before
+the swap, and once the out-cover is already up (it stayed under the still for good).
+
+**Idle replays (three.js).** Each replayed pass runs with the viewport and scissor it was drawn with
+(`replayViewport`), and the frame replayed is the page's last paint in its own order, not what it drew
+between two session-frame callbacks (`replayByFrame`, `pushOp`).
+
+**Also in v0.8.3 (three.js; found on a browser 3D asset hub built on r187 `WebGPURenderer`):** a renderer
+announced without a revision (a build that tree-shook three's `register` event) can be gated on the
+driver's hooks alone, but only with `gpuUnannounced` (off by default): on a panel that page draws two
+full-view screen passes per frame whose outcome depends on three's frame counter, and per eye the
+second one blanked the left eye (atlas capture, 2026-11-28). Until that is understood such a page stays
+2D with a reason, as before; an overlay pass (a gizmo drawn after the scene with `autoClear` off and no background) is
+replayed with the state it ran with; the scene camera is the stereo draw that drew the most, not the
+last; and the scale waits for a page that is still loading (`scaleLoadMaxMs`, a camera whose `far` is
+not finite yet bounds nothing). Cases `three-webgpu-norev`, `a-gizmo`.
 
 ### v0.8.2: three.js WebGPU post-processing per eye
 
@@ -1315,8 +1361,14 @@ deviation from nominal) into the eyes' offset from the page camera, so a scale t
 - **page target:** its distance, at once (exact);
 - **estimator:** `T.scaleSamples` (3) consecutive estimates (every 10 frames until decided) within
   `T.scaleSpread` (10 %) of their median, on a quiet page (the guard's loading test: document complete,
-  no resource for 1 s), else what there is `T.scaleMaxWaitMs` (8 s) after the flip. Until then the
-  rig is flat (both eyes on the page camera) and the depth fades in once it is set.
+  no resource for 1 s), else what there is `T.scaleMaxWaitMs` (8 s) after the flip. With **no real
+  estimate yet** on a page still loading or with nothing in view yet, it waits up to
+  `T.scaleLoadMaxMs` (45 s) instead (v0.8.3: lepoly.com streams its model for 20 s+ through one
+  request the loading test does not see, and the 8 s fallback froze a guess for the whole
+  activation). Until then the rig is flat (both eyes on the page camera) and the depth fades in once
+  it is set. The page camera's depth range bounds the convergence (2 × near .. 0.9 × far) only where
+  it is usable: a camera that fits near / far to content not loaded yet (lepoly: far = -Infinity)
+  bounds nothing (v0.8.3; before, every clamp gave -Infinity and the scale froze at m2v 1e-6).
 - logged once: `scale set: m2v X (basis; distance D units)` (display rig: the portal's height).
 Then frozen: the camera rig's `metersToVirtual = depth × d_scale × Focus / 0.5` and the whole display
 rig (portal distance and height = `d_scale × Focus`). The camera rig's **convergence** (`1/d`) keeps

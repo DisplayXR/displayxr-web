@@ -52,6 +52,11 @@ controls.autoRotate = !q.get('still'); controls.autoRotateSpeed = 6;
 controls.update();
 window.__expectedConvergenceSource = 'target';
 let hot = null;
+if (+q.get('cover') > 0) { // a loading overlay: opaque, over the whole canvas, gone after ?cover= ms
+  const ov = document.createElement('div'); ov.setAttribute('data-test-opaque-cover', '');
+  ov.style.cssText = 'position:fixed;inset:0;background:#123;z-index:50';
+  document.body.appendChild(ov); setTimeout(() => { ov.remove(); window.__uncoveredAt = performance.now(); }, +q.get('cover'));
+}
 if (q.get('hotspot')) { hot = document.createElement('div'); hot.className = 'hot'; stage.appendChild(hot); }
 const P = new THREE.Vector3();
 let frames = 0;

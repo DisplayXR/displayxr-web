@@ -89,14 +89,26 @@ function dxrThree(core) {
     if (seenCommon.has(r)) return;
     seenCommon.add(r);
     if (!(r.domElement instanceof HTMLCanvasElement)) { warnOnce('webgpu', 'WebGPURenderer seen (no canvas element) — not converted, left 2D'); return; }
-    const rev = parseInt(revision, 10);
+    // No revision: three's module-level `register` dispatch (the only place REVISION is announced) is
+    // a side effect a bundler can drop (tree-shaking with sideEffects:false; seen on lepoly.com, three
+    // r187 through Vite/Rolldown, 2026-11). The renderer itself still announced itself from its
+    // constructor, which three does from r178 on only, so an unknown revision is >= GPU_MIN: gate on
+    // the hooks alone, and say once that the revision is unknown.
+    const rev = revision == null ? null : parseInt(revision, 10);
+    const tag = rev == null ? 'r? (revision not announced)' : `r${rev}`;
     const miss = missingHooks(r);
     let why = null;
-    if (!(rev >= GPU_MIN)) why = `WebGPURenderer r${revision || '?'} — the driver needs r${GPU_MIN} or later`;
-    else if (miss.length) why = `WebGPURenderer r${rev} without what the driver uses: ${miss.join(', ')}`;
+    // Unannounced: converted only with T.gpuUnannounced (off by default). The one page of this kind seen
+    // on a panel draws two full-view screen passes per frame whose result depends on three's frame
+    // counter; per eye the second pass blanked the left eye (2026-11-28). Until that is understood such
+    // a page stays 2D, as before v0.8.3.
+    if (rev == null && core.T.gpuUnannounced !== true) why = 'WebGPURenderer with no revision announced (the build dropped the register event of three)';
+    else if (rev != null && !(rev >= GPU_MIN)) why = `WebGPURenderer r${revision} — the driver needs r${GPU_MIN} or later`;
+    else if (miss.length) why = `WebGPURenderer ${tag} without what the driver uses: ${miss.join(', ')}`;
     if (why) { core.noteFlat('three.js', r.domElement, why); return; }
     const verified = core.T.gpuVerified || GPU_VERIFIED;
-    if (rev > verified) warnOnce('webgpu-rev', `WebGPURenderer r${rev} is newer than the last verified r${verified}; converting (every hook the driver uses is present)`);
+    if (rev == null) warnOnce('webgpu-rev', `WebGPURenderer ${tag}: the page's build dropped three's register event; converting (every hook the driver uses is present)`);
+    else if (rev > verified) warnOnce('webgpu-rev', `WebGPURenderer r${rev} is newer than the last verified r${verified}; converting (every hook the driver uses is present)`);
     track(r, true);
   }
   const onRegister = (e) => { if (core.retired) return; if (e && e.detail && e.detail.revision) revision = e.detail.revision; };
@@ -194,7 +206,7 @@ function dxrThree(core) {
       if (st.idleOps) {
         // Flipped from idle (flipIdle): repaint the page's whole last frame (HUD passes included),
         // not just the scene, and keep it as the frame the session replays.
-        const ops = st.idleOps.map((op) => (op[0] === 'clear' ? op : ['render', op[1], op[2], isMainPerspective(st, op[2]), false, st.chainQuads.has(op[1])]));
+        const ops = st.idleOps.map((op) => (op[0] === 'clear' ? op : carryDraw(op, ['render', op[1], op[2], isMainPerspective(st, op[2]), false, st.chainQuads.has(op[1])])));
         st.idleOps = null;
         replay(st, ops);
         st.lastOps = ops;
@@ -203,7 +215,7 @@ function dxrThree(core) {
       if (st.postfx && st.monoOps && st.monoOps.length) {
         // A post-processing page: its screen draws are the chain's final passes, whose render targets
         // still hold the last composed frame. Repaint those, flat, instead of the bare scene.
-        const ops = st.monoOps.map((op) => (op[0] === 'clear' ? op : ['render', op[1], op[2], false]));
+        const ops = st.monoOps.map((op) => (op[0] === 'clear' ? op : carryDraw(op, ['render', op[1], op[2], false])));
         replay(st, ops);
         st.lastOps = ops;
         return;
@@ -221,8 +233,15 @@ function dxrThree(core) {
     },
     redraw(st) {
       // A page that drew nothing since the last session frame gets its last screen draws replayed.
+      paintMark();
       if (st.frame.drew) st.lastOps = st.frame.ops.length <= 32 ? st.frame.ops : null;
-      else if (st.lastOps) replay(st, st.lastOps);
+      else {
+        // The page's last PAINT, whole and in its own order (pushOp), in place of "what it drew
+        // between two of our callbacks" when the two differ.
+        const k = st.tick;
+        if (k && k.ops.length && k.ops.length <= 32 && k.stamp !== frameStamp() && core.T.replayByFrame !== false) { st.lastOps = k.ops; st.tick = null; }
+        if (st.lastOps) replay(st, st.lastOps);
+      }
       st.frame = { drew: false, ops: [] };
     },
     // The out-cover's pixels: the left eye of the pair just drawn, read back from the GL context —
@@ -252,7 +271,7 @@ function dxrThree(core) {
     },
     restore(st, wasLive) {
       const last = st.lastOps;
-      st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null;
+      st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null; st.tick = null;
       disposeChain(st);
       core.unvirtualizeCanvas(st);
       if (wasLive) {
@@ -478,7 +497,7 @@ function dxrThree(core) {
       if (!top() || rt !== null) return st.call('clear', color, depth, stencil);
       if (!st.active) { recordMono(st, ['clear', color, depth, stencil]); return st.call('clear', color, depth, stencil); }
       st.frame.drew = true;
-      st.frame.ops.push(['clear', color, depth, stencil]);
+      pushOp(st, ['clear', color, depth, stencil]);
       forEyes(st, () => st.call('clear', color, depth, stencil));
     });
     W('render', (scene, camera) => {
@@ -493,17 +512,23 @@ function dxrThree(core) {
       const toScreen = target === null;
       const xrLive = !!(r.xr && r.xr.enabled && r.xr.isPresenting);
       if (!st.active) {
-        const before = st.r.info && st.r.info.autoReset === false ? drawnSoFar(st) : 0;
+        const before = drawnSoFar(st);
         const out = st.call('render', scene, camera);
         if (!toScreen && !xrLive) {
           const why = seedWhy(st, target, camera);
-          if (why === null) markSeed(st, scene, camera, target, drawnSoFar(st) - before);
+          if (why === null) markSeed(st, scene, camera, target, drawnSince(st, before));
           else if (why) noteSeedMiss(st, why);
         }
         if (toScreen && !xrLive) {
-          recordMono(st, ['render', scene, camera]);
+          recordMono(st, snapDraw(st, ['render', scene, camera], scene, camera));
           const persp = camera.isPerspectiveCamera && !camera.isArrayCamera;
-          if (persp) {
+          // Of several perspective screen draws in one task, the scene is the one that drew the most
+          // (as markSeed picks a chain's main seed); a smaller one is an overlay with a camera of its
+          // own (lepoly.com: a gizmo pass after the scene, autoClear off, gizmoCamera). Qualifying /
+          // flipping on the last one made the overlay's camera the page camera.
+          const overlay = persp && overlayDraw(st, drawnSince(st, before));
+          if (overlay) { /* a bigger perspective draw in this task is the scene: keep it */ }
+          else if (persp) {
             if (st.seedTask) st.seedTask.direct = true; // the scene also went straight to the screen: not a composer
             st.lastMono = { scene, camera }; st.sawPersp = true;
             hookLookAt(camera); // fallback for a page that built no Scene before its camera (rare)
@@ -550,11 +575,11 @@ function dxrThree(core) {
           // is part of it. Everything else (picking, PMREM, cube cameras) stays a single mono draw.
           if (isSeed(st, target, camera)) {
             st.mainCam = camera; st.chainStereo = st.haveViews;
-            const before = st.r.info && st.r.info.autoReset === false ? drawnSoFar(st) : 0;
+            const before = drawnSoFar(st);
             const out = renderIntoChain(st, scene, camera, target, true);
             // A view offset that turns out to be jitter stands down (viewJitter). The estimator and
             // Spark's hook read the frame's main seed, not an overlay seeded after it.
-            markSeed(st, scene, camera, target, drawnSoFar(st) - before);
+            markSeed(st, scene, camera, target, drawnSince(st, before));
             st.lastScene = st.seedTask.main.scene;
             return out;
           }
@@ -566,21 +591,21 @@ function dxrThree(core) {
       if (st.gpuChain && st.chainQuads.has(scene)) {
         // WebGPURenderer: the chain's full-screen quad, drawn once per eye into its half; the page camera
         // its passes render with is swapped for that eye's camera (nestedRender).
-        st.frame.ops.push(['render', scene, camera, false, false, true]);
+        pushOp(st, ['render', scene, camera, false, false, true]);
         const out = renderGpuChain(st, scene, camera);
         takeCover(st);
         return out;
       }
       if (st.postfx && !isMainPerspective(st, camera) && taintedSwaps(st, scene)) {
         // The chain's final pass to the screen: once per eye, the right eye sampling the twins.
-        st.frame.ops.push(['render', scene, camera, false, true]);
+        pushOp(st, snapDraw(st, ['render', scene, camera, false, true], scene, camera));
         const out = renderPostScreen(st, scene, camera);
         takeCover(st);
         return out;
       }
       const stereo = isMainPerspective(st, camera);
-      st.frame.ops.push(['render', scene, camera, stereo]);
-      const out = stereo ? renderStereo(st, scene, camera) : renderFlat(st, scene, camera);
+      pushOp(st, snapDraw(st, ['render', scene, camera, stereo], scene, camera));
+      const out = stereo ? renderStereo(st, scene, camera, st.frame.main || (st.frame.main = { drawn: -1 })) : renderFlat(st, scene, camera);
       if (stereo) takeCover(st); // after the scene draw, never after a background/HUD pass alone
       // WebGPURenderer: a flat screen pass that drew the page camera into a target (a RenderPipeline
       // switched on while converted, or a second one): split from its next frame on, or, when it cannot
@@ -751,8 +776,82 @@ function dxrThree(core) {
     if (st.gpuTemporal) { const why = whyUnsplit(st.gpuTemporal); gpuPostfx(st, why); core.stand(st, why); }
     core.drew(st);
   }
+  // The state a screen draw ran with, kept on its op (op.draw) so a replay draws it the same way. A page
+  // that draws an overlay pass after its scene typically turns autoClear off, nulls scene.background
+  // (a Color background clears even with autoClear off) and restores both afterwards (lepoly.com's
+  // gizmo pass; three's own examples' HUD scenes). A replay run with the state the page left behind
+  // cleared each eye on the overlay pass and wiped the scene. The camera's layer mask is kept too: a
+  // page may toggle a layer around one draw (lepoly: layer 0 off for its deferred ground plane).
+  function snapDraw(st, op, scene, camera) {
+    const r = st.r;
+    // And the page's viewport + scissor for this draw (in its own units, with the size they are of): a
+    // corner pass (a gizmo in a 128 px viewport, with a background of its own) replayed at the viewport
+    // the page left behind covered the whole eye and wiped the scene (left eye blank, panel 2026-11-28).
+    const L = st.L;
+    op.draw = { ac: [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil], bg: scene.background, layers: camera.layers ? camera.layers.mask : undefined,
+      view: L && L.vp && L.sc && L.w > 0 && L.h > 0 ? { vp: L.vp.slice(), sc: L.sc.slice(), scTest: !!L.scTest, w: L.w, h: L.h } : null };
+    return op;
+  }
+  const carryDraw = (from, to) => { if (from.draw) to.draw = from.draw; return to; };
+  // Run fn with op's recorded draw state applied, then put back what the page has now.
+  function withDraw(st, op, fn) {
+    const d = op.draw;
+    if (!d) return fn();
+    const r = st.r, scene = op[1], camera = op[2];
+    const L = st.L;
+    const was = { ac: [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil], bg: scene.background, layers: camera.layers ? camera.layers.mask : undefined,
+      view: d.view && L && L.vp && L.sc ? { vp: L.vp, sc: L.sc, scTest: !!L.scTest, w: L.w, h: L.h } : null };
+    const put = (v) => {
+      [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil] = v.ac;
+      if (scene.background !== v.bg) scene.background = v.bg;
+      if (camera.layers && v.layers !== undefined) camera.layers.mask = v.layers;
+      const V = v.view;
+      if (V && was.view && core.T.replayViewport !== false) {
+        // In the page's units as they are now (a resize since the draw scales the rectangle with it).
+        const kx = L.w / V.w, ky = L.h / V.h, sc4 = (a) => [a[0] * kx, a[1] * ky, a[2] * kx, a[3] * ky];
+        L.vp = v === was ? V.vp : sc4(V.vp); L.sc = v === was ? V.sc : sc4(V.sc); L.scTest = V.scTest;
+        if (!st.active) { st.call('setViewport', ...L.vp); st.call('setScissor', ...L.sc); st.call('setScissorTest', L.scTest); } // mono: the renderer's own
+      }
+    };
+    put(d);
+    try { return fn(); } finally { put(was); }
+  }
+  // Not converted yet: is this perspective screen draw (drawn primitives) an overlay, i.e. smaller than
+  // one already drawn in this task?
+  function overlayDraw(st, drawn) {
+    const t = st.perspTask;
+    if (t) { if (drawn <= t.drawn) return true; t.drawn = drawn; return false; }
+    st.perspTask = { drawn };
+    queueMicrotask(() => { st.perspTask = null; });
+    return false;
+  }
   // The page's screen draws while NOT converted, one list per task (a page draws its frame in one
   // callback). The last complete list is the mono frame wake / flipIdle replay.
+  // A page's frame is what reaches ONE paint, not what it draws between two of our session-frame
+  // callbacks. A page that clears the screen with nothing in view from a task after each paint and
+  // draws its scene in the next animation frame (an asset viewer, panel 2026-11-28: the clear is never
+  // seen in 2D, the scene always lands before the paint) had its draws kept as [scene, empty clear]:
+  // every idle replay ended on the empty pass (one eye blank, then both). So each screen op is also
+  // filed under a paint group: a counter moved by a task posted from our session-frame callback,
+  // which runs after that frame's paint. A group is the draws after one paint up to the next.
+  let paintGroup = 1, paintPosted = false, paintChan = null;
+  function paintMark() {
+    if (paintPosted) return;
+    paintPosted = true;
+    const done = () => { paintPosted = false; paintGroup++; };
+    try {
+      if (!paintChan && typeof MessageChannel === 'function') { paintChan = new MessageChannel(); paintChan.port1.onmessage = () => paintChan.cb && paintChan.cb(); }
+      if (paintChan) { paintChan.cb = done; paintChan.port2.postMessage(0); } else setTimeout(done, 0);
+    } catch (e) { setTimeout(done, 0); }
+  }
+  const frameStamp = () => paintGroup;
+  function pushOp(st, op) {
+    st.frame.ops.push(op);
+    const ts = frameStamp();
+    if (ts == null) { st.tick = null; return; }
+    if (!st.tick || st.tick.stamp !== ts) st.tick = { stamp: ts, ops: [] };
+    st.tick.ops.push(op);
+  }
   function recordMono(st, op) {
     if (!st.monoOpen) {
       st.monoOpen = true;
@@ -766,7 +865,7 @@ function dxrThree(core) {
     const prevRT = st.call('getRenderTarget');
     if (prevRT !== null) st.call('setRenderTarget', null);
     try {
-      for (const op of ops) { if (op[0] === 'clear') st.call('clear', op[1], op[2], op[3]); else st.call('render', op[1], op[2]); }
+      for (const op of ops) { if (op[0] === 'clear') st.call('clear', op[1], op[2], op[3]); else withDraw(st, op, () => st.call('render', op[1], op[2])); }
     } finally { if (prevRT !== null) st.call('setRenderTarget', prevRT); }
   }
 
@@ -947,8 +1046,14 @@ function dxrThree(core) {
       o.onBeforeRender = function () { sparkIn++; try { return f.apply(this, arguments); } finally { sparkIn--; } };
     }
   }
-  function renderStereo(st, scene, camera) {
-    st.mainCam = camera; st.lastScene = scene;
+  // fm: this frame's { drawn } so far. Of several stereo draws in one frame, the one that drew the most
+  // is the scene; a smaller one is an overlay with a camera of its own (a gizmo / HUD pass: lepoly.com's
+  // gizmoCamera). Every one is drawn per eye, but only the scene's camera becomes the page camera (the
+  // rig, the convergence estimator, the depth range). The scene's camera is taken before its draw (the
+  // eyes are composed from it); an overlay drawn first is replaced once the scene has drawn more.
+  function renderStereo(st, scene, camera, fm = null) {
+    const before = fm ? drawnSoFar(st) : 0;
+    if (!fm || fm.drawn < 0) { st.mainCam = camera; st.lastScene = scene; }
     hookSpark(st, scene);
     if (!st.haveViews) { // no eyes yet: flat into both halves, never a blank tile
       if (st.stats.twoView > 0) st.stats.flatAfterEyes++;
@@ -989,6 +1094,10 @@ function dxrThree(core) {
       if (sm) sm.autoUpdate = smAuto;
       st.call('setScissorTest', false);
     }
+    if (fm) { // eye 1's own count (WebGLRenderer, autoReset), or both eyes' (accumulating): one measure per frame
+      const d = drawnSince(st, before);
+      if (d > fm.drawn) { fm.drawn = d; st.mainCam = camera; st.lastScene = scene; }
+    }
     st.stats.stereo++;
     core.drew(st);
   }
@@ -1024,12 +1133,13 @@ function dxrThree(core) {
     if (prevRT !== null) st.call('setRenderTarget', null);
     let drew = false;
     try {
+      const fm = { drawn: -1 }; // the replayed frame's scene: its largest stereo draw (renderStereo)
       for (const op of ops) {
         if (op[0] === 'clear') forEyes(st, () => st.call('clear', op[1], op[2], op[3]));
-        else if (op[5]) renderGpuChain(st, op[1], op[2]);
-        else if (op[4]) renderPostScreen(st, op[1], op[2]);
-        else if (op[3]) renderStereo(st, op[1], op[2]);
-        else renderFlat(st, op[1], op[2]);
+        else if (op[5]) withDraw(st, op, () => renderGpuChain(st, op[1], op[2]));
+        else if (op[4]) withDraw(st, op, () => renderPostScreen(st, op[1], op[2]));
+        else if (op[3]) withDraw(st, op, () => renderStereo(st, op[1], op[2], fm));
+        else withDraw(st, op, () => renderFlat(st, op[1], op[2]));
       }
       st.stats.replays++;
       drew = true;
@@ -1124,6 +1234,17 @@ function dxrThree(core) {
   // so after one render() the count is that render's own; a page that turned autoReset off accumulates,
   // and the caller takes the difference around the render.
   const drawnSoFar = (st) => { const ri = st.r.info && st.r.info.render; return ri ? (ri.triangles || 0) + (ri.points || 0) + (ri.lines || 0) : 0; };
+  // What the draw(s) since `before` (a drawnSoFar reading) drew. WebGLRenderer with info.autoReset zeroes
+  // the count at the start of every render(), so after one render() the count IS that render's own.
+  // WebGPURenderer resets once per FRAME, not per render(): a second render() in the frame counts on top
+  // of the first (lepoly.com: its gizmo pass read 1 154 410 against the scene's 1 154 409 and "drew
+  // more"), so take the difference there, as for autoReset off. A reset between the two readings (a new
+  // frame) leaves a count below `before`: that count is then the draw's own.
+  function drawnSince(st, before) {
+    const a = drawnSoFar(st), info = st.r.info;
+    if (!(st.common || (info && info.autoReset === false))) return a;
+    return a >= before ? a - before : a;
+  }
   // The last near-miss seed of this task, for the 2D log line.
   function noteSeedMiss(st, why) {
     if (st.seedMiss === null) queueMicrotask(() => { st.seedMiss = null; });
