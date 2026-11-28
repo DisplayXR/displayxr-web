@@ -105,7 +105,7 @@ the v0.3 single-depth migration); `window.__dxrAuto3DTestCfg` is read only there
 | `chip.js` | `dxrChip(ctl, S)`: the "3D" chip and its menu (see [The chip](#the-3d-chip)). Uses only `ctl` and `S.intrinsics`; the core calls `frame(st)` per session frame and exposes it as `core.chip` (`__dxrAuto3D.chip()` in dev). While the site is off the core still qualifies a **candidate** canvas (`considerCandidate`) so offer mode has something to offer 3D on |
 | `dev.js` | `dxrDev(core, ctl)`, only when `cfg.dev`: the HUD, the Ctrl+Alt hotkeys, `window.__dxrAuto3D` (`state()`, `probe()`, `set()`) |
 | `host-dev.js` | `dxrDevHost(loadCore)`: the dev extension's stand-in for the browser host, over `localStorage` |
-| `three-adapter.js` | `dxrThree(core)`: the three.js prototype's own code, unchanged in behaviour. Fed by the sentinel's `__THREE_DEVTOOLS__` listener (`observe`, `register`); per-instance wrapping of `render` / `setSize` / getters, per-eye render into each half, flat HUD / post passes, render-on-demand replay, reversed-Z |
+| `three-adapter.js` | `dxrThree(core)`: the three.js prototype's own code, unchanged in behaviour. Fed by the sentinel's `__THREE_DEVTOOLS__` listener (`observe`, `register`); per-instance wrapping of `render` / `setSize` / getters, per-eye render into each half, flat HUD / post passes, render-on-demand replay, reversed-Z; on a `WebGPURenderer`, the `RenderPipeline` quad per eye (v0.8.2: the node frame's `updateBeforeNode` wrapped on the instance) |
 | `playcanvas-adapter.js` | `dxrPlayCanvas(core)`: takes the app the sentinel found (`consider(app, how, ns)`), drives the page's camera through the engine's `RenderView` path, resizes the store through `device.setResolution`, supplies bounds from `render` / `model` / `gsplat` components, and applies the gsplat footprint fix |
 | `babylon-adapter.js` | `dxrBabylon(core)` (v0.7.0): takes the engine the sentinel found (`consider(engine, how, ns)`), hooks its scenes as they are created, and renders both eyes through the engine's own camera-rig path (two eye cameras on `RIG_MODE_CUSTOM`, as Babylon's WebXR camera does). Sizes the store to the element's device pixels through the engine's hardware scaling level (picking is in store pixels), supplies bounds from the scene's meshes. See [Babylon.js](#babylonjs-7--9x-webgl2-webgl1-webgpu-v070) |
 | `build.mjs` | the build above; `--check` for drift |
@@ -339,7 +339,9 @@ only once decoded (`decoding = 'sync'`): inserted earlier, its box paints its ba
 | a camera whose `setViewOffset` moves by sub-pixel steps along one axis, turning back often (a lerped mouse parallax, a spring's tail, an idle bob) | **3D** since v0.6.5: framing, not jitter. Harness cases `e-postfx-bob`, `e-postfx-spring`, `e-postfx-parallax`. In v0.6.4 it was taken for jitter within 8 frames and stayed 2D for good (#231) |
 | a chain that flips its picture left-right (a pass sampling `1.0 - vUv.x`: `visual-learning.app/sandworm`) | **3D** since v0.6.3, each eye drawn mirrored so that the page's own flip gives the right pair (see [mirroring chains](#chains-that-mirror-their-picture-v063)). Harness cases `e-postfx-mirror`, `-mirror-eyes`, control `-mirror-ctl`. Before, the pair came out pseudoscopic (seen on the panel) |
 | `WebGPURenderer` r178+ (harness-verified through r187), WebGPU backend or the WebGL2 fallback (`forceWebGL`, or no adapter) | **3D** since v0.6.1 (see [three.js WebGPURenderer](#threejs-webgpurenderer-v061)); before, 2D with `WebGPURenderer — the prototype drives WebGL renderers only` (v0.5.7) |
-| `WebGPURenderer` + three's `PostProcessing` (TSL `pass(scene, camera)` chains) | **2D**, reported `flat` with `WebGPU PostProcessing — not split yet …`. Harness case `three-webgpu-postfx` |
+| `WebGPURenderer` + three's `RenderPipeline` / `PostProcessing` (TSL `pass(scene, camera)` node chains: bloom, blur, RTT, …) | **3D** since v0.8.2, the whole chain run once per eye (see [three.js RenderPipeline](#threejs-renderpipeline--postprocessing-v082)). Harness cases `three-webgpu-chain*`, `three-webgpu-postfx`; live: `bruno-simon.com`, threejs.org `webgpu_postprocessing_bloom`. **Not yet seen on the panel**. Before, 2D with `WebGPU PostProcessing — not split yet …` |
+| the same, with a node that carries a history from frame to frame (`TRAANode`, `TAAUNode`, `AfterImageNode`, `RecurrentDenoiseNode`, `TemporalReprojectNode`) or makes its own stereo pair (`StereoPassNode`, `AnaglyphPassNode`, `ParallaxBarrierPassNode`, `StereoCompositePassNode`) | **2D**, reported `flat` with `WebGPU RenderPipeline with a node of type … — not split (…)`. Harness case `three-webgpu-chain-temporal` |
+| `WebGPURenderer` + the page's own chain of top-level `render()` calls into targets, then a quad to the screen | **2D**, reported `flat` with `WebGPU post chain drawn as top-level render() calls into targets — not split …` |
 | `WebGPURenderer` newer than the last verified revision (`GPU_VERIFIED`, r187) | **3D** since v0.7.3, with one console note (`WebGPURenderer r188 is newer than the last verified r187; converting …`), as long as every hook the driver uses is present. Through v0.7.2 a revision ceiling (r186) left every newer release 2D, which is how threejs.org's `webgpu_loader_gltf` went 2D when the examples moved to r187. Harness case `three-webgpu-newer` |
 | `WebGPURenderer` below r178 (never announced in practice), or one missing a hook the driver uses (the common `Renderer` API, `hasInitialized()` / `_initialized`, `needsFrameBufferTarget` / `_getFrameBufferTarget()`) | **2D**, reported `flat` with the reason, naming what is missing (`WebGPURenderer r190 without what the driver uses: …`). Nothing on the renderer or its canvas is touched. Harness cases `p-webgpu`, `p-webgpu-api` |
 | r104 and older, OffscreenCanvas / worker rendering | **2D** / not seen |
@@ -1143,6 +1145,15 @@ On the camera rig that is `metersToVirtual` (it scales both); on the display rig
 `ipdFactor = parallaxFactor = depth`. When a page is left 2D for
 a structural reason (WebGPU, post effects, several cameras), the HUD shows that reason too.
 
+### v0.8.2: three.js WebGPU post-processing per eye
+
+- **three's `RenderPipeline` / `PostProcessing` converts** (it was `flat`): the chain's one quad draw runs once per eye, the
+  page camera swapped for the eye's in the passes it renders, eye 1 under its own node-frame id, the chain's
+  targets eye-sized. `bruno-simon.com` and threejs.org's `webgpu_postprocessing_*` go live headless. A temporal
+  node (TRAA, after-image, …) or a node that makes its own stereo pair stays `flat`, with the reason. See
+  [three.js RenderPipeline](#threejs-renderpipeline--postprocessing-v082).
+- `test/probe-live.mjs` prints the stats and the chain diagnostics, and `SHOT=<png>` saves a screenshot.
+
 ### v0.8.1: the 3D cursor, an exact target followed at once, declared hotspots
 
 **Zoom in step with the page camera (`zoomLocal`, `eyeScale`).** A rig pushed to the layer reaches the located eyes three frames after the page camera moved, so one wheel step of a zoom was drawn as two jumps about 50 ms apart. With the angle fixed, a display rig's eyes are linear in the portal distance, so the rig is pushed at a frozen distance and the live distance is applied to the located eyes when the adapter composes them: the same views, in the frame the camera moved. Measured per frame on a three.js WebGPU sample: one jump per wheel step. `dev.js` reports the rig as drawn (`rigNow.k` is the factor).
@@ -1528,7 +1539,11 @@ running), so the rig is always sampled at the configured depth.
 | `three-webgpu-fallback` | `?webgl=1`: `forceWebGL` (WebGL2 backend), no WebGPU adapter needed | converts; backend `webgl2`, surface `webgl`, `coordinateSystem` WebGL, the GL projection as is |
 | `three-webgpu-near` / `-near-ctl` | `?near=1`: near 0.2, a magenta box 0.3 in front of the camera | visible in both eyes; the control (`gpuDepthRange: false`) clips it in both |
 | `three-webgpu-kill` | the default page, frozen: `Ctrl+Alt+3` off, then on | as `b-kill`, plus `outCoverVia: 'readback'` |
-| `three-webgpu-postfx` | `?postfx=1`: `PostProcessing` with `TSL.pass(scene, camera)`, product mode | last report `flat` with the `WebGPU PostProcessing` reason, never live, no layer, the canvas keeps its mono store |
+| `three-webgpu-postfx` | `?postfx=1`: `PostProcessing` with `TSL.pass(scene, camera)`, product mode | goes `live` (engine three.js), one layer, never `flat` (v0.8.2; before, `flat` with the `WebGPU PostProcessing` reason) |
+| `three-webgpu-chain` / `-live` / `-fallback` / `-pr2` | `pages/three-webgpu-postfx.html`: `PostProcessing` with `pass(scene, camera)` → `rtt()` → a 4-tap blur, a spot light's perspective shadow camera nested in the scene pass; frozen after 60 frames (render on demand) / `?live=1` / `?webgl=1` (WebGL2 backend) / `?pr=2` | as `three-webgpu` (64 px shift, convergence 5 from the target), plus `gpuChain`, the node frame found, the page camera swapped once per eye (`ppSubs` [1, 1]: the shadow camera is not), the pass and the RTT targets eye-sized, eye 0's projection = the fake's through `toClip` (GL as is on the fallback), no validation error, one layer |
+| `three-webgpu-chain-ctl` | the same, `?live=1`, `gpuChainSwap: false` (the chain run per eye, the page camera not swapped) | both halves the same picture (best shift 0, residual 0) |
+| `three-webgpu-chain-size-ctl` | the same, `gpuChainEyeSize: false` | the pass and the RTT targets store-sized (2 × the eye wide) |
+| `three-webgpu-chain-temporal` | `?temporal=1`: a node of type `AfterImageNode` in the chain (a stand-in for three's addon), product mode | last report `flat` naming the `AfterImageNode`, never live, no layer, the canvas keeps its mono store |
 | `p-three-webgpu` | the default page, product mode | goes `live` (engine three.js), one layer, never `flat` |
 | `pc-cf-kill` / `pc-cf-webgpu-kill` | `pages/pc-cf-mesh.html?taa=0&vignette=0`: PlayCanvas 2.23, a `CameraFrame` with bloom (an HDR emissive sphere) and SSAO, WebGL2 / WebGPU, frozen | as `b-kill` (64 px shift, rig, convergence 8, commit model, out-cover, on again; WebGPU: `outCoverVia: 'readback'`), plus the split in `state()`: two chains on 640 × 720 targets, eye 0's compose into the left half (clears), eye 1's into the right (no clear); after the stand-down no split is left |
 | `pc-cf` / `pc-cf-webgpu` | `pc-cf-mesh.html`: bloom + SSAO + TAA + grading + vignette on a grey clear colour; then the same page with `?bloom=0` | split with taa / bloom / ssao in both chains; the jitter non-zero and moving frame to frame; the sphere in both eyes, 64 px apart; the ring around it brighter than without bloom in BOTH eyes (~205 vs ~110); the vignette per eye (both edges of each eye alike, ~146, centre ~205) |
@@ -1687,12 +1702,70 @@ How each difference was resolved:
 | **clears** | the scissor confines `autoClear` to the eye's half | a clear covers the **whole** attachment (WebGPU `loadOp: 'clear'` ignores the scissor), so it depends on the output path. **Default** (`fb`: tone mapping on, or the output colour space is not the working one, i.e. sRGB output): each `render()` draws into an intermediate frame-buffer target (cleared whole), then an output pass with `autoClear` off samples it at `screenUV` into the renderer's viewport and scissor on the canvas, which is loaded, never cleared. Two renders into two halves just work. **Direct** (`NoToneMapping` + output = working colour space): the scene draws straight to the canvas, and eye 1's clear would wipe eye 0. Eye 0 then clears with the scissor off (one clear colour in both halves; its draw is still confined by its viewport) and eye 1 draws with `autoClearColor = false` (depth / stencil still clear). The path is read per draw (`needsFrameBufferTarget`, r182+; `_getFrameBufferTarget()` before) and shown as `clearPath` in `state()` |
 | **size reads** | the page's numbers, even inside a render | three itself reads `getDrawingBufferSize`, `getViewport`, `getPixelRatio` … (its frame-buffer target, the backend's colour buffer, the screen nodes the output pass samples with). Inside the shim's own calls those see the **real** store; the page's own calls still see its mono one |
 | **frame counter** | the eye pair shares one `info.render.frame` | nothing to do: the common `Info` has no `render.frame`, and FRAME-scoped node updates advance only with three's own animation loop, so both eyes already share a frame |
-| **post-processing** | per-eye twins of an `EffectComposer` chain | **not split**: a full-screen pass whose render (nested, in `PassNode.updateBefore`) drew the page camera into a target is `PostProcessing`; reported `flat` with the reason, and a converted canvas that switches it on stands down |
+| **post-processing** | per-eye twins of an `EffectComposer` chain | since v0.8.2 the `RenderPipeline` / `PostProcessing` quad runs once per eye, the page camera swapped for the eye's in the chain's nested renders ([below](#threejs-renderpipeline--postprocessing-v082)); a chain that cannot be split is `flat` with the reason |
 | **readback** | `readPixels` in the drawing task | WebGPU: the surface's GPU copy (three configures `COPY_SRC`, `alphaMode` premultiplied by default and submits each pass in `finishRender`, so `flush()` is a no-op); the WebGL2 fallback: `readPixels`, as `WebGLRenderer` |
 
 Not done: `ArrayCamera` / multi-view (`renderer.render` with an `ArrayCamera` stays flat per the
-existing rule), WebXR on the WebGPU renderer (`renderer.xr` presenting stands down, as on WebGL), and
-three's `PostProcessing` (above). Spark is WebGL-only.
+existing rule) and WebXR on the WebGPU renderer (`renderer.xr` presenting stands down, as on WebGL).
+Spark is WebGL-only.
+
+### three.js `RenderPipeline` / `PostProcessing` (v0.8.2)
+
+`bruno-simon.com` and every threejs.org `webgpu_postprocessing_*` example stayed 2D (`WebGPU PostProcessing — not split
+yet`). **Why it was not split:** three's `RenderPipeline` (`PostProcessing` before r183) puts ONE call on the
+screen: `renderer.render(quadMesh, orthoCamera)`. Everything else happens inside that draw, from the nodes'
+`updateBefore`: a `PassNode` renders the scene with the page camera into its own target, a `BloomNode` runs its
+blur quads, an `rtt()` renders its input. The WebGL driver splits an `EffectComposer` by duplicating each
+top-level draw as it happens (twins); here there is no top-level chain draw to duplicate, only nested ones,
+and the adapter only noted the nested perspective render and reported the page `flat`
+(`three-adapter.js` `gpuPostfx`, called from the screen-draw branch and, while converted, as a stand-down).
+And running the quad twice is not enough by itself: every chain node is a FRAME node (`NodeUpdateType.FRAME`),
+which three runs once per node-frame id, and the id only moves with three's animation loop, so a second
+draw in the same frame re-samples the first eye's targets.
+
+**How it is split (`renderGpuChain`).** The chain's quad (a top-level screen draw that nested a
+perspective render into a target) is remembered, and while converted it is drawn once per eye:
+
+- into the eye's half (the eye viewport). The pipeline turns tone mapping off and output to the working
+  colour space for its quad, so it always draws straight to the canvas; eye 1 keeps eye 0 there
+  (`autoClearColor` off for the canvas draw only, the `direct` clear path). Neither eye keeps the scissor
+  test on: the WebGL2 backend restores the viewport, not the scissor, after a nested render into a target,
+  which clipped eye 1 away (`three-webgpu-chain-fallback` caught it);
+- a nested render with the page camera into a target is drawn with that eye's camera instead
+  (`nestedRender`): the runtime's off-axis projection in the renderer's clip space, as in a direct
+  draw. Any other camera (a spot light's shadow camera, a reflector's) is left alone; the page camera is
+  the first perspective camera drawn into a target in the frame's chain draw;
+- eye 1 runs under a node-frame id of its own (`nodeFrame.frameId + 0.5`, never reached by three's own
+  `++`, put back after), so each FRAME node runs again for it;
+- a node sizing itself in `updateBefore` (`PassNode`: `getSize` × `getPixelRatio` to r182,
+  `getDrawingBufferSize` since; `BloomNode`, `RTTNode`) is answered with the EYE, so the chain's targets
+  are eye-sized, as they are mono-sized on a mono page. The node frame's `updateBeforeNode` is wrapped on
+  the instance (`hookNodeFrame`) to know when that is; the nested renders themselves see the real store.
+  Without it (`gpuChainEyeSize: false`, the control) the targets take the whole store: still a right pair,
+  at twice the pixels, and a bloom blurred half as wide per eye;
+- the nested renders see the page's `autoClearColor`, except where the node sets the clears itself
+  (r183+'s `PassNode`).
+
+**What stays 2D.** A node that carries a history from frame to frame (TRAA, TAAU, after-image, temporal
+denoise / reprojection: each eye would read the other eye's history), or that already makes its own
+stereo pair, by the node's type (`node.constructor.type`, which minifiers keep); a renderer without
+`_nodes.nodeFrame`; and a chain of top-level `render()` calls into targets on a `WebGPURenderer` (the
+WebGL twins are not wired to the common renderer). A node of that kind added while converted stands
+the canvas down with the reason. A chain switched on while converted (or a second one) is split from its
+next frame on; the frame it appears in is drawn flat.
+
+**Cost.** Every chain pass runs twice, at eye size (the same pixels as one mono frame of a
+full-width chain, plus the per-draw overhead). The shadow map renders for each eye (its node keys on the
+camera). The chain's mirror probe (`probeMirror`, WebGL chains) is not run: a node chain that flips its
+picture left-right would come out pseudoscopic.
+
+**Verified.** Harness, three r180 (the pin) and r187: `three-webgpu-chain` (render on demand: idle
+frames replay the chain per eye), `-live`, `-fallback` (WebGL2 backend), `-pr2`, the controls `-ctl` (no
+camera swap: both halves the same picture) and `-size-ctl`, `-temporal`, and `three-webgpu-postfx`
+(product mode, live). Live, headless (`test/probe-live.mjs`, three r187): `bruno-simon.com` and
+threejs.org `webgpu_postprocessing_bloom` go live, both eyes' page camera swapped once per frame, the
+pass targets eye-sized (1280 × 720 of a 2560 × 720 store). **Not seen on the panel**: the pair has not
+been judged by eye, and bloom / DOF / SSAO strength per eye against mono is unmeasured.
 
 ### Keeping up with three.js (v0.7.3)
 

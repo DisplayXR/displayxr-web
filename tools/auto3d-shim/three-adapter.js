@@ -36,7 +36,8 @@
 // (surface.toClip on WebGPU, reversed-Z when reversedDepthBuffer); its clears ignore the scissor, so
 // the eye pair is drawn the way its output path allows (eyeBegin); three's own reads of its size /
 // viewport getters see the REAL store (its screen nodes and output pass sample by them); and a
-// PostProcessing chain is reported 'flat' with a reason, not split. Revision gate: GPU_MIN / GPU_VERIFIED.
+// RenderPipeline / PostProcessing chain has its one quad draw run once per eye, the page camera swapped for
+// the eye's in the passes it renders (renderGpuChain, v0.8.2). Revision gate: GPU_MIN / GPU_VERIFIED.
 function dxrThree(core) {
   core.registerEngine('three.js');
   const { info, warnOnce, desc, realW, realH } = core;
@@ -193,7 +194,7 @@ function dxrThree(core) {
       if (st.idleOps) {
         // Flipped from idle (flipIdle): repaint the page's whole last frame (HUD passes included),
         // not just the scene, and keep it as the frame the session replays.
-        const ops = st.idleOps.map((op) => (op[0] === 'clear' ? op : ['render', op[1], op[2], isMainPerspective(st, op[2])]));
+        const ops = st.idleOps.map((op) => (op[0] === 'clear' ? op : ['render', op[1], op[2], isMainPerspective(st, op[2]), false, st.chainQuads.has(op[1])]));
         st.idleOps = null;
         replay(st, ops);
         st.lastOps = ops;
@@ -203,6 +204,14 @@ function dxrThree(core) {
         // A post-processing page: its screen draws are the chain's final passes, whose render targets
         // still hold the last composed frame. Repaint those, flat, instead of the bare scene.
         const ops = st.monoOps.map((op) => (op[0] === 'clear' ? op : ['render', op[1], op[2], false]));
+        replay(st, ops);
+        st.lastOps = ops;
+        return;
+      }
+      if (st.gpuChain && st.chainOp) {
+        // A WebGPU RenderPipeline page: its last mono frame, the chain's quad drawn per eye.
+        const src = st.monoOps && st.monoOps.length ? st.monoOps : [['render', st.chainOp[0], st.chainOp[1]]];
+        const ops = src.map((op) => (op[0] === 'clear' ? op : ['render', op[1], op[2], false, false, st.chainQuads.has(op[1])]));
         replay(st, ops);
         st.lastOps = ops;
         return;
@@ -316,6 +325,7 @@ function dxrThree(core) {
         coordinateSystem: ready(st) ? st.r.coordinateSystem : null, outCoverVia: st.outCoverVia || null,
         eyeProj0: st.eyes ? Array.from(st.eyes[0].projectionMatrix.elements) : null, // what three draws eye 0 with
         eyeCoord0: st.eyes ? st.eyes[0].coordinateSystem : null,
+        gpuChain: st.gpuChain, nodeFrame: !!st.nf, ppSubs: st.ppSubs.slice(), ppTarget: st.ppRT || null, gpuUnsplit: st.gpuTemporal, // RenderPipeline split per eye (renderGpuChain)
       } : st.postfx ? {
         chainMirror: st.mirrorX === undefined ? null : st.mirrorX, mirrorCorr: st.mirrorCorr, // [as drawn, mirrored] (probeMirror)
         mirrorWhy: st.mirrorWhy, mirrorAsks: st.mirrorAsks,
@@ -336,6 +346,13 @@ function dxrThree(core) {
       // WebGPURenderer: a screen draw with a non-perspective camera whose render (nested) drew a
       // perspective camera into a render target — a PostProcessing chain (pass(scene, camera)).
       nestPersp: null, gpuPostfx: false, clearPath: null,
+      // WebGPURenderer + a RenderPipeline / PostProcessing chain, split per eye (renderGpuChain): the
+      // chain's full-screen quads (top-level screen draws that nested the page camera), the node frame
+      // (hookNodeFrame; undefined until looked up, null when absent), the eye being drawn, whether a
+      // node's updateBefore is sizing itself (answered with the EYE), the node in updateBefore, the
+      // page-camera substitutions per eye in the last chain frame, a temporal node seen (flat).
+      gpuChain: false, chainQuads: new WeakSet(), chainOp: null, nf: undefined, ppEye: null, ppSizing: false, curNode: null,
+      ppSubs: [0, 0], ppRT: null, gpuTemporal: null,
       L: { w: 0, h: 0, pr: 1, vp: [0, 0, 0, 0], sc: [0, 0, 0, 0], scTest: false }, // what the PAGE believes
       eyes: null, eyesFor: null, m4: null,
       mainCam: null, lastScene: null, lastMono: null, qualifyCam: null,
@@ -413,6 +430,7 @@ function dxrThree(core) {
       const inner = real();
       const out = st.call('getSize', t);
       if (st.active && out && !inner) { if (typeof out.set === 'function') out.set(st.L.w, st.L.h); else { out.width = st.L.w; out.height = st.L.h; } }
+      else if (inner && st.ppSizing && out && typeof out.set === 'function') { const pr = st.call('getPixelRatio') || 1; out.set(st.R.eyeW / pr, st.R.eyeH / pr); }
       return out;
     });
     W('getPixelRatio', () => (st.active && !real() ? st.L.pr : st.call('getPixelRatio')));
@@ -423,7 +441,7 @@ function dxrThree(core) {
       if (st.active && out && typeof out.set === 'function' && !inner) {
         if (sparkIn > 0 && st.inEye && st.R) out.set(st.R.eyeW, st.R.eyeH);
         else out.set(Math.floor(st.L.w * st.L.pr), Math.floor(st.L.h * st.L.pr));
-      }
+      } else if (inner && st.ppSizing && out && typeof out.set === 'function') out.set(st.R.eyeW, st.R.eyeH); // a chain node sizing itself for one eye
       return out;
     });
     W('setViewport', (x, y, w, h) => {
@@ -464,12 +482,12 @@ function dxrThree(core) {
       forEyes(st, () => st.call('clear', color, depth, stencil));
     });
     W('render', (scene, camera) => {
-      if (st.common && !top()) { noteNested(st, camera); return st.call('render', scene, camera); }
+      if (st.common && !top()) return nestedRender(st, scene, camera);
       if (!top() || !scene || !camera) return st.call('render', scene, camera);
       // WebGPURenderer before init(): three forwards to renderAsync (r178-r181) or throws (r182+). Not
       // ours to count: the backend (WebGPU, or the WebGL2 fallback) is not decided yet.
       if (st.common && !ready(st)) return st.call('render', scene, camera);
-      if (st.common) st.nestPersp = null;
+      if (st.common) { st.nestPersp = null; if (st.nf === undefined) hookNodeFrame(st); }
       st.stats.calls++;
       const target = st.call('getRenderTarget');
       const toScreen = target === null;
@@ -493,8 +511,10 @@ function dxrThree(core) {
             // post quad drawn in the same frame (the throttle would otherwise keep landing on it).
             if (st.armed) flip(st, scene, camera);
             else { st.qualifyCam = camera; core.considerActivation(st); }
-          } else if (st.common && ((st.nestPersp && !st.sawPersp) || (st.seedTask && !st.seedTask.direct))) {
-            gpuPostfx(st); // WebGPURenderer + a post-processing chain: flat with the reason, not split
+          } else if (st.common && st.nestPersp && (st.gpuChain || !st.sawPersp)) {
+            gpuChainFrame(st, scene, camera); // WebGPURenderer + a RenderPipeline / PostProcessing chain
+          } else if (st.common && st.seedTask && !st.seedTask.direct) {
+            gpuPostfx(st, WHY_GPU_TOPCHAIN); // the page's own chain of top-level render() calls: flat, not split
           } else if (st.seedTask && !st.seedTask.direct) {
             // A post-processing frame: the scene went into a render target earlier in this task, and
             // this full-screen pass put the result on the screen. Qualify / flip on it, with the
@@ -543,6 +563,14 @@ function dxrThree(core) {
         return st.call('render', scene, camera); // shadow / picking / other targets: untouched, mono
       }
       st.frame.drew = true;
+      if (st.gpuChain && st.chainQuads.has(scene)) {
+        // WebGPURenderer: the chain's full-screen quad, drawn once per eye into its half; the page camera
+        // its passes render with is swapped for that eye's camera (nestedRender).
+        st.frame.ops.push(['render', scene, camera, false, false, true]);
+        const out = renderGpuChain(st, scene, camera);
+        takeCover(st);
+        return out;
+      }
       if (st.postfx && !isMainPerspective(st, camera) && taintedSwaps(st, scene)) {
         // The chain's final pass to the screen: once per eye, the right eye sampling the twins.
         st.frame.ops.push(['render', scene, camera, false, true]);
@@ -554,9 +582,14 @@ function dxrThree(core) {
       st.frame.ops.push(['render', scene, camera, stereo]);
       const out = stereo ? renderStereo(st, scene, camera) : renderFlat(st, scene, camera);
       if (stereo) takeCover(st); // after the scene draw, never after a background/HUD pass alone
-      // WebGPURenderer: a flat screen pass that drew the page camera into a target (PostProcessing
-      // switched on while converted): stand down, flat with the reason.
-      if (st.common && !stereo && st.nestPersp && st.nestPersp.camera === st.mainCam) { gpuPostfx(st); core.stand(st, WHY_GPU_POSTFX); }
+      // WebGPURenderer: a flat screen pass that drew the page camera into a target (a RenderPipeline
+      // switched on while converted, or a second one): split from its next frame on, or, when it cannot
+      // be split, stand down, flat with the reason.
+      if (st.common && !stereo && st.nestPersp && st.nestPersp.camera === st.mainCam) {
+        const why = gpuChainWhy(st);
+        if (why) { gpuPostfx(st, why); core.stand(st, why); }
+        else { st.gpuChain = true; st.chainQuads.add(scene); st.chainOp = [scene, camera]; }
+      }
       return out;
     });
     // WebGPURenderer: renderAsync() (deprecated in r181, still common on r178-r180 pages) renders through
@@ -576,20 +609,147 @@ function dxrThree(core) {
     st.mainCam = camera; st.lastScene = scene;
     core.flip(st);
   }
-  // WebGPURenderer post-processing. three's PostProcessing draws a full-screen QuadMesh with an
-  // orthographic camera; its PassNode renders the scene with the page camera into a render target
-  // from INSIDE that draw (a node's updateBefore), i.e. nested. The twin-chain logic of the WebGL
-  // driver (EffectComposer) does not transfer to TSL node chains: not split, flat with the reason.
-  const WHY_GPU_POSTFX = 'WebGPU PostProcessing — not split yet (three.js PostProcessing / pass() chains stay 2D)';
-  function noteNested(st, camera) {
-    if (camera && camera.isPerspectiveCamera && !camera.isArrayCamera && st.call('getRenderTarget') !== null) st.nestPersp = { camera };
+  // ------------------------------------------------------------ WebGPURenderer post-processing
+  // three's RenderPipeline (PostProcessing before r183) draws ONE full-screen QuadMesh with an
+  // orthographic camera to the screen. Its node graph does the rest from INSIDE that draw: each node's
+  // updateBefore runs once per node frame, and a PassNode's renders the scene with the page camera into
+  // its own render target (nested), a BloomNode's runs its blur quads, and so on. Nothing of the chain
+  // is a top-level call, so the WebGL driver's twins (one draw at a time) do not apply. Instead the
+  // whole quad draw runs once per eye (renderGpuChain):
+  //   - into the eye's half (its viewport), eye 1 keeping eye 0 on the canvas (eyeBegin 'direct': the
+  //     pipeline turns tone mapping off for its quad, so it always draws straight to the canvas);
+  //   - a nested render with the page camera into a target is drawn with that eye's camera instead
+  //     (nestedRender): the runtime's off-axis projection, in the renderer's clip space;
+  //   - eye 1 runs under a node frame id of its own (frameId + 0.5, put back after), so every
+  //     once-per-frame node (the passes, the blurs) runs again for it instead of reusing eye 0's;
+  //   - a node sizing itself in updateBefore (PassNode: getSize / getDrawingBufferSize; BloomNode,
+  //     RTTNode) is answered with the EYE, so the chain's targets are eye-sized, as they are mono-sized
+  //     on a mono page (hookNodeFrame + the size getters); the nested renders themselves see the store.
+  // What cannot be split stays flat with the reason: a node that carries a history from frame to frame
+  // (TRAA, TAAU, after-image, temporal denoise / reprojection: each eye would read the other eye's
+  // history) or that already makes its own stereo pair (Stereo / Anaglyph / ParallaxBarrier passes), a
+  // renderer without the node frame, and the page's own chain of top-level render() calls into targets.
+  const WHY_GPU_TOPCHAIN = 'WebGPU post chain drawn as top-level render() calls into targets — not split (three.js RenderPipeline / pass() chains are)';
+  const WHY_GPU_NOFRAME = 'WebGPU RenderPipeline — the renderer has no node frame to run the chain once per eye; left 2D';
+  const GPU_UNSPLIT = new Set(['TRAANode', 'TAAUNode', 'AfterImageNode', 'RecurrentDenoiseNode', 'TemporalReprojectNode',
+    'StereoPassNode', 'AnaglyphPassNode', 'ParallaxBarrierPassNode', 'StereoCompositePassNode']);
+  const whyUnsplit = (t) => `WebGPU RenderPipeline with a node of type ${t} — not split (${/Stereo|Anaglyph|Parallax/.test(t) ? 'the page already makes its own stereo pair' : 'it carries a history from frame to frame, which each eye would read from the other'})`;
+  // The first perspective camera the renderer draws into a target inside a top-level draw: a PassNode's
+  // render comes before anything nested in it (a spot light's shadow camera, a reflector's).
+  function noteNested(st, scene, camera) {
+    if (st.nestPersp || !camera || !camera.isPerspectiveCamera || camera.isArrayCamera) return;
+    if (st.call('getRenderTarget') !== null) st.nestPersp = { camera, scene };
   }
-  function gpuPostfx(st) {
+  function nestedRender(st, scene, camera) {
+    noteNested(st, scene, camera);
+    const i = st.ppEye;
+    if (i === null) return st.call('render', scene, camera);
+    // Inside an eye of renderGpuChain. The render's own internals see the real store (not the eye size
+    // a node sizing itself is given), and the page's autoClearColor (eye 1's "keep eye 0" is for the
+    // canvas only) unless the node in updateBefore sets the clears itself (r183+'s PassNode does).
+    const sz = st.ppSizing, acc = st.r.autoClearColor;
+    const n = st.curNode, ownClears = !!(n && 'autoClearColor' in n);
+    st.ppSizing = false;
+    if (st.acc !== undefined && !ownClears) st.r.autoClearColor = st.acc;
+    try {
+      const rt = camera === st.mainCam && st.eyes && core.T.gpuChainSwap !== false ? st.call('getRenderTarget') : null; // gpuChainSwap: test only (the control)
+      if (!rt) return st.call('render', scene, camera);
+      st.ppSubs[i]++; st.ppRT = [rt.width, rt.height]; // diagnostics (state(): ppTarget)
+      return st.call('render', scene, aimEye(st, camera, st.eyes, i, false));
+    } finally {
+      st.ppSizing = sz;
+      if (st.acc !== undefined && !ownClears) st.r.autoClearColor = acc;
+    }
+  }
+  // The renderer's node frame (r178+: renderer._nodes.nodeFrame, ONE object whose updateBeforeNode runs
+  // every node's updateBefore). Its updateBeforeNode is wrapped on the instance: it notes a node that
+  // cannot be split, and during an eye of renderGpuChain marks the node being updated (ppSizing,
+  // curNode). Outside an eye it calls straight through.
+  function hookNodeFrame(st) {
+    if (st.nf !== undefined) return st.nf;
+    let nf = null;
+    try { const nodes = st.r._nodes; nf = nodes && nodes.nodeFrame; } catch (e) { nf = null; }
+    if (!nf || typeof nf.updateBeforeNode !== 'function' || typeof nf.frameId !== 'number') return (st.nf = null);
+    const f = nf.updateBeforeNode;
+    nf.updateBeforeNode = function (node) {
+      let t = null;
+      try { t = node && node.constructor && node.constructor.type; } catch (e) { t = null; }
+      if (t && !st.gpuTemporal && GPU_UNSPLIT.has(t)) st.gpuTemporal = t;
+      if (st.ppEye === null) return f.call(this, node);
+      const sz = st.ppSizing, cn = st.curNode;
+      st.ppSizing = core.T.gpuChainEyeSize !== false; st.curNode = node;
+      try { return f.call(this, node); } finally { st.ppSizing = sz; st.curNode = cn; }
+    };
+    return (st.nf = nf);
+  }
+  function gpuChainWhy(st) {
+    if (!st.nf) return WHY_GPU_NOFRAME;
+    if (st.gpuTemporal) return whyUnsplit(st.gpuTemporal);
+    return null;
+  }
+  // A mono frame whose screen quad drew the page camera into a target: qualify / flip on it, with the
+  // scene and camera of that pass (the convergence estimator, the target, the eyes use them).
+  function gpuChainFrame(st, quad, ortho) {
+    const why = gpuChainWhy(st);
+    if (why) { gpuPostfx(st, why); return; }
+    const { scene, camera } = st.nestPersp;
+    if (!st.gpuChain) info('three.js canvas', desc(st.canvas), 'draws through a WebGPU RenderPipeline: splitting it per eye');
+    st.gpuChain = true; st.chainQuads.add(quad); st.chainOp = [quad, ortho];
+    st.sawPersp = true;
+    st.lastMono = { scene, camera };
+    hookLookAt(camera);
+    st.qualifyCam = camera;
+    if (st.armed) flip(st, scene, camera);
+    else core.considerActivation(st);
+  }
+  function gpuPostfx(st, why) {
     if (st.gpuPostfx) return;
-    st.gpuPostfx = true; st.flatReason = WHY_GPU_POSTFX;
-    info('three.js canvas', desc(st.canvas), 'stays 2D:', WHY_GPU_POSTFX);
-    if (st.pending || st.armed) core.stand(st, WHY_GPU_POSTFX);
+    st.gpuPostfx = true; st.flatReason = why;
+    info('three.js canvas', desc(st.canvas), 'stays 2D:', why);
+    if (st.pending || st.armed) core.stand(st, why);
     core.notify();
+  }
+  // The chain's quad, once per eye (above). No eyes yet, or no page camera: flat into both halves.
+  function renderGpuChain(st, quad, ortho) {
+    const camera = st.mainCam;
+    if (!st.haveViews || !camera || !st.nf) {
+      if (st.haveViews && st.stats.twoView > 0) st.stats.flatAfterEyes++;
+      return renderFlat(st, quad, ortho);
+    }
+    if (typeof camera.updateWorldMatrix === 'function') camera.updateWorldMatrix(true, false);
+    else if (camera.parent === null) camera.updateMatrixWorld();
+    eyeCameras(st, camera);
+    const nf = st.nf, f0 = nf.frameId;
+    st.ppSubs = [0, 0];
+    st.inEye = true;
+    try {
+      for (let i = 0; i < 2; i++) {
+        setEyeViewport(st, i);
+        eyeBegin(st, i, 'direct');
+        // No scissor for either eye (the quad fills its viewport, and eye 1 clears no colour): with the
+        // renderer's scissor test on, the chain's nested renders into its targets set a scissor that the
+        // WebGL2 backend does not put back for the outer draw (it restores the viewport only), which
+        // clipped eye 1's quad away entirely.
+        if (!st.L.scTest) st.call('setScissorTest', false);
+        if (i === 1) nf.frameId = f0 + 0.5; // never reached by three's own ++: every frame node runs again
+        st.ppEye = i;
+        try { st.call('render', quad, ortho); } finally { st.ppEye = null; }
+      }
+    } finally {
+      st.ppEye = null; st.inEye = false;
+      nf.frameId = f0;
+      eyeEnd(st);
+      st.call('setScissorTest', false);
+    }
+    const [a, b] = st.ppSubs;
+    if ((a > 0 && b > 0) || core.T.gpuChainSwap === false) st.stats.stereo++; // (the control: drawn per eye, unswapped)
+    else {
+      st.stats.flat++;
+      // The page camera was not drawn this frame: follow the one the chain did draw, from the next frame.
+      if (st.nestPersp && st.nestPersp.camera !== camera) st.mainCam = st.nestPersp.camera;
+    }
+    if (st.gpuTemporal) { const why = whyUnsplit(st.gpuTemporal); gpuPostfx(st, why); core.stand(st, why); }
+    core.drew(st);
   }
   // The page's screen draws while NOT converted, one list per task (a page draws its frame in one
   // callback). The last complete list is the mono frame wake / flipIdle replay.
@@ -866,6 +1026,7 @@ function dxrThree(core) {
     try {
       for (const op of ops) {
         if (op[0] === 'clear') forEyes(st, () => st.call('clear', op[1], op[2], op[3]));
+        else if (op[5]) renderGpuChain(st, op[1], op[2]);
         else if (op[4]) renderPostScreen(st, op[1], op[2]);
         else if (op[3]) renderStereo(st, op[1], op[2]);
         else renderFlat(st, op[1], op[2]);

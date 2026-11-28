@@ -1,6 +1,6 @@
 // Probe a LIVE page with the dev shim in headless Chrome (fake inline-3d session, no display):
 // what does auto-3D decide there, and why? Prints the [dxr-auto3d] console lines and the state.
-// Usage: node probe-live.mjs <url> [seconds=25]      env: CHROME=<binary>
+// Usage: node probe-live.mjs <url> [seconds=25]      env: CHROME=<binary>, SHOT=<png path>
 // Like run.mjs: real-GPU headless Chrome, --disable-features=OpenXR,WebXR (never the real runtime).
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -35,11 +35,14 @@ for (const f of page.frames()) {
     const s = await f.evaluate(() => {
       const A = window.__dxrAuto3D; if (!A) return null;
       const S = A.state();
-      return { url: location.href.slice(0, 120), rigMode: S.rigMode, engines: S.engines, renderers: S.renderers.map((r) => ({ active: r.active, engine: r.engine, src: r.convergenceSource, via: r.convergenceVia, conv: r.convergence, open: r.openLatched, openWhy: r.openWhy, verdict: r.verdict, overlay: r.overlayTracked, glass: r.glass, scale: r.rigScale, flat: r.flatReason })) };
+      return { url: location.href.slice(0, 120), rigMode: S.rigMode, engines: S.engines, renderers: S.renderers.map((r) => ({ active: r.active, engine: r.engine, src: r.convergenceSource, via: r.convergenceVia, conv: r.convergence, open: r.openLatched, openWhy: r.openWhy, verdict: r.verdict, overlay: r.overlayTracked, glass: r.glass, scale: r.rigScale, flat: r.flatReason, real: r.real, eye: r.eye, stats: r.stats, renderer: r.renderer, clearPath: r.clearPath, gpuChain: r.gpuChain, ppSubs: r.ppSubs, ppTarget: r.ppTarget, gpuUnsplit: r.gpuUnsplit })) };
     });
     if (s && (s.renderers.length || s.engines.length)) states.push(s);
   } catch (e) { /* cross-origin frame gone */ }
 }
+// SHOT=<file.png>: a screenshot of the page at the end (the compositor's copy: a presented WebGPU
+// canvas reads back empty from script, but not from the compositor).
+if (process.env.SHOT) { try { await page.screenshot({ path: process.env.SHOT }); } catch (e) { console.log('screenshot:', String(e.message).slice(0, 200)); } }
 console.log(log.join('\n'));
 console.log(JSON.stringify(states, null, 1));
 await browser.close();

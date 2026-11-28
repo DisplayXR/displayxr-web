@@ -1,0 +1,108 @@
+<!doctype html>
+<!-- TEST PAGE — an ordinary three.js WebGPURenderer page that draws through three's post-processing
+     node chain (PostProcessing, the r180 name of RenderPipeline): pass(scene, camera) -> an RTT node
+     (rtt(), which sizes itself from renderer.getSize() x getPixelRatio() in its updateBefore, as the
+     PassNode does) -> a 4-tap blur sampled from it -> the screen. Nothing of the chain is a top-level
+     render() call: the page calls post.render() only, which draws one full-screen quad with an
+     orthographic camera; the scene pass and the RTT run from inside that draw. The scene is
+     three-webgpu-orbit.html's (every mesh symmetric about (0, 1, 0), OrbitControls aimed at (0, 1, 3),
+     5 units in front of the camera: expected convergence 5, source 'target'), plus a spot light that
+     casts shadows: its shadow camera is a PerspectiveCamera drawn into a target INSIDE the scene pass,
+     after the page camera. The loop is three's renderer.setAnimationLoop, stopped after 60 frames; then
+     render-on-demand on the controls' 'change'. It knows nothing about DisplayXR.
+       ?temporal=1  a node in the chain whose type is 'AfterImageNode' (a stand-in for three's addon of that
+                    name: a FRAME node that would carry a history from frame to frame). The chain must stay 2D.
+       ?webgl=1     forceWebGL: the WebGL2 fallback backend.
+       ?pr=N        setPixelRatio(N) instead of devicePixelRatio.
+       ?live=1      never stops the loop.
+     Test hooks: window.__grabFrame() renders one frame NOW and reads the canvas back in that task (a
+     WebGPU canvas reads back empty once presented). window.__backend: the backend after init.
+     window.__chainSizes(): the pass's and the RTT's render target sizes as last drawn. -->
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three WebGPURenderer post chain (test)</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block}</style>
+<script type="importmap">{ "imports": { "three": "/deps/three/three.webgpu.js" } }</script>
+</head><body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from '/deps/three/OrbitControls.js';
+const { pass, rtt, uv, vec2, add } = THREE.TSL;
+const q = new URLSearchParams(location.search);
+const temporal = q.has('temporal'), live = q.has('live'), webgl = q.has('webgl');
+window.__expectedConvergence = 5;
+window.__expectedConvergenceSource = 'target';
+const renderer = new THREE.WebGPURenderer({ antialias: false, forceWebGL: webgl });
+renderer.setPixelRatio(q.has('pr') ? +q.get('pr') : window.devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a3040);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, 1, 8);
+scene.add(camera);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444466, 1.0));
+const spot = new THREE.SpotLight(0xffffff, 60, 30, 0.6, 0.3);
+spot.position.set(0, 7, 0.01);
+spot.target.position.set(0, 0, 0);
+spot.castShadow = true;
+spot.shadow.mapSize.set(512, 512);
+scene.add(spot, spot.target);
+const mk = (geo, color, x, y, z) => { const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.4 })); m.position.set(x, y, z); m.castShadow = true; scene.add(m); return m; };
+mk(new THREE.TorusKnotGeometry(0.55, 0.18, 96, 12), 0xff7a2f, 0, 1, 0);
+const box = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+mk(box, 0x2fb4ff, 1.8, 1, 0); mk(box, 0x2fb4ff, -1.8, 1, 0);
+const ball = new THREE.SphereGeometry(0.35, 32, 16);
+mk(ball, 0x9dff4a, 0, 1, 1.8); mk(ball, 0x9dff4a, 0, 1, -1.8);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ color: 0x55616f, roughness: 0.9 }));
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1, 3);
+controls.update();
+
+// The chain: the scene pass, into an RTT, blurred by 4 taps onto the screen.
+const scenePass = pass(scene, camera);
+const tex = rtt(scenePass);
+const d = 0.0015;
+let out = add(tex.sample(uv().add(vec2(d, 0))), tex.sample(uv().add(vec2(-d, 0))), tex.sample(uv().add(vec2(0, d))), tex.sample(uv().add(vec2(0, -d)))).mul(0.25);
+if (temporal) {
+  class History extends THREE.TempNode {
+    static get type() { return 'AfterImageNode'; }
+    constructor(input) { super('vec4'); this.input = input; this.updateBeforeType = THREE.NodeUpdateType.FRAME; }
+    updateBefore() { /* a real one would blend this frame into last frame's target here */ }
+    setup() { return this.input; }
+  }
+  out = new History(out);
+}
+const post = new THREE.PostProcessing(renderer);
+post.outputNode = out;
+window.__chainSizes = () => ({ pass: [scenePass.renderTarget.width, scenePass.renderTarget.height], rtt: [tex.renderTarget.width, tex.renderTarget.height] });
+
+const render = () => post.render();
+window.__camWorld = () => { camera.updateMatrixWorld(); return Array.from(camera.matrixWorld.elements); };
+window.__target = () => [controls.target.x, controls.target.y, controls.target.z];
+controls.addEventListener('change', render);
+
+const CW = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width');
+const CH = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'height');
+const canvas = renderer.domElement;
+window.__grabFrame = () => new Promise((res) => requestAnimationFrame(() => {
+  render(); // submitted by three before it returns; read in this task, before the canvas presents
+  const w = CW.get.call(canvas), h = CH.get.call(canvas);
+  const c2 = document.createElement('canvas'); c2.width = w; c2.height = h;
+  const g = c2.getContext('2d', { willReadFrequently: true }); g.drawImage(canvas, 0, 0);
+  const px = g.getImageData(0, 0, w, h).data;
+  let s = ''; for (let i = 0; i < px.length; i += 32768) s += String.fromCharCode.apply(null, px.subarray(i, i + 32768));
+  res({ w, h, b64: btoa(s), png: c2.toDataURL('image/png') });
+}));
+
+let n = 0;
+renderer.setAnimationLoop(() => {
+  window.__backend = renderer.backend.isWebGPUBackend ? 'webgpu' : renderer.backend.isWebGLBackend ? 'webgl2' : '?';
+  if (!live && n >= 60) { renderer.setAnimationLoop(null); window.__frozen = true; return; }
+  n++; window.__pageFrames = n; render();
+});
+</script>
+</body></html>
