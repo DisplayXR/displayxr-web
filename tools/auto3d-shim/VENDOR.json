@@ -1,20 +1,20 @@
 {
   "name": "displayxr-auto3d",
   "version": "0.8.1",
-  "sourceCommit": "8698006e60994b3a5014e68b80ba2b90ad034fae",
-  "sourceSha256": "bda5ec10eb75fcee71e69700de7b67967a31a91f8d66bfc23b1d27f4cdd69c96",
+  "sourceCommit": "8698006e60994b3a5014e68b80ba2b90ad034fae+dirty",
+  "sourceSha256": "373631708b1181138c84a40e6f4119f5fbc34da4e64b3cd11ccaed5e32b41257",
   "files": {
     "dist/auto3d-sentinel.js": {
       "bytes": 18943,
       "sha256": "990143250246e97b40b7f2dae1811ee020258c5411bb367be1fdeec38af46ca0"
     },
     "dist/auto3d-core.js": {
-      "bytes": 305824,
-      "sha256": "f87c5b14148a5f87924e36e3d8cdc4a8ddbd1fcc4f07281e2f7423c443cc3752"
+      "bytes": 307326,
+      "sha256": "f8dc98de9aa7c2bf89e1f8e9226eda4bca8ae75b839000206adb253586c0ebe7"
     },
     "dist/auto3d-dev.js": {
-      "bytes": 327623,
-      "sha256": "1a17fc125f6e323d986f83be1dbba0bb652354c6bc8a5c2cf22b47ccacce8664"
+      "bytes": 329125,
+      "sha256": "5810a409877c6c60d15d42beda884185bd48c5163720b02f946184e7adb0e3ce"
     }
   }
 }

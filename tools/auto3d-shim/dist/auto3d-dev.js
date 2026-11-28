@@ -535,6 +535,7 @@ function dxrCore(cfg, cap, S) {
     objStandoff: 1.2,    // ... and the camera stands at least this x that radius from the target
     targetDrift: 0.05,   // the target may move at most this x its distance while we watch
     cursorDepth: true,   // the 3D cursor (cursorTick): report the depth under the pointer where the browser draws its cursor at depth
+    zoomLocal: true,     // display rig: the portal distance is applied to the located eyes in the frame the page camera moves (eyeScale); false: through the rig, three frames late
     glassMetric: 'radial', morphMs: 700,        // a rig change after go-live is a MORPH of this length (rigMorph); 0: a cut
     overlayEveryFrames: 30, // page elements over the canvas that move with the camera (hotspots, labels): looked for this often
     glassFront: 1 / 3,   // the share of the core's DEPTH RANGE in front of the glass ...
@@ -820,7 +821,7 @@ function dxrCore(cfg, cap, S) {
     const dr = depthRangeFor(st);
     st.near = dr.near; st.far = dr.far;
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
-    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.rigSwitch = null; st.glass = null; st.morph = null; st.anchorW = 1; // a new activation decides the rig's scale again (setScaleOnce)
+    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.rigSwitch = null; st.glass = null; st.dp0 = 0; st.eyeK = 1; st.morph = null; st.anchorW = 1; // a new activation decides the rig's scale again (setScaleOnce)
     estimateConvergence(st, true);
     st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
     buildRig(st, ad.rigFov(st));
@@ -1019,7 +1020,7 @@ function dxrCore(cfg, cap, S) {
       for (let i = 0; i < 2; i++) { st.V[i].proj.set(views[i].projectionMatrix); st.V[i].pose.set(views[i].transform.matrix); }
       st.haveViews = true; st.stats.twoView++;
       anchorEyes(st); // the nominal viewer on the page camera, the scaled lean clamped (camera rig; v0.7.12)
-      st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14])) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0);
+      st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14])) * (st.eyeK > 0 ? st.eyeK : 1) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0);
     } else {
       st.stats.shortView++;
       if (T.fakeViews && ad.hasCamera(st)) { fakeViews(st); st.haveViews = true; two = true; }
@@ -1148,9 +1149,11 @@ function dxrCore(cfg, cap, S) {
     if (mode === 'display') {
       const r = st.rigs.display;
       const dp = dg > 0 ? dg : ds;
-      r.position.x = r.position.y = 0; r.position.z = -dp;
+      let dq = dp;
+      if (dg > 0 && T.zoomLocal !== false) { if (st.morph || !(st.dp0 > 0)) st.dp0 = dp; dq = st.dp0; } else st.dp0 = 0;
+      r.position.x = r.position.y = 0; r.position.z = -dq;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
-      r.virtualDisplayHeight = 2 * dp * Math.tan(verticalFov / 2);
+      r.virtualDisplayHeight = 2 * dq * Math.tan(verticalFov / 2);
       const dep = depthOf('display');
       r.ipdFactor = dep * k;
       r.parallaxFactor = dep * k;
@@ -1158,6 +1161,7 @@ function dxrCore(cfg, cap, S) {
       st.rig = r;
       return r;
     }
+    st.dp0 = 0;
     const rig = st.rigs.camera;
     rig.type = 'camera';
     rig.position.x = rig.position.y = rig.position.z = 0;
@@ -1332,7 +1336,7 @@ function dxrCore(cfg, cap, S) {
     try { s = st.ad.sampler(st); } catch (e) { s = null; }
     if (!s) { withdraw(); return; }
     const vm = s.viewMatrix || invert4(s.cameraPose);
-    const E = [0, 1].map((i) => mul4(st.V[i].proj, mul4(invert4(st.V[i].pose), vm)));
+    const E = [0, 1].map((i) => mul4(st.V[i].proj, mul4(invert4(eyeDrawn(st, i)), vm)));
     const sgn = st.V[0].pose[12] <= st.V[1].pose[12] ? 1 : -1;   // eye 0 is the left one
     const nx = 2 * u - 1, ny = 1 - 2 * v, asp = rect.width / rect.height, r2 = 0.05 * 0.05;
     let best = Infinity, any = false;
@@ -1512,8 +1516,13 @@ function dxrCore(cfg, cap, S) {
   function startMorph(st) {
     const I = T.morphMs > 0 && st.active && st.rig && st.rigScale && rampK(st) >= 1 && !st.ramp ? rigDisplayInfo(st) : null;
     if (!I) return false;
-    st.morph = { from: st.morph && st.morph.at ? { ...st.morph.at } : cameraForm(st.rig, st.rig.type === 'camera' ? 1 : 0, I), t0: now(), at: null };
+    st.morph = { from: st.morph && st.morph.at ? { ...st.morph.at } : cameraForm(rigShown(st), st.rig.type === 'camera' ? 1 : 0, I), t0: now(), at: null };
     return true;
+  }
+  function rigShown(st) {
+    const r = st.rig, k = st.eyeK > 0 ? st.eyeK : 1;
+    if (!r || r.type !== 'display' || k === 1) return r;
+    return { ...r, position: { x: 0, y: 0, z: r.position.z * k }, virtualDisplayHeight: r.virtualDisplayHeight * k };
   }
   function rigMorph(st, target) {
     const M = st.morph, I = rigDisplayInfo(st);
@@ -1721,11 +1730,25 @@ function dxrCore(cfg, cap, S) {
     return t;
   }
   function eyePose(st, i, m) {
-    const src = st.V[i].pose, t = pivotOffset(st, m);
-    if (!t || t === ZERO3 || (t[0] === 0 && t[1] === 0 && t[2] === 0)) return src;
+    const src = st.V[i].pose, t = pivotOffset(st, m), k = eyeScale(st);
+    const none = !t || t === ZERO3 || (t[0] === 0 && t[1] === 0 && t[2] === 0);
+    if (none && k === 1) return src;
     const o = st.Vp || (st.Vp = [new Float32Array(16), new Float32Array(16)]);
     o[i].set(src);
-    o[i][12] += t[0]; o[i][13] += t[1]; o[i][14] += t[2];
+    if (k !== 1) { o[i][12] *= k; o[i][13] *= k; o[i][14] *= k; }
+    if (!none) { o[i][12] += t[0]; o[i][13] += t[1]; o[i][14] += t[2]; }
+    return o[i];
+  }
+  function eyeScale(st) {
+    if (!(st.dp0 > 0) || st.morph || !st.rig || st.rig.type !== 'display') return (st.eyeK = 1);
+    const g = coreGlass(st) * site.convScale;
+    return (st.eyeK = g > 0 ? g / st.dp0 : 1);
+  }
+  function eyeDrawn(st, i) {
+    const k = st.eyeK > 0 ? st.eyeK : 1;
+    if (k === 1) return st.V[i].pose;
+    const o = st.Vd || (st.Vd = [new Float32Array(16), new Float32Array(16)]);
+    o[i].set(st.V[i].pose); o[i][12] *= k; o[i][13] *= k; o[i][14] *= k;
     return o[i];
   }
   function latchOpen(st, why) {
@@ -2974,7 +2997,7 @@ function dxrDev(core, ctl) {
           real: [realW(st.canvas), realH(st.canvas)],
           eye: st.R ? [st.R.eyeW, st.R.eyeH] : null,
           active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews, eyesOn: !!st.eyesOn, noDisplay: !!(st.nd || st.noDisplay),
-          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via, verdict: st.verdict && st.verdict.done ? { ...st.verdict.done, R: st.verdict.R, Rf: st.verdict.Rf } : null, overlayTracked: !!st.overlayTracked, cursor: st.cur ? { support: st.cur.support, over: st.cur.over, last: st.cur.last } : null, morphing: !!st.morph, rigNow: st.rig ? { type: st.rig.type, z: st.rig.position ? st.rig.position.z : 0, vfov: st.rig.verticalFov, diopters: st.rig.convergenceDiopters, m2v: st.rig.metersToVirtual, ipd: st.rig.ipdFactor, par: st.rig.parallaxFactor, vdh: st.rig.virtualDisplayHeight } : null, glass: st.glass && st.glass.d > 0 ? { d: st.glass.d, lo: st.glass.lo, hi: st.glass.hi, n: st.glass.n, parts: st.glass.set ? st.glass.set.parts.length : 0, note: st.glass.set ? st.glass.set.note : null, list: st.glass.set ? st.glass.set.parts.map((p) => [p.name || '', p.k, +(+p.zlo).toFixed(1), +(+p.zhi).toFixed(1)]) : null } : null, openLatched: !!st.openLatched, openWhy: st.openWhy || null, anchor: st.anchor ? { ...st.anchor } : null, nearSurf: st.nearSurf || null, eyeShear: st.haveViews ? st.V.map((v) => [v.proj[8], v.proj[9]]) : null, eyeMid: st.haveViews ? [0, 1, 2].map((k) => (st.V[0].pose[12 + k] + st.V[1].pose[12 + k]) / 2) : null, rigScale: st.rigScale ? { ...st.rigScale } : null,
+          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via, verdict: st.verdict && st.verdict.done ? { ...st.verdict.done, R: st.verdict.R, Rf: st.verdict.Rf } : null, overlayTracked: !!st.overlayTracked, cursor: st.cur ? { support: st.cur.support, over: st.cur.over, last: st.cur.last } : null, morphing: !!st.morph, rigNow: st.rig ? { type: st.rig.type, k: st.rig.type === 'display' && st.eyeK > 0 ? st.eyeK : 1, z: (st.rig.position ? st.rig.position.z : 0) * (st.rig.type === 'display' && st.eyeK > 0 ? st.eyeK : 1), vfov: st.rig.verticalFov, diopters: st.rig.convergenceDiopters, m2v: st.rig.metersToVirtual, ipd: st.rig.ipdFactor, par: st.rig.parallaxFactor, vdh: st.rig.virtualDisplayHeight * (st.rig.type === 'display' && st.eyeK > 0 ? st.eyeK : 1) } : null, glass: st.glass && st.glass.d > 0 ? { d: st.glass.d, lo: st.glass.lo, hi: st.glass.hi, n: st.glass.n, parts: st.glass.set ? st.glass.set.parts.length : 0, note: st.glass.set ? st.glass.set.note : null, list: st.glass.set ? st.glass.set.parts.map((p) => [p.name || '', p.k, +(+p.zlo).toFixed(1), +(+p.zhi).toFixed(1)]) : null } : null, openLatched: !!st.openLatched, openWhy: st.openWhy || null, anchor: st.anchor ? { ...st.anchor } : null, nearSurf: st.nearSurf || null, eyeShear: st.haveViews ? st.V.map((v) => [v.proj[8], v.proj[9]]) : null, eyeMid: st.haveViews ? [0, 1, 2].map((k) => (st.V[0].pose[12 + k] + st.V[1].pose[12 + k]) / 2) : null, rigScale: st.rigScale ? { ...st.rigScale } : null,
           rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing, lifted: st.lifted || null,
           pivot: st.piv ? { t: [...st.piv.t], c: [...st.piv.c], d: st.piv.d } : null,
           eyeAt: st.eyeAt ? Array.from(st.eyeAt) : null, // eye 0's world position, as last composed by the adapter
@@ -5146,7 +5169,7 @@ function dxrPlayCanvas(core) {
   const shadowOrig = new WeakMap(); // light component -> { orig, wrote }
   function offsetShadows(st) {
     if (core.T.pcShadowOffset === false) return;
-    const d = st.haveViews ? Math.max(0, (st.V[0].pose[14] + st.V[1].pose[14]) / 2) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0) : 0;
+    const d = st.haveViews ? Math.max(0, (st.V[0].pose[14] + st.V[1].pose[14]) / 2) * (st.eyeK > 0 ? st.eyeK : 1) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0) : 0;
     if (!st.shadowLights || ++st.shadowScan >= 30) {
       st.shadowScan = 0;
       try { st.shadowLights = st.app.root.findComponents('light'); } catch (e) { st.shadowLights = []; }

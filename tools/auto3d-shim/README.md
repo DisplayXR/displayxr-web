@@ -1145,6 +1145,8 @@ a structural reason (WebGPU, post effects, several cameras), the HUD shows that 
 
 ### v0.8.1: the 3D cursor, an exact target followed at once, declared hotspots
 
+**Zoom in step with the page camera (`zoomLocal`, `eyeScale`).** A rig pushed to the layer reaches the located eyes three frames after the page camera moved, so one wheel step of a zoom was drawn as two jumps about 50 ms apart. With the angle fixed, a display rig's eyes are linear in the portal distance, so the rig is pushed at a frozen distance and the live distance is applied to the located eyes when the adapter composes them: the same views, in the frame the camera moved. Measured per frame on a three.js WebGPU sample: one jump per wheel step. `dev.js` reports the rig as drawn (`rigNow.k` is the factor).
+
 - **The 3D cursor (`cursorTick`, `cursorDepth`).** Where the browser draws its own cursor at depth
   (`XRDisplayLayer.getCursorDepthSupport()` answers `runtime`), the script reports the depth of the
   content under the pointer every frame: `setCursorDepth({ u, v, disparityPx })`, raw, in device px

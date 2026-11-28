@@ -23,8 +23,8 @@ const pollRig = (ms, until) => new Function(`return (async () => {
   const rig = window.__fakeXR.lastRig;
   return { rigMode: S && S.rigMode, rigType: rig && rig.type, src: R && R.convergenceSource, via: R && R.convergenceVia, latched: R && R.openLatched,
     store: R && R.real, box: [document.querySelector('canvas').clientWidth * devicePixelRatio, document.querySelector('canvas').clientHeight * devicePixelRatio],
-    glass: R && R.glass, verdict: R && R.verdict, overlay: R && R.overlayTracked, conv: R && R.convergence, vdh: rig && rig.virtualDisplayHeight,
-    pz: rig && rig.position && rig.position.z, diopters: rig && rig.convergenceDiopters, scale: R && R.rigScale, waited: Math.round(performance.now() - t0) };
+    glass: R && R.glass, verdict: R && R.verdict, overlay: R && R.overlayTracked, conv: R && R.convergence, vdh: rig && rig.virtualDisplayHeight * (R && R.rigNow && R.rigNow.k || 1),
+    pz: rig && rig.position && rig.position.z * (R && R.rigNow && R.rigNow.k || 1), diopters: rig && rig.convergenceDiopters, scale: R && R.rigScale, waited: Math.round(performance.now() - t0) };
 })();`);
 
 function rigCase(id, name, url, want, why, extra) {

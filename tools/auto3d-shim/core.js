@@ -111,6 +111,7 @@ function dxrCore(cfg, cap, S) {
     objStandoff: 1.2,    // ... and the camera stands at least this x that radius from the target
     targetDrift: 0.05,   // the target may move at most this x its distance while we watch
     cursorDepth: true,   // the 3D cursor (cursorTick): report the depth under the pointer where the browser draws its cursor at depth
+    zoomLocal: true,     // display rig: the portal distance is applied to the located eyes in the frame the page camera moves (eyeScale); false: through the rig, three frames late
     glassMetric: 'radial', morphMs: 700,        // a rig change after go-live is a MORPH of this length (rigMorph); 0: a cut
     overlayEveryFrames: 30, // page elements over the canvas that move with the camera (hotspots, labels): looked for this often
     glassFront: 1 / 3,   // the share of the core's DEPTH RANGE in front of the glass ...
@@ -514,7 +515,7 @@ function dxrCore(cfg, cap, S) {
     const dr = depthRangeFor(st);
     st.near = dr.near; st.far = dr.far;
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
-    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.rigSwitch = null; st.glass = null; st.morph = null; st.anchorW = 1; // a new activation decides the rig's scale again (setScaleOnce)
+    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.rigSwitch = null; st.glass = null; st.dp0 = 0; st.eyeK = 1; st.morph = null; st.anchorW = 1; // a new activation decides the rig's scale again (setScaleOnce)
     estimateConvergence(st, true);
     st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
     buildRig(st, ad.rigFov(st));
@@ -768,7 +769,7 @@ function dxrCore(cfg, cap, S) {
       // How far behind the page camera the runtime put the eyes (a display rig backs them off to the
       // nominal viewing distance): the far plane is pushed out by that much so nothing new clips.
       // The display rig's pivot (pivotOffset) moves the eyes by up to |t| more.
-      st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14])) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0);
+      st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14])) * (st.eyeK > 0 ? st.eyeK : 1) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0);
     } else {
       st.stats.shortView++;
       if (T.fakeViews && ad.hasCamera(st)) { fakeViews(st); st.haveViews = true; two = true; }
@@ -970,9 +971,19 @@ function dxrCore(cfg, cap, S) {
       // The core glass (T.coreGlass): the portal at the live depth that leaves T.glassFront of the
       // core surface in front, times the user's Focus. Else the frozen scale distance (0.7.x).
       const dp = dg > 0 ? dg : ds;
-      r.position.x = r.position.y = 0; r.position.z = -dp;
+      // IN STEP WITH THE PAGE CAMERA (T.zoomLocal). A rig pushed here reaches the located eyes three
+      // frames after the page camera moved (this callback runs before the page's own frame, and a rig
+      // drives a later locate): one wheel step of a zoom was drawn as two jumps, 50 ms apart ("the
+      // window catches up with the zoom", panel 2026-11-27; measured per frame). With the angle fixed, a
+      // display rig's eyes are LINEAR in the portal's distance (position -d, height 2 d tan, eyes at the
+      // viewer's offset x height / H), so the rig is pushed at a frozen distance dp0 and the live
+      // distance is applied to the located eyes when the adapter composes them (eyeScale): the same
+      // views, in the frame the camera moved. The projections do not depend on d.
+      let dq = dp;
+      if (dg > 0 && T.zoomLocal !== false) { if (st.morph || !(st.dp0 > 0)) st.dp0 = dp; dq = st.dp0; } else st.dp0 = 0;
+      r.position.x = r.position.y = 0; r.position.z = -dq;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
-      r.virtualDisplayHeight = 2 * dp * Math.tan(verticalFov / 2);
+      r.virtualDisplayHeight = 2 * dq * Math.tan(verticalFov / 2);
       const dep = depthOf('display');
       r.ipdFactor = dep * k;
       r.parallaxFactor = dep * k;
@@ -980,6 +991,7 @@ function dxrCore(cfg, cap, S) {
       st.rig = r;
       return r;
     }
+    st.dp0 = 0;
     const rig = st.rigs.camera;
     rig.type = 'camera';
     // k: the fade (1 when settled): 0 puts both eyes on the page camera, i.e. the mono picture
@@ -1235,7 +1247,7 @@ function dxrCore(cfg, cap, S) {
     if (!s) { withdraw(); return; }
     const vm = s.viewMatrix || invert4(s.cameraPose);
     // Per eye: projection x inverse(eye pose, page-camera space) x the page camera's view.
-    const E = [0, 1].map((i) => mul4(st.V[i].proj, mul4(invert4(st.V[i].pose), vm)));
+    const E = [0, 1].map((i) => mul4(st.V[i].proj, mul4(invert4(eyeDrawn(st, i)), vm)));
     const sgn = st.V[0].pose[12] <= st.V[1].pose[12] ? 1 : -1;   // eye 0 is the left one
     const nx = 2 * u - 1, ny = 1 - 2 * v, asp = rect.width / rect.height, r2 = 0.05 * 0.05;
     let best = Infinity, any = false;
@@ -1453,8 +1465,14 @@ function dxrCore(cfg, cap, S) {
     const I = T.morphMs > 0 && st.active && st.rig && st.rigScale && rampK(st) >= 1 && !st.ramp ? rigDisplayInfo(st) : null;
     if (!I) return false;
     // The rig that is showing (mid-morph: where the morph has got to), frozen in the page camera's space.
-    st.morph = { from: st.morph && st.morph.at ? { ...st.morph.at } : cameraForm(st.rig, st.rig.type === 'camera' ? 1 : 0, I), t0: now(), at: null };
+    st.morph = { from: st.morph && st.morph.at ? { ...st.morph.at } : cameraForm(rigShown(st), st.rig.type === 'camera' ? 1 : 0, I), t0: now(), at: null };
     return true;
+  }
+  // The rig as it is drawn: a display rig pushed at the frozen distance, at the live one (eyeScale).
+  function rigShown(st) {
+    const r = st.rig, k = st.eyeK > 0 ? st.eyeK : 1;
+    if (!r || r.type !== 'display' || k === 1) return r;
+    return { ...r, position: { x: 0, y: 0, z: r.position.z * k }, virtualDisplayHeight: r.virtualDisplayHeight * k };
   }
   function rigMorph(st, target) {
     const M = st.morph, I = rigDisplayInfo(st);
@@ -1732,11 +1750,30 @@ function dxrCore(cfg, cap, S) {
   // Eye i's pose for the adapters' attach pattern (eye world = camera world × this): the runtime's
   // view transform, moved by the display rig's pivot offset (pivotOffset) when there is one.
   function eyePose(st, i, m) {
-    const src = st.V[i].pose, t = pivotOffset(st, m);
-    if (!t || t === ZERO3 || (t[0] === 0 && t[1] === 0 && t[2] === 0)) return src;
+    const src = st.V[i].pose, t = pivotOffset(st, m), k = eyeScale(st);
+    const none = !t || t === ZERO3 || (t[0] === 0 && t[1] === 0 && t[2] === 0);
+    if (none && k === 1) return src;
     const o = st.Vp || (st.Vp = [new Float32Array(16), new Float32Array(16)]);
     o[i].set(src);
-    o[i][12] += t[0]; o[i][13] += t[1]; o[i][14] += t[2];
+    if (k !== 1) { o[i][12] *= k; o[i][13] *= k; o[i][14] *= k; }
+    if (!none) { o[i][12] += t[0]; o[i][13] += t[1]; o[i][14] += t[2]; }
+    return o[i];
+  }
+  // The live portal distance over the one the rig was pushed at (buildRigMode, T.zoomLocal): read from
+  // the page camera AS IT IS NOW (the adapters call eyePose while they compose a frame, after the
+  // page's controls moved the camera), so the picture's scale and the camera move in the same frame.
+  function eyeScale(st) {
+    if (!(st.dp0 > 0) || st.morph || !st.rig || st.rig.type !== 'display') return (st.eyeK = 1);
+    const g = coreGlass(st) * site.convScale;
+    return (st.eyeK = g > 0 ? g / st.dp0 : 1);
+  }
+  // A located eye in the page camera's space as it is drawn (scaled as eyePose does), for readers
+  // outside a compose: the cursor's depth.
+  function eyeDrawn(st, i) {
+    const k = st.eyeK > 0 ? st.eyeK : 1;
+    if (k === 1) return st.V[i].pose;
+    const o = st.Vd || (st.Vd = [new Float32Array(16), new Float32Array(16)]);
+    o[i].set(st.V[i].pose); o[i][12] *= k; o[i][13] *= k; o[i][14] *= k;
     return o[i];
   }
   // ------------------------------------------------------------ open scenes beyond splats (v0.7.12)
