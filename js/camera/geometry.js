@@ -12,6 +12,26 @@ export function looksSbs(width, height) {
 }
 
 /**
+ * Does an OPENED camera track look like a side-by-side pair by its shape alone — and is that shape
+ * the camera's own? Engines (Chromium, WebKit) default to `resizeMode: 'crop-and-scale'`, so a
+ * plain 16:9 camera asked for 3840x1080 can be DELIVERED as a 3840x1080 crop: wide, yet one lens.
+ * The shape counts only when the frame is not a crop (`resizeMode` is not 'crop-and-scale') and,
+ * where the engine does not say (`resizeMode` absent), when the camera's largest mode
+ * (`maxWidth` x `maxHeight`, from getCapabilities) is itself wider than SBS_ASPECT_MIN. A track
+ * that reports `resizeMode: 'none'` is delivered as the device produces it, so its shape is trusted
+ * as is. A track that describes itself as stereo (`displayxrStereo`) does not need this test.
+ *
+ * @param {{width:number, height:number, resizeMode?:string, maxWidth?:number, maxHeight?:number}} s
+ */
+export function looksNativeSbs({ width, height, resizeMode, maxWidth, maxHeight } = {}) {
+  if (!looksSbs(width, height)) return false;
+  if (resizeMode === 'crop-and-scale') return false;
+  if (resizeMode === 'none') return true;
+  if (maxWidth > 0 && maxHeight > 0 && !looksSbs(maxWidth, maxHeight)) return false;
+  return true;
+}
+
+/**
  * The source rectangle of ONE eye, cropped to the tile's aspect and shifted by the convergence
  * offset. Never upscales past the source: a 640-wide eye (a real raw stereo camera) stays 640.
  *
