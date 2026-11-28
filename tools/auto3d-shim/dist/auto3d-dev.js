@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.8.2 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.8.3 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -39,7 +39,7 @@ function dxrDevHost(loadCore) {
     rig: cur.rig,
     convScale: cur.convScale,
     dev,
-    engines: Object.freeze({ three: true, playcanvas: true, babylon: true }),
+    engines: Object.freeze({ three: true, playcanvas: true, babylon: true, globe: true }),
     test,
     hud: cur.hud !== false,
   });
@@ -112,9 +112,10 @@ function dxrSentinel(cfg, cap) {
   } catch (e) { console.warn(TAG, 'could not watch navigator.xr.requestSession — SDK pages may conflict', e); }
 
   const en = cfg.engines || {};
-  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false;
+  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false, wantGL = en.globe !== false;
   const blocked = cfg.decision === 'block' && !cfg.dev;
   let core = null;     // what dxrCore returned, once loaded
+  let engineCore = false; // ... loaded because an ENGINE was found (not by the globe route)
   let done = false;    // detection finished without a core (opted out / blocked and reported / foreign / load failed)
 
   let opted = false;
@@ -142,7 +143,7 @@ function dxrSentinel(cfg, cap) {
   const reportOff = (engine) => reportOnce({ status: 'off', engine });
 
   function signal(engine) {
-    if (core) return core;
+    if (core) { if (engine && engine !== 'WebGL') engineCore = true; return core; }
     if (done) return null;
     if (optedOut()) {
       done = true;
@@ -156,6 +157,7 @@ function dxrSentinel(cfg, cap) {
     try { make = cap.loadCore(); } catch (e) { console.warn(TAG, 'the core could not be loaded', e); }
     if (typeof make !== 'function') { done = true; disarm(); return null; }
     core = make(cfg, cap, S);
+    engineCore = engine !== 'WebGL'; // 'WebGL' = the globe route's bare-context hand-off, not an engine found
     return core;
   }
   function onForeignEarly() {
@@ -302,7 +304,7 @@ function dxrSentinel(cfg, cap) {
     lookGlobals();
     if (done || pcFound || bjsFound) return;
     if (++polls < 40) { pollT = sTimeout(poll, 500); return; }
-    if (core) return; // three.js (or another path) loaded the core: this canvas is accounted for
+    if (core && engineCore) return; // three.js (or another engine) loaded the core: this canvas is accounted for (the globe route's load is not)
     let tag = null;
     try { tag = glCanvas ? apply(getAttr, glCanvas, ['data-engine']) : null; } catch (e) { tag = null; }
     info(`a WebGL canvas (${descCanvas(glCanvas)}${tag ? `, data-engine="${tag}"` : ''}) but no supported engine found — left 2D.`,
@@ -332,7 +334,7 @@ function dxrSentinel(cfg, cap) {
   function settle(canvas) {
     settledOn = canvas;
     for (const c of glCanvases) if (c !== canvas) return;
-    disarmCanvases(); stopPoll(); unobserve();
+    disarmCanvases(); stopPoll(); unobserve(); stopRawLook();
     polling = false; looking = false; // a WebGL context on another canvas later starts the search again
   }
   const glCanvases = [];
@@ -344,7 +346,7 @@ function dxrSentinel(cfg, cap) {
   };
 
   const disarm = () => {
-    retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k); for (const k of [...bjsKeys]) removeBjsKey(k);
+    retired = true; disarmCanvases(); stopPoll(); unobserve(); stopRawLook(); for (const k of [...keyTraps]) removeKeyTrap(k); for (const k of [...bjsKeys]) removeBjsKey(k);
     document.removeEventListener('DOMContentLoaded', lookGlobals);
     window.removeEventListener('load', lookGlobals);
   };
@@ -417,15 +419,41 @@ function dxrSentinel(cfg, cap) {
     }
   }
 
-  if (wantPC || wantBJS) {
+  const RAW_LOOK_MS = 3000, RAW_MAX = 8;
+  const rawGL = [];
+  let rawT = 0;
+  function stopRawLook() { if (rawT) { cTimeout(rawT); rawT = 0; } rawGL.length = 0; }
+  const rawSeen = new WeakSet();
+  function noteRaw(c, ctx) {
+    if (!wantGL || retired || done || !ctx || rawSeen.has(ctx) || rawGL.length >= RAW_MAX || typeof WeakRef !== 'function') return;
+    rawSeen.add(ctx);
+    rawGL.push({ c: new WeakRef(c), g: new WeakRef(ctx) });
+    if (!rawT) rawT = sTimeout(rawLook, RAW_LOOK_MS);
+  }
+  function rawLook() {
+    rawT = 0;
+    if (retired || done || (blocked && !core)) return;
+    const list = rawGL.splice(0);
+    let c = core;
+    for (const e of list) {
+      const cv = e.c.deref(), g = e.g.deref();
+      if (!cv || !g) continue;
+      if (!c) c = signal('WebGL');
+      if (!c) return;
+      if (c.globe) { try { c.globe.consider(cv, g); } catch (x) { console.warn(TAG, 'could not watch a WebGL context', x); } }
+    }
+  }
+
+  if (wantPC || wantBJS || wantGL) {
     const GC = HTMLCanvasElement.prototype.getContext;
     const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
     const seenGL = new WeakSet();
-    const onContext = (c, type, attrs) => {
+    const onContext = (c, type, attrs, ctx) => {
       if (done) return;
       const kind = WEBGL[type];
       if (kind && wantBJS && !retired && bjsLikely(kind, attrs)) trapBjs(kind, c); // first: a Babylon engine assigns the context right after this call
       if (pcFound) return;
+      if (kind === 1) noteRaw(c, ctx);
       sweepLazy();
       if (type === '2d') { unarm(c); return; }
       if (!kind || seenGL.has(c)) return;
@@ -442,7 +470,7 @@ function dxrSentinel(cfg, cap) {
     try {
       HTMLCanvasElement.prototype.getContext = function getContext(type) {
         const ctx = apply(GC, this, arguments);
-        try { onContext(this, type, arguments[1]); } catch (e) { /* never break the page's getContext */ }
+        try { onContext(this, type, arguments[1], ctx); } catch (e) { /* never break the page's getContext */ }
         return ctx;
       };
     } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps / Babylon.js engines may not be found', e); }
@@ -489,7 +517,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.8.2'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.8.3'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -1856,6 +1884,7 @@ function dxrCore(cfg, cap, S) {
   function estimateConvergence(st, snap, targetOnly) {
     const s = st.ad.sampler(st);
     if (!s) return false;
+    if (!st.openLatched && typeof st.ad.world === 'function') { const w = st.ad.world(st); if (w) latchOpen(st, w); }
     let d = T.convTarget ? targetDepth(st, s) : 0, src = 'target', raw = d;
     if (!(d > 0)) {
       if (targetOnly) return false;
@@ -2238,12 +2267,13 @@ function dxrCore(cfg, cap, S) {
   const three = en.three === false ? null : dxrThree(core);
   const playcanvas = en.playcanvas === false ? null : dxrPlayCanvas(core);
   const babylon = en.babylon === false ? null : dxrBabylon(core);
+  const globe = en.globe === false ? null : dxrGlobe(core, dxrGlTap(core));
 
   S.onForeign(yieldTo);
   if (S.foreign()) yieldTo(S.foreign());
   info(`core armed (v${VERSION})`, on() ? '' : '(OFF for this site)');
   notify();
-  return { ctl, three, playcanvas, babylon };
+  return { ctl, three, playcanvas, babylon, globe };
 }
 function dxrSurface(core) {
   const { warnOnce } = core;
@@ -6295,6 +6325,684 @@ function dxrBabylon(core) {
 
   info(`Babylon.js adapter armed (core v${core.VERSION})`);
   return { consider };
+}
+function dxrGlTap(core) {
+  const near1 = (a, b, e) => Math.abs(a - b) <= e * Math.max(1, Math.abs(a), Math.abs(b));
+  function isClip(m, o) {
+    const r30 = m[o + 3], r31 = m[o + 7], r32 = m[o + 11], r33 = m[o + 15];
+    if (Math.abs(r30) < 1e-9 && Math.abs(r31) < 1e-9 && Math.abs(r32) < 1e-9 && near1(r33, 1, 1e-6)) return false; // affine
+    const n3 = Math.hypot(r30, r31, r32);
+    if (n3 < 1e-12) return false;
+    const a = m[o + 2], b = m[o + 6], c = m[o + 10], n2 = Math.hypot(a, b, c);
+    const cross = Math.hypot(b * r32 - c * r31, c * r30 - a * r32, a * r31 - b * r30);
+    return n2 < 1e-9 * n3 || cross < 1e-3 * n2 * n3;
+  }
+  const DRAWS = ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements'];
+
+  return function tap(gl, hooks) {
+    const G = gl;
+    const O = {}; // originals, bound to the prototype functions
+    const own = []; // own props we defined (uninstall deletes them)
+    const FB = G.FRAMEBUFFER, DRAW_FB = 0x8CA9, COLOR0 = G.COLOR_ATTACHMENT0, SCISSOR = G.SCISSOR_TEST, TEX2D = G.TEXTURE_2D;
+    const s = { prog: null, fbo: null, vp: [0, 0, G.drawingBufferWidth, G.drawingBufferHeight], sc: [0, 0, G.drawingBufferWidth, G.drawingBufferHeight], scOn: false, unit: 0, units: [], rb: null };
+    try {
+      s.prog = G.getParameter(G.CURRENT_PROGRAM);
+      s.fbo = G.getParameter(G.FRAMEBUFFER_BINDING);
+      const v = G.getParameter(G.VIEWPORT); if (v) s.vp = [v[0], v[1], v[2], v[3]];
+      const b = G.getParameter(G.SCISSOR_BOX); if (b) s.sc = [b[0], b[1], b[2], b[3]];
+      s.scOn = G.isEnabled(SCISSOR);
+      s.unit = G.getParameter(G.ACTIVE_TEXTURE) - G.TEXTURE0;
+      s.units[s.unit] = G.getParameter(G.TEXTURE_BINDING_2D);
+    } catch (e) { /* a lost context: defaults */ }
+    const texSize = new WeakMap(), rbSize = new WeakMap(), fboSize = new WeakMap(), fboColor = new WeakMap();
+    const progU = new WeakMap();
+    const locName = new WeakMap();
+    let taint = new WeakSet(); // textures this tap filled side by side (cleared when stereo ends: clearTaint)
+    const T = {
+      stereo: null, frames: 0, F: null, sampleVerts: true,
+      uninstall() { for (const k of own) { try { delete G[k]; } catch (e) { /* ignore */ } } own.length = 0; T.stereo = null; },
+    };
+    const def = (name, fn) => {
+      const orig = G[name];
+      if (typeof orig !== 'function') return;
+      O[name] = orig;
+      const rec = !NO_REPLAY.test(name);
+      const w = function () { if (recOn && rec && !replaying) record(G, name, arguments); return fn.apply(this, arguments); };
+      try { Object.defineProperty(G, name, { configurable: true, writable: true, enumerable: false, value: w }); own.push(name); } catch (e) { /* frozen */ }
+    };
+    const call = (name, ...a) => O[name].apply(G, a);
+
+    const NO_REPLAY = /^(create|delete|get|is[A-Z]|check|read|validate|compile|link|attach|detach|shaderSource|bindAttribLocation|finish|makeXRCompatible|tex(Image|SubImage|Storage)|compressedTex|copyTex|generateMipmap|pixelStorei|transformFeedbackVaryings|uniformBlockBinding|fenceSync|clientWaitSync|waitSync|beginQuery|endQuery|drawingBuffer|getExtension)/;
+    const REPLAY_MAX_UPLOAD = 512 * 1024;
+    let recOn = false, replaying = false, cur = [], last = null, curBig = false;
+    const copyArg = (a) => {
+      if (a && typeof a === 'object') {
+        if (ArrayBuffer.isView(a)) return a instanceof DataView ? new DataView(a.buffer.slice(a.byteOffset, a.byteOffset + a.byteLength)) : a.slice();
+        if (a instanceof ArrayBuffer) return a.slice(0);
+        if (Array.isArray(a)) return a.slice();
+      }
+      return a;
+    };
+    function record(target, name, args) {
+      if (cur.length > 60000) return;
+      if ((name === 'bufferData' || name === 'bufferSubData') && args[1] && typeof args[1] === 'object' && (args[1].byteLength || 0) > REPLAY_MAX_UPLOAD) return;
+      const a = new Array(args.length);
+      for (let i = 0; i < args.length; i++) a[i] = copyArg(args[i]);
+      cur.push(target, name, a);
+    }
+    const SAVE_ENABLES = ['BLEND', 'DEPTH_TEST', 'CULL_FACE', 'SCISSOR_TEST', 'STENCIL_TEST', 'POLYGON_OFFSET_FILL', 'SAMPLE_ALPHA_TO_COVERAGE', 'DITHER', 'RASTERIZER_DISCARD'].filter((k) => G[k] !== undefined);
+    const SAVE_PARAMS = ['CURRENT_PROGRAM', 'ARRAY_BUFFER_BINDING', 'FRAMEBUFFER_BINDING', 'READ_FRAMEBUFFER_BINDING', 'RENDERBUFFER_BINDING', 'ACTIVE_TEXTURE', 'VIEWPORT', 'SCISSOR_BOX',
+      'BLEND_SRC_RGB', 'BLEND_DST_RGB', 'BLEND_SRC_ALPHA', 'BLEND_DST_ALPHA', 'BLEND_EQUATION_RGB', 'BLEND_EQUATION_ALPHA', 'BLEND_COLOR', 'DEPTH_FUNC', 'DEPTH_WRITEMASK', 'COLOR_WRITEMASK',
+      'CULL_FACE_MODE', 'FRONT_FACE', 'STENCIL_FUNC', 'STENCIL_REF', 'STENCIL_VALUE_MASK', 'STENCIL_FAIL', 'STENCIL_PASS_DEPTH_FAIL', 'STENCIL_PASS_DEPTH_PASS', 'STENCIL_WRITEMASK',
+      'STENCIL_BACK_FUNC', 'STENCIL_BACK_REF', 'STENCIL_BACK_VALUE_MASK', 'STENCIL_BACK_FAIL', 'STENCIL_BACK_PASS_DEPTH_FAIL', 'STENCIL_BACK_PASS_DEPTH_PASS', 'STENCIL_BACK_WRITEMASK',
+      'COLOR_CLEAR_VALUE', 'DEPTH_CLEAR_VALUE', 'STENCIL_CLEAR_VALUE', 'POLYGON_OFFSET_FACTOR', 'POLYGON_OFFSET_UNITS', 'LINE_WIDTH', 'DEPTH_RANGE', 'VERTEX_ARRAY_BINDING', 'UNIFORM_BUFFER_BINDING'].filter((k) => G[k] !== undefined);
+    function saveState() {
+      const P = (k) => { try { return G.getParameter(G[k]); } catch (e) { return undefined; } };
+      const o = { en: SAVE_ENABLES.map((k) => G.isEnabled(G[k])) };
+      for (const k of SAVE_PARAMS) o[k] = P(k);
+      if (vaoExt) { try { o.vaoOES = G.getParameter(vaoExt.VERTEX_ARRAY_BINDING_OES); } catch (e) { /* ignore */ } }
+      o.tex = [];
+      const n = Math.min(32, Math.max(s.units.length, 1));
+      for (let u = 0; u < n; u++) { call('activeTexture', G.TEXTURE0 + u); o.tex.push([P('TEXTURE_BINDING_2D'), P('TEXTURE_BINDING_CUBE_MAP'), G.TEXTURE_BINDING_3D !== undefined ? P('TEXTURE_BINDING_3D') : null, G.TEXTURE_BINDING_2D_ARRAY !== undefined ? P('TEXTURE_BINDING_2D_ARRAY') : null]); }
+      call('activeTexture', o.ACTIVE_TEXTURE);
+      return o;
+    }
+    function restoreState(o) {
+      const g = G, C = (n, ...a) => { try { (O[n] || g[n]).apply(g, a); } catch (e) { /* ignore */ } };
+      SAVE_ENABLES.forEach((k, i) => C(o.en[i] ? 'enable' : 'disable', g[k]));
+      for (let u = 0; u < o.tex.length; u++) {
+        C('activeTexture', g.TEXTURE0 + u);
+        const t = o.tex[u];
+        C('bindTexture', g.TEXTURE_2D, t[0]); C('bindTexture', g.TEXTURE_CUBE_MAP, t[1]);
+        if (g.TEXTURE_3D !== undefined) { C('bindTexture', g.TEXTURE_3D, t[2]); C('bindTexture', g.TEXTURE_2D_ARRAY, t[3]); }
+      }
+      C('activeTexture', o.ACTIVE_TEXTURE);
+      if (o.VERTEX_ARRAY_BINDING !== undefined) C('bindVertexArray', o.VERTEX_ARRAY_BINDING);
+      if (vaoExt && o.vaoOES !== undefined) { try { vaoExt.__dxrOrig.bindVertexArrayOES.call(vaoExt, o.vaoOES); } catch (e) { /* ignore */ } }
+      C('useProgram', o.CURRENT_PROGRAM);
+      C('bindBuffer', g.ARRAY_BUFFER, o.ARRAY_BUFFER_BINDING);
+      if (o.UNIFORM_BUFFER_BINDING !== undefined) C('bindBuffer', g.UNIFORM_BUFFER, o.UNIFORM_BUFFER_BINDING);
+      if (o.READ_FRAMEBUFFER_BINDING !== undefined) { C('bindFramebuffer', 0x8CA8, o.READ_FRAMEBUFFER_BINDING); C('bindFramebuffer', 0x8CA9, o.FRAMEBUFFER_BINDING); }
+      else C('bindFramebuffer', g.FRAMEBUFFER, o.FRAMEBUFFER_BINDING);
+      C('bindRenderbuffer', g.RENDERBUFFER, o.RENDERBUFFER_BINDING);
+      const v = o.VIEWPORT, b = o.SCISSOR_BOX;
+      if (v) C('viewport', v[0], v[1], v[2], v[3]);
+      if (b) C('scissor', b[0], b[1], b[2], b[3]);
+      C('blendFuncSeparate', o.BLEND_SRC_RGB, o.BLEND_DST_RGB, o.BLEND_SRC_ALPHA, o.BLEND_DST_ALPHA);
+      C('blendEquationSeparate', o.BLEND_EQUATION_RGB, o.BLEND_EQUATION_ALPHA);
+      if (o.BLEND_COLOR) C('blendColor', o.BLEND_COLOR[0], o.BLEND_COLOR[1], o.BLEND_COLOR[2], o.BLEND_COLOR[3]);
+      C('depthFunc', o.DEPTH_FUNC); C('depthMask', o.DEPTH_WRITEMASK);
+      if (o.COLOR_WRITEMASK) C('colorMask', o.COLOR_WRITEMASK[0], o.COLOR_WRITEMASK[1], o.COLOR_WRITEMASK[2], o.COLOR_WRITEMASK[3]);
+      C('cullFace', o.CULL_FACE_MODE); C('frontFace', o.FRONT_FACE);
+      C('stencilFuncSeparate', g.FRONT, o.STENCIL_FUNC, o.STENCIL_REF, o.STENCIL_VALUE_MASK); C('stencilFuncSeparate', g.BACK, o.STENCIL_BACK_FUNC, o.STENCIL_BACK_REF, o.STENCIL_BACK_VALUE_MASK);
+      C('stencilOpSeparate', g.FRONT, o.STENCIL_FAIL, o.STENCIL_PASS_DEPTH_FAIL, o.STENCIL_PASS_DEPTH_PASS); C('stencilOpSeparate', g.BACK, o.STENCIL_BACK_FAIL, o.STENCIL_BACK_PASS_DEPTH_FAIL, o.STENCIL_BACK_PASS_DEPTH_PASS);
+      C('stencilMaskSeparate', g.FRONT, o.STENCIL_WRITEMASK); C('stencilMaskSeparate', g.BACK, o.STENCIL_BACK_WRITEMASK);
+      if (o.COLOR_CLEAR_VALUE) C('clearColor', o.COLOR_CLEAR_VALUE[0], o.COLOR_CLEAR_VALUE[1], o.COLOR_CLEAR_VALUE[2], o.COLOR_CLEAR_VALUE[3]);
+      C('clearDepth', o.DEPTH_CLEAR_VALUE); C('clearStencil', o.STENCIL_CLEAR_VALUE);
+      C('polygonOffset', o.POLYGON_OFFSET_FACTOR, o.POLYGON_OFFSET_UNITS); C('lineWidth', o.LINE_WIDTH);
+      if (o.DEPTH_RANGE) C('depthRange', o.DEPTH_RANGE[0], o.DEPTH_RANGE[1]);
+      s.prog = o.CURRENT_PROGRAM; s.fbo = o.FRAMEBUFFER_BINDING; s.unit = o.ACTIVE_TEXTURE - g.TEXTURE0;
+      if (v) s.vp = [v[0], v[1], v[2], v[3]];
+      if (b) s.sc = [b[0], b[1], b[2], b[3]];
+      s.scOn = o.en[SAVE_ENABLES.indexOf('SCISSOR_TEST')];
+      for (let u = 0; u < o.tex.length; u++) s.units[u] = o.tex[u][0];
+    }
+    T.replay = function () {
+      if (!last || replaying || queued || (G.isContextLost && G.isContextLost())) return false;
+      const saved = saveState();
+      replaying = true;
+      F = newF(); F.replay = true;
+      const L = last;
+      try {
+        for (let i = 0; i < L.length; i += 3) { const tg = L[i], fn = tg[L[i + 1]]; try { fn.apply(tg, L[i + 2]); } catch (e) { /* a deleted object: GL drops the call */ } }
+      } finally {
+        replaying = false;
+        restoreState(saved);
+        try { for (let i = 0; i < 16 && O.getError.call(G) !== G.NO_ERROR; i++); } catch (e) { /* lost */ }
+      }
+      const f = F; F = null;
+      T.frames++; T.F = f;
+      try { hooks.frame(f); } catch (e) { core.warnOnce('gltap-frame', "the WebGL tap's frame hook failed", e); }
+      return true;
+    };
+    Object.defineProperty(T, 'record', { get: () => recOn, set: (v) => { recOn = !!v; if (!recOn) { cur = []; last = null; } } });
+    Object.defineProperty(T, 'canReplay', { get: () => !!last });
+
+    let F = null, queued = false;
+    const newF = () => ({ draws: 0, screen: 0, clip: 0, flat: 0, through: 0, skipped: 0, offscreen: 0, tiles: [], verts: [], wq: [], p11: [], stereo: !!T.stereo });
+    function touch() {
+      if (!F) F = newF();
+      if (!queued && !replaying) { queued = true; queueMicrotask(endFrame); }
+    }
+    function endFrame() {
+      queued = false;
+      const f = F; F = null;
+      if (recOn) { if (f && f.screen > 0 && !curBig) last = cur; cur = []; curBig = false; }
+      if (!f) return;
+      T.frames++;
+      T.F = f;
+      try { hooks.frame(f); } catch (e) { core.warnOnce('gltap-frame', 'the WebGL tap\'s frame hook failed', e); }
+    }
+
+    const dbw = () => G.drawingBufferWidth, dbh = () => G.drawingBufferHeight;
+    function sizeOfFbo(f) {
+      let z = fboSize.get(f);
+      if (z === undefined) {
+        z = null;
+        try { // a framebuffer made before the tap: ask what is attached
+          const prev = s.fbo;
+          if (prev !== f) call('bindFramebuffer', FB, f);
+          const t = G.getFramebufferAttachmentParameter(FB, COLOR0, G.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE);
+          const o = G.getFramebufferAttachmentParameter(FB, COLOR0, G.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
+          if (t === G.RENDERBUFFER && o) { const p = G.getParameter(G.RENDERBUFFER_BINDING); call('bindRenderbuffer', G.RENDERBUFFER, o); z = [G.getRenderbufferParameter(G.RENDERBUFFER, G.RENDERBUFFER_WIDTH), G.getRenderbufferParameter(G.RENDERBUFFER, G.RENDERBUFFER_HEIGHT)]; call('bindRenderbuffer', G.RENDERBUFFER, p); }
+          else if (t === G.TEXTURE && o) { z = texSize.get(o) || null; fboColor.set(f, o); }
+          if (prev !== f) call('bindFramebuffer', FB, prev);
+        } catch (e) { z = null; }
+        fboSize.set(f, z);
+      }
+      return z;
+    }
+    const isScreen = () => {
+      if (!s.fbo) return true;
+      const z = sizeOfFbo(s.fbo);
+      return !!z && z[0] === dbw() && z[1] === dbh();
+    };
+    const targetW = () => (s.fbo ? (sizeOfFbo(s.fbo) || [dbw()])[0] : dbw());
+    const targetH = () => (s.fbo ? (sizeOfFbo(s.fbo) || [0, dbh()])[1] : dbh());
+
+    def('useProgram', function (p) { s.prog = p; return call('useProgram', p); });
+    def('bindFramebuffer', function (t, f) { if (t === FB || t === DRAW_FB) s.fbo = f; return call('bindFramebuffer', t, f); });
+    def('viewport', function (x, y, w, h) { s.vp = [x, y, w, h]; return call('viewport', x, y, w, h); });
+    def('scissor', function (x, y, w, h) { s.sc = [x, y, w, h]; return call('scissor', x, y, w, h); });
+    def('enable', function (c) { if (c === SCISSOR) s.scOn = true; return call('enable', c); });
+    def('disable', function (c) { if (c === SCISSOR) s.scOn = false; return call('disable', c); });
+    def('activeTexture', function (u) { s.unit = u - G.TEXTURE0; return call('activeTexture', u); });
+    def('bindTexture', function (t, x) { if (t === TEX2D) s.units[s.unit] = x; return call('bindTexture', t, x); });
+    def('texImage2D', function () {
+      const a = arguments, x = s.units[s.unit];
+      if (x && a[0] === TEX2D && a[1] === 0) { if (a.length >= 8) texSize.set(x, [a[3], a[4]]); else if (a[5] && a[5].width) texSize.set(x, [a[5].width, a[5].height]); }
+      return O.texImage2D.apply(G, a);
+    });
+    def('texStorage2D', function (t, l, f, w, h) { const x = s.units[s.unit]; if (x && t === TEX2D) texSize.set(x, [w, h]); return call('texStorage2D', t, l, f, w, h); });
+    def('bindRenderbuffer', function (t, r) { s.rb = r; return call('bindRenderbuffer', t, r); });
+    def('renderbufferStorage', function (t, f, w, h) { if (s.rb) rbSize.set(s.rb, [w, h]); return call('renderbufferStorage', t, f, w, h); });
+    def('renderbufferStorageMultisample', function (t, n, f, w, h) { if (s.rb) rbSize.set(s.rb, [w, h]); return call('renderbufferStorageMultisample', t, n, f, w, h); });
+    def('framebufferTexture2D', function (t, att, tt, tex, l) {
+      if (att === COLOR0 && s.fbo && (t === FB || t === DRAW_FB)) { fboColor.set(s.fbo, tex); fboSize.set(s.fbo, (tex && texSize.get(tex)) || null); }
+      return call('framebufferTexture2D', t, att, tt, tex, l);
+    });
+    def('framebufferRenderbuffer', function (t, att, rt, rb) {
+      if (att === COLOR0 && s.fbo && (t === FB || t === DRAW_FB)) { fboColor.delete(s.fbo); fboSize.set(s.fbo, (rb && rbSize.get(rb)) || null); }
+      return call('framebufferRenderbuffer', t, att, rt, rb);
+    });
+    def('getUniformLocation', function (p, name) {
+      const l = O.getUniformLocation.call(G, p, name);
+      if (l) { try { locName.set(l, String(name)); } catch (e) { /* ignore */ } }
+      return l;
+    });
+    def('uniformMatrix4fv', function (loc, tr, d, off, len) {
+      try {
+        const p = s.prog, o = off | 0;
+        if (p && loc && d && d.length - o >= 16) {
+          let M = progU.get(p);
+          const key = locName.get(loc) || loc;
+          if (d.length - o > 16 || tr) { if (M) M.delete(key); } // arrays / transposed: not ours
+          else if (isClip(d, o)) {
+            if (!M) progU.set(p, (M = new Map()));
+            let e = M.get(key); if (!e) M.set(key, (e = { loc, m: new Float32Array(16) }));
+            e.loc = loc;
+            const m = e.m; for (let i = 0; i < 16; i++) m[i] = d[o + i];
+          } else if (M) M.delete(key);
+        }
+      } catch (e) { /* never break the upload */ }
+      return O.uniformMatrix4fv.apply(G, arguments);
+    });
+    def('clear', function (mask) {
+      if (T.stereo && s.scOn && isScreen()) {
+        const sc = s.sc, W = targetW();
+        try { for (let i = 0; i < 2; i++) { call('scissor', i * W / 2 + sc[0] / 2, sc[1], sc[2] / 2, sc[3]); call('clear', mask); } }
+        finally { call('scissor', sc[0], sc[1], sc[2], sc[3]); }
+        return;
+      }
+      return call('clear', mask);
+    });
+
+    const tmp = new Float32Array(16);
+    function eyeMatrix(m, k, C) {
+      tmp.set(m);
+      tmp[0] += k * m[3]; tmp[4] += k * m[7]; tmp[8] += k * m[11]; tmp[12] += k * m[15] - k * C;
+      return tmp;
+    }
+    function samplesTainted() {
+      for (let i = 0; i < s.units.length; i++) { const x = s.units[i]; if (x && taint.has(x)) return true; }
+      return false;
+    }
+    function inHalves(fn, args, M) {
+      const vp = s.vp, sc = s.sc, scOn = s.scOn, W = targetW(), H = targetH(), st = T.stereo;
+      const C = st.C > 0 ? st.C : 1;
+      try {
+        if (!scOn) call('enable', SCISSOR);
+        for (let i = 0; i < 2; i++) {
+          if (M) { const k = +st.k[i] || 0; for (const e of M.values()) O.uniformMatrix4fv.call(G, e.loc, false, eyeMatrix(e.m, k, C)); }
+          const x0 = i * W / 2;
+          call('viewport', x0 + vp[0] / 2, vp[1], vp[2] / 2, vp[3]);
+          let a = x0, b = x0 + W / 2, y0 = 0, y1 = H;
+          if (scOn) { a = Math.max(a, x0 + sc[0] / 2); b = Math.min(b, x0 + (sc[0] + sc[2]) / 2); y0 = sc[1]; y1 = sc[1] + sc[3]; }
+          call('scissor', a, y0, Math.max(0, b - a), Math.max(0, y1 - y0));
+          fn.apply(G, args);
+        }
+      } finally {
+        if (M) for (const e of M.values()) O.uniformMatrix4fv.call(G, e.loc, false, e.m);
+        call('viewport', vp[0], vp[1], vp[2], vp[3]);
+        call('scissor', sc[0], sc[1], sc[2], sc[3]);
+        if (!scOn) call('disable', SCISSOR);
+      }
+      if (s.fbo) { const c = fboColor.get(s.fbo); if (c) taint.add(c); }
+    }
+    const HEAD_BYTES = 4096, VERTS_PER_DRAW = 6;
+    const bufHead = new WeakMap(), posAttr = new WeakMap(), layouts = new WeakMap();
+    let arrayBuf = null;
+    try { arrayBuf = G.getParameter(G.ARRAY_BUFFER_BINDING); } catch (e) { /* ignore */ }
+    def('bindBuffer', function (t, b) { if (t === G.ARRAY_BUFFER) arrayBuf = b; return call('bindBuffer', t, b); });
+    def('bufferData', function (t, d) {
+      if (t === G.ARRAY_BUFFER && arrayBuf) {
+        try {
+          if (d && typeof d === 'object' && arguments.length <= 3) {
+            const u8 = ArrayBuffer.isView(d) ? new Uint8Array(d.buffer, d.byteOffset, Math.min(d.byteLength, HEAD_BYTES)) : new Uint8Array(d, 0, Math.min(d.byteLength, HEAD_BYTES));
+            bufHead.set(arrayBuf, u8.slice());
+          } else bufHead.delete(arrayBuf);
+          layouts.delete(arrayBuf);
+        } catch (e) { /* ignore */ }
+      }
+      return O.bufferData.apply(G, arguments);
+    });
+    def('bufferSubData', function (t, off, d) {
+      if (t === G.ARRAY_BUFFER && arrayBuf && off < HEAD_BYTES) {
+        try {
+          const h = bufHead.get(arrayBuf);
+          if (h && d && typeof d === 'object' && arguments.length <= 3) {
+            const u8 = ArrayBuffer.isView(d) ? new Uint8Array(d.buffer, d.byteOffset, d.byteLength) : new Uint8Array(d);
+            h.set(u8.subarray(0, Math.max(0, Math.min(u8.length, h.length - off))), off);
+            layouts.delete(arrayBuf);
+          }
+        } catch (e) { /* ignore */ }
+      }
+      return O.bufferSubData.apply(G, arguments);
+    });
+    function positionAttrib(prog) {
+      let a = posAttr.get(prog);
+      if (a !== undefined) return a;
+      a = -1;
+      try {
+        const sh = G.getAttachedShaders(prog) || [];
+        let src = '';
+        for (const x of sh) if (G.getShaderParameter(x, G.SHADER_TYPE) === G.VERTEX_SHADER) src = G.getShaderSource(x) || '';
+        const attrs = [...src.matchAll(/\b(?:attribute|in)\s+(?:highp\s+|mediump\s+|lowp\s+)?(vec[234])\s+(\w+)/g)].map((m) => ({ type: m[1], name: m[2] }));
+        const gp = (src.match(/gl_Position\s*=([^;]*)/) || ['', ''])[1];
+        let pick = attrs.find((x) => new RegExp('\\b' + x.name + '\\b').test(gp)) || attrs.find((x) => x.type !== 'vec2') || null;
+        if (pick) a = O.getAttribLocation.call(G, prog, pick.name);
+      } catch (e) { a = -1; }
+      posAttr.set(prog, a);
+      return a;
+    }
+    const TYPES = { 0x1406: [4, 'getFloat32', 0], 0x1402: [2, 'getInt16', 32767], 0x1403: [2, 'getUint16', 65535], 0x1400: [1, 'getInt8', 127], 0x1401: [1, 'getUint8', 255] };
+    function samplePositions(loc) {
+      let buf, size, type, norm, stride, off;
+      try {
+        buf = G.getVertexAttrib(loc, G.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING);
+        if (!buf || !G.getVertexAttrib(loc, G.VERTEX_ATTRIB_ARRAY_ENABLED)) return null;
+        const head = bufHead.get(buf);
+        if (!head) return null;
+        size = G.getVertexAttrib(loc, G.VERTEX_ATTRIB_ARRAY_SIZE); type = G.getVertexAttrib(loc, G.VERTEX_ATTRIB_ARRAY_TYPE);
+        norm = G.getVertexAttrib(loc, G.VERTEX_ATTRIB_ARRAY_NORMALIZED); stride = G.getVertexAttrib(loc, G.VERTEX_ATTRIB_ARRAY_STRIDE);
+        off = G.getVertexAttribOffset(loc, G.VERTEX_ATTRIB_ARRAY_POINTER);
+        const key = off + '/' + stride + '/' + type + '/' + size + '/' + (norm ? 1 : 0);
+        let L = layouts.get(buf);
+        if (!L) layouts.set(buf, (L = new Map()));
+        let P = L.get(key);
+        if (P !== undefined) return P;
+        P = null;
+        const T0 = TYPES[type];
+        if (T0 && size >= 2) {
+          const st = stride || T0[0] * size, dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+          const n = Math.min(VERTS_PER_DRAW * 4, Math.floor((head.length - off - T0[0] * size) / st) + 1);
+          if (n >= 1) {
+            P = new Float32Array(Math.min(n, VERTS_PER_DRAW) * 4); // x, y, z, w (w = 1 unless the attribute has 4 components)
+            const step = Math.max(1, Math.floor(n / VERTS_PER_DRAW));
+            for (let i = 0, j = 0; j < P.length / 4 && i < n; i += step, j++) {
+              for (let c = 0; c < 4; c++) {
+                if (c >= size) { P[j * 4 + c] = c === 3 ? 1 : 0; continue; }
+                let v = dv[T0[1]](off + i * st + c * T0[0], true);
+                if (norm && T0[2]) v = Math.max(-1, v / T0[2]);
+                P[j * 4 + c] = v;
+              }
+            }
+          }
+        }
+        L.set(key, P);
+        return P;
+      } catch (e) { return null; }
+    }
+    const eyeSets = new WeakMap();
+    function eyeSet(M0) {
+      if (M0.size === 1) return M0;
+      let mvp = 0;
+      for (const e of M0.values()) if (e.m[15] > 1e-6 * (Math.abs(e.m[3]) + Math.abs(e.m[7]) + Math.abs(e.m[11]) + 1e-30)) mvp++;
+      if (!mvp || mvp === M0.size) return M0;
+      let sub = eyeSets.get(M0);
+      if (!sub) eyeSets.set(M0, (sub = new Map()));
+      sub.clear();
+      for (const [k, e] of M0) if (e.m[15] > 1e-6 * (Math.abs(e.m[3]) + Math.abs(e.m[7]) + Math.abs(e.m[11]) + 1e-30)) sub.set(k, e);
+      return sub;
+    }
+    function onDraw(fn, args) {
+      touch();
+      const f = F;
+      f.draws++;
+      if (!isScreen()) { f.offscreen++; return fn.apply(G, args); }
+      f.screen++;
+      const M0 = s.prog ? progU.get(s.prog) : null;
+      const M = M0 && M0.size ? eyeSet(M0) : null;
+      if (M) {
+        f.clip++;
+        if (f.tiles.length < 4096) {
+          for (const e of M.values()) {
+            const m = e.m;
+            if (m[15] > 1e-9) {
+              f.tiles.push([m[12], m[13], m[15]]);
+              const n3 = Math.hypot(m[3], m[7], m[11]);
+              if (n3 > 0 && f.p11.length < 256) f.p11.push(Math.hypot(m[1], m[5], m[9]) / n3);
+              if (T.sampleVerts && f.verts.length < 4096) {
+                const loc = positionAttrib(s.prog), Pp = loc >= 0 ? samplePositions(loc) : null;
+                if (Pp) for (let i = 0; i < Pp.length; i += 4) {
+                  const x = Pp[i], y = Pp[i + 1], z = Pp[i + 2], q = Pp[i + 3];
+                  if (!(q > 0)) continue;
+                  f.verts.push([(m[0] * x + m[4] * y + m[8] * z + m[12] * q) / q, (m[1] * x + m[5] * y + m[9] * z + m[13] * q) / q, (m[3] * x + m[7] * y + m[11] * z + m[15] * q) / q]);
+                  if (f.wq.length < 64) f.wq.push(q);
+                }
+              }
+              break;
+            }
+          }
+        }
+      } else f.flat++;
+      if (!T.stereo) return fn.apply(G, args);
+      if (!M && samplesTainted()) { f.through++; return fn.apply(G, args); }
+      return inHalves(fn, args, M);
+    }
+    for (const dn of DRAWS) { if (typeof G[dn] === 'function') { const o = G[dn]; def(dn, function () { return onDraw(o, arguments); }); } }
+    let vaoExt = null;
+    const wrapExt = (x, drawNames) => {
+      if (x.__dxrOrig) return;
+      const orig = {};
+      Object.defineProperty(x, '__dxrOrig', { value: orig });
+      const names = new Set();
+      for (let p = x; p && p !== Object.prototype; p = Object.getPrototypeOf(p)) for (const k of Object.getOwnPropertyNames(p)) names.add(k);
+      for (const k of names) {
+        let fx; try { fx = x[k]; } catch (e) { continue; }
+        if (typeof fx !== 'function' || k === 'constructor' || k.startsWith('__')) continue;
+        orig[k] = fx;
+        const isDraw = drawNames.includes(k), rec = !/^(create|delete|is[A-Z])/.test(k);
+        Object.defineProperty(x, k, { configurable: true, writable: true, enumerable: false, value: function () {
+          if (recOn && rec && !replaying) record(x, k, arguments);
+          return isDraw ? onDraw(fx.bind(x), arguments) : fx.apply(x, arguments);
+        } });
+      }
+    };
+    def('getExtension', function (name) {
+      const x = O.getExtension.call(G, name);
+      try {
+        if (x && /^OES_vertex_array_object$/i.test(String(name))) { wrapExt(x, []); vaoExt = x; }
+        if (x && /^(ANGLE_instanced_arrays)$/i.test(String(name))) wrapExt(x, ['drawArraysInstancedANGLE', 'drawElementsInstancedANGLE']);
+        if (x && /^WEBGL_multi_draw/i.test(String(name)) && !x.__dxrTap) {
+          Object.defineProperty(x, '__dxrTap', { value: true });
+          for (const k of Object.keys(Object.getPrototypeOf(x))) {
+            const fx = x[k];
+            if (/^multiDraw/.test(k) && typeof fx === 'function') Object.defineProperty(x, k, { configurable: true, writable: true, enumerable: false, value: function () { touch(); F.draws++; F.skipped++; return fx.apply(x, arguments); } });
+          }
+        }
+      } catch (e) { /* the extension still works */ }
+      return x;
+    });
+    for (let p = Object.getPrototypeOf(G); p && p !== Object.prototype; p = Object.getPrototypeOf(p)) {
+      for (const k of Object.getOwnPropertyNames(p)) {
+        if (k === 'constructor' || O[k]) continue;
+        let v; try { v = G[k]; } catch (e) { continue; }
+        if (typeof v !== 'function') continue;
+        def(k, function () { return O[k].apply(G, arguments); });
+      }
+    }
+    T.clearTaint = () => { taint = new WeakSet(); };
+    return T;
+  };
+}
+function dxrGlobe(core, glTap) {
+  const T = core.T;
+  const MIN_TILES = 12, MIN_POINTS = 8, MAX_RELRES = 0.12, RELIEF = 1.15, QUALIFY_FRAMES = 6, NEAR_FACTOR = 2, CENTRE_R = 0.2, MIN_VERTS = 24;
+  const seen = new WeakSet();
+  const states = [];
+  let warnedTaken = false;
+
+  function fitGround(tiles) {
+    const P = [];
+    for (const t of tiles) { const w = t[2]; if (!(w > 0)) continue; const x = t[0] / w, y = t[1] / w; if (Math.abs(x) <= 1.2 && Math.abs(y) <= 1.2) P.push(t); }
+    if (P.length < MIN_POINTS) return null;
+    const solve = (pts) => {
+      let suu = 0, suv = 0, su = 0, svv = 0, sv = 0, n = 0, suw = 0, svw = 0, sw = 0;
+      for (const [u, v, w] of pts) { suu += u * u; suv += u * v; su += u; svv += v * v; sv += v; n++; suw += u * w; svw += v * w; sw += w; }
+      const A = [[suu, suv, su, suw], [suv, svv, sv, svw], [su, sv, n, sw]];
+      for (let i = 0; i < 3; i++) {
+        let p = i; for (let r = i + 1; r < 3; r++) if (Math.abs(A[r][i]) > Math.abs(A[p][i])) p = r;
+        if (Math.abs(A[p][i]) < 1e-12) return null;
+        [A[i], A[p]] = [A[p], A[i]];
+        for (let r = 0; r < 3; r++) if (r !== i) { const f = A[r][i] / A[i][i]; for (let c = i; c < 4; c++) A[r][c] -= f * A[i][c]; }
+      }
+      return [A[0][3] / A[0][0], A[1][3] / A[1][1], A[2][3] / A[2][2]];
+    };
+    let q = solve(P);
+    if (!q) return null;
+    const res = (pts, q) => pts.map(([u, v, w]) => Math.abs(w - (q[0] * u + q[1] * v + q[2])));
+    let r = res(P, q);
+    const med = (a) => { const b = a.slice().sort((x, y) => x - y); return b[b.length >> 1]; };
+    const m0 = med(r);
+    const keep = P.filter((p, i) => r[i] <= 3 * m0 + 1e-9 * Math.abs(q[2]));
+    if (keep.length >= MIN_POINTS && keep.length < P.length) { const q2 = solve(keep); if (q2) { q = q2; r = res(keep, q); } }
+    const ws = P.map((p) => p[2]).sort((x, y) => x - y);
+    const pct = (f) => ws[Math.min(ws.length - 1, Math.max(0, Math.floor(f * (ws.length - 1))))];
+    const c = q[2];
+    return { n: P.length, c, a: q[0], b: q[1], relres: c > 0 ? med(r) / c : Infinity, near: pct(0.1), far: pct(0.9), relief: pct(0.9) / pct(0.1) };
+  }
+
+  function surfaceOf(F) {
+    const V = [];
+    for (const p of F.verts) { const w = p[2]; if (!(w > 0)) continue; const x = p[0] / w, y = p[1] / w; if (Math.abs(x) <= 1.05 && Math.abs(y) <= 1.05) V.push([x, y, w]); }
+    if (V.length < MIN_VERTS) return null;
+    const ws = V.map((p) => p[2]).sort((a, b) => a - b);
+    const near = ws[Math.floor(0.1 * (ws.length - 1))];
+    const local = F.verts.filter((p) => p[2] > 0 && Math.abs(p[0] / p[2]) <= 0.5 && Math.abs(p[1] / p[2]) <= 0.5);
+    const fl = local.length >= MIN_VERTS ? fitGround(local) : null;
+    if (fl && fl.c > 0 && fl.relres <= 0.25) return { c: fl.c, near, n: V.length, via: 'plane through the vertices at the centre' };
+    const mid = V.filter((p) => Math.abs(p[0]) <= CENTRE_R && Math.abs(p[1]) <= CENTRE_R).map((p) => p[2]).sort((a, b) => a - b);
+    if (mid.length >= 6) return { c: mid[mid.length >> 1], near, n: V.length, via: 'vertices at the centre' };
+    const f = fitGround(F.verts);
+    return f && f.c > 0 ? { c: f.c, near, n: V.length, via: 'plane through the vertices' } : null;
+  }
+
+  function consider(canvas, gl) {
+    if (!canvas || !gl || seen.has(gl) || core.retired) return;
+    seen.add(gl);
+    if (takenByOther(canvas)) return;
+    const G = { canvas, gl, tap: null, q: 0, recent: [], st: null, fit: null, C: 0, lastDrawAt: 0, fps: [], gone: false, seenFrames: 0 };
+    G.tap = glTap(gl, { frame: (F) => onFrame(G, F) });
+    states.push(G);
+  }
+  function takenByOther(canvas) {
+    for (const w of core.tracked) { const st = w.deref(); if (st && st.canvas === canvas && !st.isGlobe) return true; }
+    return false;
+  }
+  function give(G, why) {
+    if (G.gone) return;
+    G.gone = true;
+    try { G.tap.uninstall(); } catch (e) { /* ignore */ }
+    if (!warnedTaken) { warnedTaken = true; core.info('globe: leaving', core.desc(G.canvas), 'alone:', why); }
+  }
+
+  function onFrame(G, F) {
+    if (G.gone) return;
+    const t = core.now();
+    if (!F.replay) { G.lastDrawAt = t; G.pageFrames = (G.pageFrames || 0) + 1; G.fps.push(t); if (G.fps.length > 60) G.fps.shift(); }
+    const fit = !F.replay && F.clip >= MIN_TILES ? fitGround(F.tiles) : null;
+    if (fit) G.fit = fit;
+    if (grabs.length && (G.st || !grabs.recognisedOnly)) serveGrabs(G);
+    const st = G.st;
+    if (!st) {
+      if (F.replay) return;
+      if (++G.seenFrames % 30 === 1 && takenByOther(G.canvas)) { give(G, 'another adapter converts it'); return; }
+      const ok = !!fit && fit.relres <= MAX_RELRES && fit.relief >= RELIEF && fit.c > 0;
+      G.recent.push(ok); if (G.recent.length > 20) G.recent.shift();
+      if (ok) G.q++;
+      if (G.q >= QUALIFY_FRAMES && G.recent.filter(Boolean).length >= QUALIFY_FRAMES) recognise(G, F, fit);
+      return;
+    }
+    st.stats.calls++;
+    if (!F.replay) {
+      const sf = surfaceOf(F);
+      if (sf) { G.surf = sf; G.C = focusOf(sf); }
+      else if (fit) { G.surf = { c: fit.c, near: fit.near, n: fit.n, via: 'tile origins' }; G.C = focusOf(fit); }
+    }
+    if (G.tap.stereo) {
+      if (F.stereo) G.tap.drawnK = G.tap.stereo.k.slice();
+      G.tap.stereo.C = G.C * (core.site.convScale || 1);
+      if (st.active) {
+        if (G.drawnW !== G.gl.drawingBufferWidth || G.drawnH !== G.gl.drawingBufferHeight) setR(st, G);
+        if (st.haveViews) st.stats.stereo++; else { st.stats.flat++; if (st.stats.twoView > 0) st.stats.flatAfterEyes++; }
+        core.drew(st);
+        if (st.outCoverDue) core.takeOutCover(st);
+      }
+    } else if (st.wantMono) {
+      st.wantMono = false;
+      core.monoDrawn(st);
+    }
+    if (st.armed) { core.flip(st); return; }
+    if (!st.active && !st.pending && !st.releasing) core.considerActivation(st);
+  }
+  const focusOf = (fit) => Math.max(1e-6, Math.min(fit.c, NEAR_FACTOR * fit.near));
+
+  function recognise(G, F, fit) {
+    const st = core.newState('WebGL globe', G.canvas, ad);
+    st.isGlobe = true; st.G = G; G.st = st;
+    const sf = surfaceOf(F);
+    G.surf = sf || { c: fit.c, near: fit.near, n: fit.n, via: 'tile origins' };
+    G.C = focusOf(G.surf);
+    st.L = { w: G.gl.drawingBufferWidth, h: G.gl.drawingBufferHeight, pr: 1 };
+    core.registerEngine('WebGL globe');
+    G.tap.record = true;
+    core.info(`globe: ${core.desc(G.canvas)} draws a tiled world (${F.clip} tiles on one camera, ground fit ${(fit.relres * 100).toFixed(1)} % residual, relief ${fit.relief.toFixed(2)}) — a world: camera rig, focus on the ground at the centre of the view`);
+    core.notify();
+    core.considerActivation(st);
+  }
+  function setR(st, G) {
+    const W = G.gl.drawingBufferWidth, H = G.gl.drawingBufferHeight;
+    G.drawnW = W; G.drawnH = H;
+    st.R = { W, H, eyeW: Math.floor(W / 2), eyeH: H };
+  }
+  function redrawNow(G, force) {
+    if (!force && core.now() - G.lastDrawAt < 12) return false;
+    return G.tap.replay();
+  }
+  function eyeK(st) {
+    if (!st.haveViews) return [0, 0];
+    return [-st.V[0].proj[8], -st.V[1].proj[8]];
+  }
+  const fovOf = (G) => {
+    const p = G.tap.F && G.tap.F.p11 && G.tap.F.p11.length ? G.tap.F.p11.slice().sort((a, b) => a - b)[G.tap.F.p11.length >> 1] : 0;
+    if (p > 0.2 && p < 20) G.p11 = p;
+    return 2 * Math.atan(1 / (G.p11 || 3.17)); // 35° until a tile told us
+  };
+
+  const ad = {
+    label: (st) => 'WebGL globe (tiled world)',
+    unqualified(st) {
+      const G = st.G;
+      if (G.gone) return 'the WebGL tap was removed';
+      if (takenByOther(st.canvas)) return 'another adapter converts this canvas';
+      const why = core.canvasPlacement(st.canvas) || core.cssEffect(st.canvas);
+      if (why) return why;
+      if (core.now() - G.lastDrawAt > 2000) return 'the globe is not drawing';
+      return null;
+    },
+    hasCamera: (st) => !st.G.gone,
+    depthRange: () => ({ near: 0.05, far: 10000 }), // rig units (the open scene's real scale): the runtime's frusta only
+    rigFov: (st) => fovOf(st.G),
+    sampler(st) {
+      const G = st.G, c = G.canvas;
+      const aspect = (c.clientWidth || G.gl.drawingBufferWidth) / Math.max(1, c.clientHeight || G.gl.drawingBufferHeight);
+      return { cameraPose: IDENT, verticalFov: fovOf(G), aspect, near: 0.05, far: 10000, forEachBounds() {} };
+    },
+    world: (st) => 'a tiled globe / map (one camera over many ground tiles)',
+    target: () => null,
+    fakeViewParams(st) {
+      const G = st.G, f = fovOf(G);
+      return { near: 0.05, far: 10000, t: Math.tan(f / 2), aspect: G.gl.drawingBufferWidth / 2 / Math.max(1, G.gl.drawingBufferHeight) * 2 };
+    },
+    beforeActive() {},
+    afterActive(st) {
+      const G = st.G;
+      setR(st, G);
+      G.tap.stereo = { k: eyeK(st), C: G.C * (core.site.convScale || 1) };
+    },
+    firstDraw(st) { redrawNow(st.G, true); },
+    redraw(st) {
+      const G = st.G;
+      if (!G.tap.stereo) return;
+      const k = eyeK(st), o = G.tap.drawnK || [0, 0];
+      G.tap.stereo.k = k;
+      if (Math.abs(k[0] - o[0]) + Math.abs(k[1] - o[1]) > 2e-4 || st.outCoverDue || !G.tap.drawnK) { if (redrawNow(G, false)) G.tap.drawnK = k.slice(); }
+      if (!G.offAt && core.canvasPlacement(st.canvas)) G.offAt = core.now();
+      else if (G.offAt && !core.canvasPlacement(st.canvas)) G.offAt = 0;
+      if (G.offAt && core.now() - G.offAt > 1000) { G.offAt = 0; core.stand(st, 'the globe canvas left the screen (the page switched view)'); }
+    },
+    restore(st) {
+      const G = st.G;
+      G.tap.stereo = null;
+      G.tap.drawnK = null;
+      G.tap.clearTaint();
+      st.wantMono = true;
+      return redrawNow(G, true) && !st.wantMono;
+    },
+    flipIdle(st) { redrawNow(st.G, true); },
+    wake(st) { redrawNow(st.G, true); },
+    describe(st) {
+      const G = st.G, f = G.fit;
+      const ts = G.fps; const fps = ts.length > 5 ? (ts.length - 1) / ((ts[ts.length - 1] - ts[0]) / 1000) : 0;
+      return {
+        page: { surface: G.surf ? { depth: +G.surf.c.toPrecision(4), near: +G.surf.near.toPrecision(4), points: G.surf.n, via: G.surf.via } : null, tiles: G.tap.F ? G.tap.F.clip : 0, flat: G.tap.F ? G.tap.F.flat : 0, through: G.tap.F ? G.tap.F.through : 0, ground: f ? +f.c.toPrecision(4) : null, near: f ? +f.near.toPrecision(4) : null, relief: f ? +f.relief.toFixed(2) : null, residual: f ? +f.relres.toFixed(3) : null, focus: +G.C.toPrecision(4), fps: +fps.toFixed(1) },
+        real: st.R ? { w: st.R.W, h: st.R.H } : null,
+        stereo: G.tap.stereo ? { k: G.tap.stereo.k.map((x) => +x.toFixed(4)), C: +G.tap.stereo.C.toPrecision(4) } : null,
+      };
+    },
+    surface: (st) => core.surfaces.gl(st.G.gl),
+    coverAfterDraw: true,
+  };
+  const IDENT = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+
+  const grabs = [];
+  function serveGrabs(G) {
+    const gl = G.gl, w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+    const px = new Uint8Array(w * h * 4);
+    try { gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px); } catch (e) { /* lost */ }
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d'), im = g.createImageData(w, h);
+    for (let y = 0; y < h; y++) im.data.set(px.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
+    g.putImageData(im, 0, 0);
+    const out = { w, h, png: c.toDataURL('image/png'), live: !!(G.st && G.st.active), stereo: G.tap.stereo ? { k: G.tap.stereo.k.slice(), C: G.tap.stereo.C } : null, fit: G.fit, surf: G.surf };
+    for (const r of grabs.splice(0)) r(out);
+  }
+  if (core.cfg.dev) {
+    try { Object.defineProperty(window, '__dxrGlobe', { configurable: true, value: { set: (o) => { for (const G of states) { if ('sampleVerts' in o) G.tap.sampleVerts = !!o.sampleVerts; if ('record' in o && G.st) G.tap.record = !!o.record; } }, grab: () => new Promise((r) => { grabs.push(r); grabs.recognisedOnly = true; for (const G of states) if (G.st) redrawNow(G, true); }), states: () => states.map((G) => ({ canvas: core.desc(G.canvas), recognised: !!G.st, qualifying: G.q, gone: G.gone, fit: G.fit, surf: G.surf, C: G.C, stereo: G.tap.stereo, frames: G.tap.frames, pageCount: G.pageFrames || 0, lastF: G.tap.F && { d: G.tap.F.draws, s: G.tap.F.screen, c: G.tap.F.clip, f: G.tap.F.flat, o: G.tap.F.offscreen, t: G.tap.F.tiles.length, v: G.tap.F.verts.length, wq: G.tap.F.wq.slice(0, 8) }, pageFrames: G.fps.length, lastDrawAgo: Math.round(core.now() - G.lastDrawAt) })) } }); } catch (e) { /* ignore */ }
+  }
+
+  return { consider, states: () => states.map((G) => ({ canvas: core.desc(G.canvas), recognised: !!G.st, qualifying: G.q, gone: G.gone, fit: G.fit })) };
 }
 return dxrCore(cfg, cap, S);
 };
