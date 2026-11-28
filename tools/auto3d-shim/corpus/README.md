@@ -171,3 +171,10 @@ the store and eye size, and the engine's GPU profiler (WebGPU: per pass). `--dis
 build for an A/B (e.g. the previous release's `dist/` from `git show`); `--cpu` adds a CDP CPU profile.
 A streaming page's own rate moves a lot from run to run: compare alternated runs, and read the GPU
 frame time next to the frame rate. PlayCanvas pages only (it reads `window.pc.app`).
+
+## The panel run (`panel-sites.json`)
+
+What the corpus cannot judge is looked at by eye. `panel-sites.json` is the list of live sites to open
+in the DisplayXR Browser on a 3D panel before a browser or SDK release, with the decision each one
+should get and what to check on it (`check`). Keep it current: add a site when a session finds one
+worth watching, and correct `expect` when a decision changes on purpose.

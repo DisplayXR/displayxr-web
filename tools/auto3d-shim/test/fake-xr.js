@@ -178,6 +178,9 @@
       if (OPTS.noDisplay) { this.getDisplayInfo = () => Promise.resolve(null); this.getRenderingModes = () => Promise.resolve([]); }
     }
     setViewRig(rig) { this.rig = JSON.parse(JSON.stringify(rig)); H.lastRig = this.rig; H.rigPushes++; }
+    // The runtime-drawn cursor (ADR-046 Amendment 4): OPTS.noCursor withholds it, as an older browser does.
+    getCursorDepthSupport() { return Promise.resolve(OPTS.noCursor ? 'none' : 'runtime'); }
+    setCursorDepth(d) { H.cursor = d ? { ...d } : null; H.cursorCalls = (H.cursorCalls || 0) + 1; }
     // The REAL panel's shape by default (DisplayXR Browser 1.10.6 on the 8K Dell): the panel size and the
     // view scale, NO nominalViewerPosition. OPTS.nominal: reported too. OPTS.noPanel: the pre-0.7.12 fake's
     // answer (no size, so no eye anchor).

@@ -1253,7 +1253,7 @@ function dxrPlayCanvas(core) {
   const shadowOrig = new WeakMap(); // light component -> { orig, wrote }
   function offsetShadows(st) {
     if (core.T.pcShadowOffset === false) return;
-    const d = st.haveViews ? Math.max(0, (st.V[0].pose[14] + st.V[1].pose[14]) / 2) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0) : 0;
+    const d = st.haveViews ? Math.max(0, (st.V[0].pose[14] + st.V[1].pose[14]) / 2) * (st.eyeK > 0 ? st.eyeK : 1) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0) : 0;
     if (!st.shadowLights || ++st.shadowScan >= 30) {
       st.shadowScan = 0;
       try { st.shadowLights = st.app.root.findComponents('light'); } catch (e) { st.shadowLights = []; }

@@ -110,6 +110,8 @@ function dxrCore(cfg, cap, S) {
     objFitMin: 0.08,     // ... at least this x (a speck is not the point of the page) ...
     objStandoff: 1.2,    // ... and the camera stands at least this x that radius from the target
     targetDrift: 0.05,   // the target may move at most this x its distance while we watch
+    cursorDepth: true,   // the 3D cursor (cursorTick): report the depth under the pointer where the browser draws its cursor at depth
+    zoomLocal: true,     // display rig: the portal distance is applied to the located eyes in the frame the page camera moves (eyeScale); false: through the rig, three frames late
     glassMetric: 'radial', morphMs: 700,        // a rig change after go-live is a MORPH of this length (rigMorph); 0: a cut
     overlayEveryFrames: 30, // page elements over the canvas that move with the camera (hotspots, labels): looked for this often
     glassFront: 1 / 3,   // the share of the core's DEPTH RANGE in front of the glass ...
@@ -513,7 +515,7 @@ function dxrCore(cfg, cap, S) {
     const dr = depthRangeFor(st);
     st.near = dr.near; st.far = dr.far;
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
-    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.rigSwitch = null; st.glass = null; st.morph = null; st.anchorW = 1; // a new activation decides the rig's scale again (setScaleOnce)
+    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.rigSwitch = null; st.glass = null; st.dp0 = 0; st.eyeK = 1; st.morph = null; st.anchorW = 1; // a new activation decides the rig's scale again (setScaleOnce)
     estimateConvergence(st, true);
     st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
     buildRig(st, ad.rigFov(st));
@@ -767,7 +769,7 @@ function dxrCore(cfg, cap, S) {
       // How far behind the page camera the runtime put the eyes (a display rig backs them off to the
       // nominal viewing distance): the far plane is pushed out by that much so nothing new clips.
       // The display rig's pivot (pivotOffset) moves the eyes by up to |t| more.
-      st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14])) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0);
+      st.eyeBack = Math.max(0, Math.min(st.V[0].pose[14], st.V[1].pose[14])) * (st.eyeK > 0 ? st.eyeK : 1) + (st.piv ? Math.hypot(st.piv.t[0], st.piv.t[1], st.piv.t[2]) : 0);
     } else {
       st.stats.shortView++;
       if (T.fakeViews && ad.hasCamera(st)) { fakeViews(st); st.haveViews = true; two = true; }
@@ -798,6 +800,7 @@ function dxrCore(cfg, cap, S) {
       if (T.strictObject !== false && st.conv.src !== 'fixed' && !(st.verdict && st.verdict.done)) objectVerdict(st);
       if (st.stats.xrFrames % (st.verdict && st.verdict.done ? Math.max(1, T.overlayEveryFrames | 0) : 10) === 0) overlayTick(st);
       if (T.strictObject !== false && st.stats.xrFrames % 6 === 0) verdictWatch(st);
+      cursorTick(st);
       tickRamp(st, t);
       tickRigSwitch(st);
       // A LIVE canvas the browser stops weaving ('withheld': a CSS effect appeared over it, its layer was
@@ -968,9 +971,19 @@ function dxrCore(cfg, cap, S) {
       // The core glass (T.coreGlass): the portal at the live depth that leaves T.glassFront of the
       // core surface in front, times the user's Focus. Else the frozen scale distance (0.7.x).
       const dp = dg > 0 ? dg : ds;
-      r.position.x = r.position.y = 0; r.position.z = -dp;
+      // IN STEP WITH THE PAGE CAMERA (T.zoomLocal). A rig pushed here reaches the located eyes three
+      // frames after the page camera moved (this callback runs before the page's own frame, and a rig
+      // drives a later locate): one wheel step of a zoom was drawn as two jumps, 50 ms apart ("the
+      // window catches up with the zoom", panel 2026-11-27; measured per frame). With the angle fixed, a
+      // display rig's eyes are LINEAR in the portal's distance (position -d, height 2 d tan, eyes at the
+      // viewer's offset x height / H), so the rig is pushed at a frozen distance dp0 and the live
+      // distance is applied to the located eyes when the adapter composes them (eyeScale): the same
+      // views, in the frame the camera moved. The projections do not depend on d.
+      let dq = dp;
+      if (dg > 0 && T.zoomLocal !== false) { if (st.morph || !(st.dp0 > 0)) st.dp0 = dp; dq = st.dp0; } else st.dp0 = 0;
+      r.position.x = r.position.y = 0; r.position.z = -dq;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
-      r.virtualDisplayHeight = 2 * dp * Math.tan(verticalFov / 2);
+      r.virtualDisplayHeight = 2 * dq * Math.tan(verticalFov / 2);
       const dep = depthOf('display');
       r.ipdFactor = dep * k;
       r.parallaxFactor = dep * k;
@@ -978,6 +991,7 @@ function dxrCore(cfg, cap, S) {
       st.rig = r;
       return r;
     }
+    st.dp0 = 0;
     const rig = st.rigs.camera;
     rig.type = 'camera';
     // k: the fade (1 when settled): 0 puts both eyes on the page camera, i.e. the mono picture
@@ -1190,6 +1204,80 @@ function dxrCore(cfg, cap, S) {
     if (st.overlayTracked) return finish(false, true, 'page elements over the canvas follow the 3D scene (hotspots, labels)');
     return finish(true, true, `one compact subject, ${fit.toFixed(2)} x the frame, camera ${(d / R).toFixed(1)} radii away, nothing else in the scene`);
   }
+  // ------------------------------------------------------------ the 3D cursor (v0.8.1)
+  // Where the browser and the runtime draw the web cursor at depth (XRDisplayLayer.getCursorDepthSupport()
+  // answers 'runtime'; runtime ADR-046 Amendment 4), the page only has to say how deep the content under
+  // the pointer is: setCursorDepth({ u, v, disparityPx }), raw, in device px between the two eyes (< 0 in
+  // front of the glass). The runtime applies the policy (never behind the glass, a small margin in front
+  // of the content, its own filter) and draws the browser's own cursor. Nothing is drawn here.
+  // The content under the pointer: the surface points the core glass already holds (coreSet), projected
+  // through this frame's two eyes; the one nearest the viewer within the arrow's footprint. So: object and
+  // object-like pages only (the pages that have a core set), never a part read as a bounding box (its
+  // points are not on a surface). Elsewhere, and off the subject, the depth is withdrawn and the cursor is
+  // the ordinary one on the glass. T.cursorDepth false turns it off.
+  function cursorTick(st) {
+    if (T.cursorDepth === false) return;
+    const L = st.layer;
+    if (!L || typeof L.setCursorDepth !== 'function' || typeof L.getCursorDepthSupport !== 'function') return;
+    let C = st.cur;
+    if (!C) {
+      C = st.cur = { layer: null, support: 'none', sent: false, x: 0, y: 0, over: false, last: null };
+      const mv = (e) => { C.x = e.clientX; C.y = e.clientY; C.over = true; };
+      try {
+        window.addEventListener('pointermove', mv, { capture: true, passive: true });
+        document.addEventListener('pointerleave', () => { C.over = false; }, { capture: true, passive: true });
+      } catch (e) { /* ignore */ }
+    }
+    if (C.layer !== L) {
+      C.layer = L; C.support = 'pending'; C.sent = false;
+      let p;
+      try { p = Promise.resolve(L.getCursorDepthSupport()); } catch (e) { p = Promise.reject(e); }
+      p.then((r) => { if (C.layer !== L) return; C.support = r === 'runtime' ? 'runtime' : 'none'; if (C.support === 'runtime' && !C.logged) { C.logged = true; info('3D cursor: the browser draws its cursor at the depth of the content under it'); } }, () => { if (C.layer === L) C.support = 'none'; });
+    }
+    if (C.support !== 'runtime') return;
+    const withdraw = () => { C.last = null; if (!C.sent) return; C.sent = false; try { L.setCursorDepth(); } catch (e) { /* closed */ } };
+    const set = st.glass && st.glass.set;
+    if (!C.over || !set || !st.haveViews || rampK(st) < 1 || st.cover) { withdraw(); return; }
+    let rect = null, s = null;
+    try { rect = st.canvas.getBoundingClientRect(); } catch (e) { rect = null; }
+    if (!rect || !(rect.width > 0 && rect.height > 0)) { withdraw(); return; }
+    const u = (C.x - rect.left) / rect.width, v = (C.y - rect.top) / rect.height;
+    if (!(u >= 0 && u <= 1 && v >= 0 && v <= 1)) { withdraw(); return; }
+    try { s = st.ad.sampler(st); } catch (e) { s = null; }
+    if (!s) { withdraw(); return; }
+    const vm = s.viewMatrix || invert4(s.cameraPose);
+    // Per eye: projection x inverse(eye pose, page-camera space) x the page camera's view.
+    const E = [0, 1].map((i) => mul4(st.V[i].proj, mul4(invert4(eyeDrawn(st, i)), vm)));
+    const sgn = st.V[0].pose[12] <= st.V[1].pose[12] ? 1 : -1;   // eye 0 is the left one
+    const nx = 2 * u - 1, ny = 1 - 2 * v, asp = rect.width / rect.height, r2 = 0.05 * 0.05;
+    let best = Infinity, any = false;
+    for (const p of set.parts) {
+      if (p.box) continue;
+      const A = mul4(E[0], p.m), B = mul4(E[1], p.m), q = p.pts, st4 = p.stride || 3;
+      for (let i = 0, end = p.k * st4; i < end; i += st4) {
+        const x = q[i], y = q[i + 1], z = q[i + 2];
+        const w0 = A[3] * x + A[7] * y + A[11] * z + A[15];
+        if (!(w0 > 1e-9)) continue;
+        const x0 = (A[0] * x + A[4] * y + A[8] * z + A[12]) / w0, dx = (x0 - nx) * asp;
+        if (dx * dx > r2) continue;
+        const dy = (A[1] * x + A[5] * y + A[9] * z + A[13]) / w0 - ny;
+        if (dx * dx + dy * dy > r2) continue;
+        const w1 = B[3] * x + B[7] * y + B[11] * z + B[15];
+        if (!(w1 > 1e-9)) continue;
+        const d = sgn * ((B[0] * x + B[4] * y + B[8] * z + B[12]) / w1 - x0);
+        any = true;
+        if (d < best) best = d;
+      }
+    }
+    const msg = { u, v };
+    if (any && isFinite(best)) msg.disparityPx = 0.5 * best * rect.width * (window.devicePixelRatio || 1);
+    try { L.setCursorDepth(msg); C.sent = true; C.last = msg; } catch (e) { C.sent = false; }
+  }
+  function mul4(a, b) {
+    const o = new Float64Array(16);
+    for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+    return o;
+  }
   function verdictWatch(st) {
     // ONE DECISION PER PAGE (David 2026-11-27): the page's own controls drive everything after it. An
     // object stays an object in orbit, fly and zoom; the glass is a function of where the page camera
@@ -1219,8 +1307,27 @@ function dxrCore(cfg, cap, S) {
       O.scanAt = t; O.els = [];
       let root = st.canvas.parentElement;
       for (let i = 0; i < 2 && root && root.parentElement && root !== document.body; i++) root = root.parentElement;
-      if (root) {
-        const all = root.querySelectorAll('*');
+      // A canvas inside a shadow root (<model-viewer>, other web components): the page's overlays are the
+      // host's LIGHT-DOM children, slotted over it. They are scanned too; and the declared kind
+      // (<model-viewer>'s slot="hotspot-...") is taken at its word, with no camera motion needed, so
+      // such a page never starts on the display rig (modelviewer.dev/examples/annotations, panel 2026-11-27).
+      let host = null;
+      try { const rn = st.canvas.getRootNode(); host = rn && rn.host ? rn.host : null; } catch (e) { host = null; }
+      if (host && !O.declared) {
+        O.declared = true;
+        let hs = null;
+        try { hs = host.querySelector('[slot^="hotspot"]'); } catch (e) { hs = null; }
+        if (hs) {
+          st.overlayTracked = true;
+          info(`page overlays: the component declares hotspots over its 3D scene (${desc(hs)})`);
+          if (site.rigChoice === 'auto' && site.rig === 'display') fadeRig(st, 'camera', 'page elements over the canvas follow the 3D scene (hotspots, labels)');
+          return;
+        }
+      }
+      const lists = [];
+      if (root) lists.push(root.querySelectorAll('*'));
+      if (host) { try { lists.push(host.querySelectorAll('*')); } catch (e) { /* ignore */ } }
+      for (const all of lists) {
         for (let i = 0; i < all.length && i < 1500 && O.els.length < 80; i++) {
           const el = all[i];
           if (el === st.canvas || el.tagName === 'CANVAS' || el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.contains(st.canvas)) continue;
@@ -1358,8 +1465,14 @@ function dxrCore(cfg, cap, S) {
     const I = T.morphMs > 0 && st.active && st.rig && st.rigScale && rampK(st) >= 1 && !st.ramp ? rigDisplayInfo(st) : null;
     if (!I) return false;
     // The rig that is showing (mid-morph: where the morph has got to), frozen in the page camera's space.
-    st.morph = { from: st.morph && st.morph.at ? { ...st.morph.at } : cameraForm(st.rig, st.rig.type === 'camera' ? 1 : 0, I), t0: now(), at: null };
+    st.morph = { from: st.morph && st.morph.at ? { ...st.morph.at } : cameraForm(rigShown(st), st.rig.type === 'camera' ? 1 : 0, I), t0: now(), at: null };
     return true;
+  }
+  // The rig as it is drawn: a display rig pushed at the frozen distance, at the live one (eyeScale).
+  function rigShown(st) {
+    const r = st.rig, k = st.eyeK > 0 ? st.eyeK : 1;
+    if (!r || r.type !== 'display' || k === 1) return r;
+    return { ...r, position: { x: 0, y: 0, z: r.position.z * k }, virtualDisplayHeight: r.virtualDisplayHeight * k };
   }
   function rigMorph(st, target) {
     const M = st.morph, I = rigDisplayInfo(st);
@@ -1528,7 +1641,7 @@ function dxrCore(cfg, cap, S) {
         }
         e.tri = e.cum = null;
       }
-      parts.push({ pts, k, stride: 3, m, name: e.name });
+      parts.push({ pts, k, stride: 3, m, name: e.name, box: !e.P });
     }
     return parts;
   }
@@ -1637,11 +1750,30 @@ function dxrCore(cfg, cap, S) {
   // Eye i's pose for the adapters' attach pattern (eye world = camera world × this): the runtime's
   // view transform, moved by the display rig's pivot offset (pivotOffset) when there is one.
   function eyePose(st, i, m) {
-    const src = st.V[i].pose, t = pivotOffset(st, m);
-    if (!t || t === ZERO3 || (t[0] === 0 && t[1] === 0 && t[2] === 0)) return src;
+    const src = st.V[i].pose, t = pivotOffset(st, m), k = eyeScale(st);
+    const none = !t || t === ZERO3 || (t[0] === 0 && t[1] === 0 && t[2] === 0);
+    if (none && k === 1) return src;
     const o = st.Vp || (st.Vp = [new Float32Array(16), new Float32Array(16)]);
     o[i].set(src);
-    o[i][12] += t[0]; o[i][13] += t[1]; o[i][14] += t[2];
+    if (k !== 1) { o[i][12] *= k; o[i][13] *= k; o[i][14] *= k; }
+    if (!none) { o[i][12] += t[0]; o[i][13] += t[1]; o[i][14] += t[2]; }
+    return o[i];
+  }
+  // The live portal distance over the one the rig was pushed at (buildRigMode, T.zoomLocal): read from
+  // the page camera AS IT IS NOW (the adapters call eyePose while they compose a frame, after the
+  // page's controls moved the camera), so the picture's scale and the camera move in the same frame.
+  function eyeScale(st) {
+    if (!(st.dp0 > 0) || st.morph || !st.rig || st.rig.type !== 'display') return (st.eyeK = 1);
+    const g = coreGlass(st) * site.convScale;
+    return (st.eyeK = g > 0 ? g / st.dp0 : 1);
+  }
+  // A located eye in the page camera's space as it is drawn (scaled as eyePose does), for readers
+  // outside a compose: the cursor's depth.
+  function eyeDrawn(st, i) {
+    const k = st.eyeK > 0 ? st.eyeK : 1;
+    if (k === 1) return st.V[i].pose;
+    const o = st.Vd || (st.Vd = [new Float32Array(16), new Float32Array(16)]);
+    o[i].set(st.V[i].pose); o[i][12] *= k; o[i][13] *= k; o[i][14] *= k;
     return o[i];
   }
   // ------------------------------------------------------------ open scenes beyond splats (v0.7.12)
@@ -1844,7 +1976,10 @@ function dxrCore(cfg, cap, S) {
     d = src === 'fixed' || !(s.far * 0.9 > s.near * 2) ? Math.max(d, s.near * 2) : clamp(d, s.near * 2, s.far * 0.9);
     // Eased: a convergence that snaps pulls the whole scene through the glass in one frame. The
     // fixed focus is constant and snaps (entering it changes the rig's scale in the same frame anyway).
-    st.conv.d = snap || !st.conv.d || src === 'fixed' ? d : st.conv.d + (d - st.conv.d) * 0.25;
+    // The page's own target is exact, and the page's controls are the only thing that moves it: followed
+    // in the same frame (eased, a zoom read as the focus catching up with it; panel 2026-11-27). The ease is
+    // for the estimator (a noisy measurement) and for a change of source.
+    st.conv.d = snap || !st.conv.d || src === 'fixed' || (src === 'target' && st.conv.src === 'target') ? d : st.conv.d + (d - st.conv.d) * 0.25;
     const was = st.conv.src;
     st.conv.src = src;
     setScaleOnce(st, src, clamp(raw, s.near * 2, s.far * 0.9) || 0);
