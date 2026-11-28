@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.8.2 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.9.0 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap) {
 'use strict';
 function dxrSentinel(cfg, cap) {
@@ -49,9 +49,10 @@ function dxrSentinel(cfg, cap) {
   } catch (e) { console.warn(TAG, 'could not watch navigator.xr.requestSession — SDK pages may conflict', e); }
 
   const en = cfg.engines || {};
-  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false;
+  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false, wantGL = en.gl !== false;
   const blocked = cfg.decision === 'block' && !cfg.dev;
   let core = null;     // what dxrCore returned, once loaded
+  let engineSeen = false; // an ENGINE adapter's signal (not only the GL-level fallback's)
   let done = false;    // detection finished without a core (opted out / blocked and reported / foreign / load failed)
 
   let opted = false;
@@ -79,6 +80,7 @@ function dxrSentinel(cfg, cap) {
   const reportOff = (engine) => reportOnce({ status: 'off', engine });
 
   function signal(engine) {
+    if (engine && engine !== 'WebGL') engineSeen = true;
     if (core) return core;
     if (done) return null;
     if (optedOut()) {
@@ -239,7 +241,7 @@ function dxrSentinel(cfg, cap) {
     lookGlobals();
     if (done || pcFound || bjsFound) return;
     if (++polls < 40) { pollT = sTimeout(poll, 500); return; }
-    if (core) return; // three.js (or another path) loaded the core: this canvas is accounted for
+    if (core && engineSeen) return; // three.js (or another path) loaded the core: this canvas is accounted for
     let tag = null;
     try { tag = glCanvas ? apply(getAttr, glCanvas, ['data-engine']) : null; } catch (e) { tag = null; }
     info(`a WebGL canvas (${descCanvas(glCanvas)}${tag ? `, data-engine="${tag}"` : ''}) but no supported engine found — left 2D.`,
@@ -354,7 +356,75 @@ function dxrSentinel(cfg, cap) {
     }
   }
 
-  if (wantPC || wantBJS) {
+  const GL_WAIT_MS = 2000, GL_TRIES = 30;
+  let GL2P = null, getParam = null;
+  const glSeenCtx = new WeakSet();
+  const CW = intrinsics.canvasWidth, CH = intrinsics.canvasHeight;
+  const GL_HOOKS = ['useProgram', 'bindFramebuffer', 'viewport', 'scissor', 'enable', 'disable', 'activeTexture', 'bindTexture',
+    'uniformMatrix4fv', 'uniform1i', 'uniform1iv', 'drawBuffers', 'framebufferTexture2D', 'framebufferRenderbuffer', 'texImage2D', 'texStorage2D',
+    'getUniformLocation', 'generateMipmap', 'clear', 'clearBufferfv', 'clearBufferiv', 'clearBufferuiv', 'clearBufferfi', 'blitFramebuffer',
+    'drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements'];
+  function glRecord(canvas, ctx) {
+    if (!ctx || glSeenCtx.has(ctx)) return;
+    if (!GL2P) { GL2P = WebGL2RenderingContext.prototype; getParam = GL2P.getParameter; }
+    if (!(ctx instanceof WebGL2RenderingContext)) return;
+    glSeenCtx.add(ctx);
+    const tex = new WeakMap(), loc = new WeakMap(), own = [], slot = Object.create(null), base = Object.create(null);
+    const post = {
+      texImage2D(gl, a) {
+        if (a[0] !== 0x0DE1 || a.length < 8 || typeof a[3] !== 'number' || typeof a[4] !== 'number') return; // TEXTURE_2D, the sized form
+        const t = apply(getParam, gl, [0x8069]); // TEXTURE_BINDING_2D (client-side state)
+        if (!t) return;
+        let sp = tex.get(t);
+        if (!sp || sp.k !== 'img') tex.set(t, (sp = { k: 'img', l: {} }));
+        sp.l[a[1]] = [a[2], a[3], a[4], a[6], a[7]];
+      },
+      texStorage2D(gl, a) {
+        if (a[0] !== 0x0DE1) return;
+        const t = apply(getParam, gl, [0x8069]);
+        if (t) tex.set(t, { k: 'sto', levels: a[1], ifmt: a[2], w: a[3], h: a[4] });
+      },
+      getUniformLocation(gl, a, r) { if (r) loc.set(r, String(a[1])); },
+    };
+    for (const name of GL_HOOKS) {
+      const orig = GL2P[name];
+      if (typeof orig !== 'function') continue;
+      const p = post[name];
+      const b = p ? function () { const r = apply(orig, this, arguments); try { p(this, arguments, r); } catch (e) { /* never break the page's call */ } return r; } : orig;
+      base[name] = b;
+      try {
+        defProp(ctx, name, { configurable: true, writable: true, enumerable: false, value: function () {
+          const h = slot[name];
+          return h ? h(this, arguments) : apply(b, this, arguments);
+        } });
+        own.push(name);
+      } catch (e) { /* a frozen context: nothing recorded */ }
+    }
+    const r = { canvas, ctx, tries: 0, t: 0, dead: false, rec: { tex, loc, slot, base, unwrap() { for (const n in slot) delete slot[n]; for (const n of own) { try { delete ctx[n]; } catch (e) { /* ignore */ } } own.length = 0; } } };
+    r.t = sTimeout(() => glCheck(r), GL_WAIT_MS);
+  }
+  function glDrop(r) { r.dead = true; if (r.t) { cTimeout(r.t); r.t = 0; } try { r.rec.unwrap(); } catch (e) { /* ignore */ } }
+  function glCheck(r) {
+    r.t = 0;
+    if (r.dead) return;
+    if (done || retired) { glDrop(r); return; }
+    const c = r.canvas;
+    let claimed = false;
+    try { claimed = !!(core && core.claims && core.claims(c)); } catch (e) { claimed = false; }
+    if (claimed) { glDrop(r); return; }
+    let w = 0, h = 0;
+    try { w = apply(CW.get, c, []); h = apply(CH.get, c, []); } catch (e) { /* ignore */ }
+    if (c.isConnected && w * h > 300 * 150) {
+      const k = signal('WebGL');
+      if (k && k.gl) { r.dead = true; k.gl.consider(c, r.ctx, r.rec); }
+      else glDrop(r);
+      return;
+    }
+    if (++r.tries < GL_TRIES) r.t = sTimeout(() => glCheck(r), GL_WAIT_MS);
+    else glDrop(r);
+  }
+
+  if (wantPC || wantBJS || wantGL) {
     const GC = HTMLCanvasElement.prototype.getContext;
     const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
     const seenGL = new WeakSet();
@@ -380,6 +450,7 @@ function dxrSentinel(cfg, cap) {
       HTMLCanvasElement.prototype.getContext = function getContext(type) {
         const ctx = apply(GC, this, arguments);
         try { onContext(this, type, arguments[1]); } catch (e) { /* never break the page's getContext */ }
+        try { if (wantGL && !done && !retired && type === 'webgl2') glRecord(this, ctx); } catch (e) { /* never break the page's getContext */ }
         return ctx;
       };
     } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps / Babylon.js engines may not be found', e); }
