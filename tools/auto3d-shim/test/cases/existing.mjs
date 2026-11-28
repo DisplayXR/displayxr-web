@@ -20,6 +20,10 @@ export default function cases({ P, NEW, LEGACY, hasSog, SOG_DIR }) {
     { id: 'a-kill', name: 'three.js keyframes, Ctrl+Alt+3 off while live, then on again (render-on-demand)', url: P + 'three-keyframes.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', killAfter: true, commits: true },
     { id: 'b-kill', name: 'PlayCanvas meshes, Ctrl+Alt+3 off while live, then on again (autoRender false)', url: P + 'pc-mesh.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', killAfter: true, commits: true },
     { id: 'a-target', name: 'three.js OrbitControls target off the scene centre', url: P + 'three-orbit.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
+    // lepoly.com's frame: the scene, then a gizmo pass through a second camera (autoClear off, background
+    // null, restored after). Idle replays draw each op with the state it ran with, and the gizmo camera
+    // does not become the page camera: converts like a-target (convergence 5 from the scene's target).
+    { id: 'a-gizmo', name: 'three.js scene + an overlay pass with its own camera, autoClear off (lepoly.com): idle replays keep the scene', url: P + 'three-orbit.html?gizmo=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
     { id: 'b-target', name: 'PlayCanvas CameraControls focusPoint off the scene centre', url: P + 'pc-orbit.html', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen' },
     { id: 'a-display', name: 'three.js keyframes, Ctrl+Alt+P: display rig and back, per-rig depth, the joint depth control', url: P + 'three-keyframes.html', shim: NEW, cfg: { convTarget: false }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', displayAfter: true },
     // A site tuned under v0.3 stored ONE depth (applied to both rigs): it becomes the camera rig's.

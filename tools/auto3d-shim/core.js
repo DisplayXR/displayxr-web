@@ -71,6 +71,7 @@ function dxrCore(cfg, cap, S) {
     scaleSamples: 3,    // the rig's scale (m2v) is set ONCE per activation (v0.7.11): from this many consecutive estimator samples ...
     scaleSpread: 0.1,   // ... within this fraction of their median, on a quiet page (no resource for guardLoadQuietMs) ...
     scaleMaxWaitMs: 8000, // ... or from what there is this long after the flip (a page that never stops loading). Flat until then.
+    scaleLoadMaxMs: 45000, // ... but with NO estimate yet on a page still loading (a model streaming in), wait up to this long instead
     // OPEN scenes (no target, and every sampled bound holds the camera: a room-scale splat world, a
     // sky + floor). David's call, 2026-09-28: no dynamic convergence; a FIXED focus, as legacy WebXR.
     openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
@@ -1073,11 +1074,17 @@ function dxrCore(cfg, cap, S) {
       const t = now(), xs = W.xs.slice().sort((a, b) => a - b), med = xs.length ? xs[xs.length >> 1] : 0;
       const consistent = xs.length >= T.scaleSamples && med > 0 && xs[xs.length - 1] - xs[0] <= T.scaleSpread * med;
       const quiet = !(guard.loading && guard.loading(t));
-      const late = t - W.t0 >= T.scaleMaxWaitMs; // from this activation's first estimate (the flip)
+      // No real estimate yet, on a page still loading or with nothing in view yet (its model is
+      // streaming in): wait for one, up to T.scaleLoadMaxMs, rather than freezing a guess for the
+      // whole activation (lepoly.com: 20 s+ to its first mesh, through one long request the loading
+      // test does not see). The rig stays flat meanwhile, as before any decision; with nothing in
+      // view, flat costs nothing visible.
+      const waitMs = med > 0 || (quiet && st.inView > 0) ? T.scaleMaxWaitMs : Math.max(T.scaleMaxWaitMs, +T.scaleLoadMaxMs || 0);
+      const late = t - W.t0 >= waitMs; // from this activation's first estimate (the flip)
       if (!(consistent && quiet) && !late) return;
       if (T.strictObject !== false && site.rigChoice === 'auto' && src === 'estimator' && !st.openLatched && !late && !objectVerdict(st)) return;
-      const d = med > 0 ? med : st.conv.d || 1;
-      st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(T.scaleMaxWaitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
+      const d = med > 0 ? med : st.conv.d > 0 && isFinite(st.conv.d) ? st.conv.d : 1;
+      st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(waitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
     }
     decideAutoRig(st, src);
     info(`scale set: ${scaleText(st, st.rigScale)} (${st.rigScale.basis}; distance ${st.rigScale.d.toPrecision(3)} units)`);
@@ -1975,6 +1982,16 @@ function dxrCore(cfg, cap, S) {
   // 30 frames as the viewer walked: the depth kept changing on the panel. The page's explicit target
   // still wins over the latch, as over the open rule. (The 0.7.x rule 'a subject appearing in an open
   // scene takes over again' is gone with it.)
+  // Where a convergence may sit: inside the page camera's depth range (2 x near .. 0.9 x far). A page
+  // that fits near / far to its content's bounds has no usable range until the content exists:
+  // lepoly.com's camera reports far = -Infinity while its model streams in, which made every clamp
+  // -Infinity, and that became the convergence and then the frozen scale (m2v 1e-6: a flat rig for
+  // the whole activation). An unusable side (not finite, not positive, far <= near) bounds nothing.
+  function convRange(s) {
+    const n = s.near > 0 && isFinite(s.near) ? s.near : 0, f = s.far > n && isFinite(s.far) ? s.far : Infinity;
+    const lo = n * 2, hi = f * 0.9;
+    return hi > lo ? [lo, hi] : [0, Infinity];
+  }
   // Returns false when there was nothing to go on (targetOnly: no usable target).
   function estimateConvergence(st, snap, targetOnly) {
     const s = st.ad.sampler(st);
@@ -1986,6 +2003,7 @@ function dxrCore(cfg, cap, S) {
       const o = {};
       d = st.openLatched ? 0 : estimateSubjectDistance(s, o);
       raw = d > 0 && isFinite(d) ? d : 0; // a real estimate (not the fallback below)
+      st.inView = st.openLatched ? -1 : o.inView | 0; // setScaleOnce: nothing in view yet = keep waiting
       if (!st.openLatched) {
         if (o.near > 0) st.nearSurf = o.near; // the nearest surface in view (anchorEyes' lean clamp)
         if (o.extent > 0) st.sceneExtent = o.extent; // the bounded items' size (walkTick's scale)
@@ -2002,12 +2020,14 @@ function dxrCore(cfg, cap, S) {
           st.scaleWarned = true;
           info(`open scene: the ${Math.round(clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95) * 100)}th-percentile depth in view is ${o.p.toPrecision(3)} units: the scene may not be metric; use Focus nearer / farther`);
         }
-      } else if (!(d > 0) || !isFinite(d)) d = st.conv.d || Math.max(s.near * 50, 1);
+      } else if (!(d > 0) || !isFinite(d)) d = st.conv.d > 0 && isFinite(st.conv.d) ? st.conv.d : Math.max((s.near > 0 && isFinite(s.near) ? s.near : 0) * 50, 1);
     }
-    // Kept inside the page's clip range, except the FIXED focus: it is a distance in front of the viewer,
-    // not a point of the scene, and a page that moves its far plane about (the supersplat viewer in fly
-    // mode had far 0.01 for a moment: the focus read 0.009 units, panel 2026-11-27) must not drag it.
-    d = src === 'fixed' || !(s.far * 0.9 > s.near * 2) ? Math.max(d, s.near * 2) : clamp(d, s.near * 2, s.far * 0.9);
+    // Kept inside the page's clip range (convRange: only on the sides that are usable), except the FIXED
+    // focus: it is a distance in front of the viewer, not a point of the scene, and a page that moves
+    // its far plane about (the supersplat viewer in fly mode had far 0.01 for a moment: the focus read
+    // 0.009 units, panel 2026-11-27) must not drag it.
+    const [lo, hi] = convRange(s);
+    d = src === 'fixed' ? Math.max(d, lo) : clamp(d, lo, hi);
     // Eased: a convergence that snaps pulls the whole scene through the glass in one frame. The
     // fixed focus is constant and snaps (entering it changes the rig's scale in the same frame anyway).
     // The page's own target is exact, and the page's controls are the only thing that moves it: followed
@@ -2016,7 +2036,7 @@ function dxrCore(cfg, cap, S) {
     st.conv.d = snap || !st.conv.d || src === 'fixed' || (src === 'target' && st.conv.src === 'target') ? d : st.conv.d + (d - st.conv.d) * 0.25;
     const was = st.conv.src;
     st.conv.src = src;
-    setScaleOnce(st, src, clamp(raw, s.near * 2, s.far * 0.9) || 0);
+    setScaleOnce(st, src, raw > 0 ? clamp(raw, lo, hi) : 0);
     if (was !== src && st.active) notify(); // the chip shows the source ('fixed')
     if (st.active && st.convLogged) settleLog(st);
     return true;
@@ -2052,7 +2072,8 @@ function dxrCore(cfg, cap, S) {
     const vx = vm[0] * t.x + vm[4] * t.y + vm[8] * t.z + vm[12];
     const vy = vm[1] * t.x + vm[5] * t.y + vm[9] * t.z + vm[13];
     const z = -(vm[2] * t.x + vm[6] * t.y + vm[10] * t.z + vm[14]);
-    if (!(z > s.near * 2) || !(z < s.far * 0.9)) return 0;
+    const [lo, hi] = convRange(s);
+    if (!(z > lo) || !(z < hi)) return 0;
     const tanV = s.tanHalfFov !== undefined ? s.tanHalfFov : Math.tan(s.verticalFov / 2);
     if (Math.hypot(vx, vy) / z > 0.25 * tanV) return 0;
     st.conv.via = t.via || null;
@@ -2145,6 +2166,7 @@ function dxrCore(cfg, cap, S) {
       return true;
     });
     if (out) {
+      out.inView = items.length; // what the estimate had to go on (0: nothing in view yet)
       // The nearest surface in view (bounding spheres: conservative), and the bounded items' size.
       let nr = Infinity;
       for (const it of items) if (!it.v) nr = Math.min(nr, Math.max(it.z - it.r, near));
