@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.8.0 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.8.1 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -489,7 +489,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.8.0'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.8.1'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -534,6 +534,7 @@ function dxrCore(cfg, cap, S) {
     objFitMin: 0.08,     // ... at least this x (a speck is not the point of the page) ...
     objStandoff: 1.2,    // ... and the camera stands at least this x that radius from the target
     targetDrift: 0.05,   // the target may move at most this x its distance while we watch
+    cursorDepth: true,   // the 3D cursor (cursorTick): report the depth under the pointer where the browser draws its cursor at depth
     glassMetric: 'radial', morphMs: 700,        // a rig change after go-live is a MORPH of this length (rigMorph); 0: a cut
     overlayEveryFrames: 30, // page elements over the canvas that move with the camera (hotspots, labels): looked for this often
     glassFront: 1 / 3,   // the share of the core's DEPTH RANGE in front of the glass ...
@@ -1041,6 +1042,7 @@ function dxrCore(cfg, cap, S) {
       if (T.strictObject !== false && st.conv.src !== 'fixed' && !(st.verdict && st.verdict.done)) objectVerdict(st);
       if (st.stats.xrFrames % (st.verdict && st.verdict.done ? Math.max(1, T.overlayEveryFrames | 0) : 10) === 0) overlayTick(st);
       if (T.strictObject !== false && st.stats.xrFrames % 6 === 0) verdictWatch(st);
+      cursorTick(st);
       tickRamp(st, t);
       tickRigSwitch(st);
       if (T.withheldMs > 0 && !st.cover && !st.releasing && st.layer) {
@@ -1299,6 +1301,68 @@ function dxrCore(cfg, cap, S) {
     if (st.overlayTracked) return finish(false, true, 'page elements over the canvas follow the 3D scene (hotspots, labels)');
     return finish(true, true, `one compact subject, ${fit.toFixed(2)} x the frame, camera ${(d / R).toFixed(1)} radii away, nothing else in the scene`);
   }
+  function cursorTick(st) {
+    if (T.cursorDepth === false) return;
+    const L = st.layer;
+    if (!L || typeof L.setCursorDepth !== 'function' || typeof L.getCursorDepthSupport !== 'function') return;
+    let C = st.cur;
+    if (!C) {
+      C = st.cur = { layer: null, support: 'none', sent: false, x: 0, y: 0, over: false, last: null };
+      const mv = (e) => { C.x = e.clientX; C.y = e.clientY; C.over = true; };
+      try {
+        window.addEventListener('pointermove', mv, { capture: true, passive: true });
+        document.addEventListener('pointerleave', () => { C.over = false; }, { capture: true, passive: true });
+      } catch (e) { /* ignore */ }
+    }
+    if (C.layer !== L) {
+      C.layer = L; C.support = 'pending'; C.sent = false;
+      let p;
+      try { p = Promise.resolve(L.getCursorDepthSupport()); } catch (e) { p = Promise.reject(e); }
+      p.then((r) => { if (C.layer !== L) return; C.support = r === 'runtime' ? 'runtime' : 'none'; if (C.support === 'runtime' && !C.logged) { C.logged = true; info('3D cursor: the browser draws its cursor at the depth of the content under it'); } }, () => { if (C.layer === L) C.support = 'none'; });
+    }
+    if (C.support !== 'runtime') return;
+    const withdraw = () => { C.last = null; if (!C.sent) return; C.sent = false; try { L.setCursorDepth(); } catch (e) { /* closed */ } };
+    const set = st.glass && st.glass.set;
+    if (!C.over || !set || !st.haveViews || rampK(st) < 1 || st.cover) { withdraw(); return; }
+    let rect = null, s = null;
+    try { rect = st.canvas.getBoundingClientRect(); } catch (e) { rect = null; }
+    if (!rect || !(rect.width > 0 && rect.height > 0)) { withdraw(); return; }
+    const u = (C.x - rect.left) / rect.width, v = (C.y - rect.top) / rect.height;
+    if (!(u >= 0 && u <= 1 && v >= 0 && v <= 1)) { withdraw(); return; }
+    try { s = st.ad.sampler(st); } catch (e) { s = null; }
+    if (!s) { withdraw(); return; }
+    const vm = s.viewMatrix || invert4(s.cameraPose);
+    const E = [0, 1].map((i) => mul4(st.V[i].proj, mul4(invert4(st.V[i].pose), vm)));
+    const sgn = st.V[0].pose[12] <= st.V[1].pose[12] ? 1 : -1;   // eye 0 is the left one
+    const nx = 2 * u - 1, ny = 1 - 2 * v, asp = rect.width / rect.height, r2 = 0.05 * 0.05;
+    let best = Infinity, any = false;
+    for (const p of set.parts) {
+      if (p.box) continue;
+      const A = mul4(E[0], p.m), B = mul4(E[1], p.m), q = p.pts, st4 = p.stride || 3;
+      for (let i = 0, end = p.k * st4; i < end; i += st4) {
+        const x = q[i], y = q[i + 1], z = q[i + 2];
+        const w0 = A[3] * x + A[7] * y + A[11] * z + A[15];
+        if (!(w0 > 1e-9)) continue;
+        const x0 = (A[0] * x + A[4] * y + A[8] * z + A[12]) / w0, dx = (x0 - nx) * asp;
+        if (dx * dx > r2) continue;
+        const dy = (A[1] * x + A[5] * y + A[9] * z + A[13]) / w0 - ny;
+        if (dx * dx + dy * dy > r2) continue;
+        const w1 = B[3] * x + B[7] * y + B[11] * z + B[15];
+        if (!(w1 > 1e-9)) continue;
+        const d = sgn * ((B[0] * x + B[4] * y + B[8] * z + B[12]) / w1 - x0);
+        any = true;
+        if (d < best) best = d;
+      }
+    }
+    const msg = { u, v };
+    if (any && isFinite(best)) msg.disparityPx = 0.5 * best * rect.width * (window.devicePixelRatio || 1);
+    try { L.setCursorDepth(msg); C.sent = true; C.last = msg; } catch (e) { C.sent = false; }
+  }
+  function mul4(a, b) {
+    const o = new Float64Array(16);
+    for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+    return o;
+  }
   function verdictWatch(st) {
   }
   function demote(st, why) {
@@ -1321,8 +1385,23 @@ function dxrCore(cfg, cap, S) {
       O.scanAt = t; O.els = [];
       let root = st.canvas.parentElement;
       for (let i = 0; i < 2 && root && root.parentElement && root !== document.body; i++) root = root.parentElement;
-      if (root) {
-        const all = root.querySelectorAll('*');
+      let host = null;
+      try { const rn = st.canvas.getRootNode(); host = rn && rn.host ? rn.host : null; } catch (e) { host = null; }
+      if (host && !O.declared) {
+        O.declared = true;
+        let hs = null;
+        try { hs = host.querySelector('[slot^="hotspot"]'); } catch (e) { hs = null; }
+        if (hs) {
+          st.overlayTracked = true;
+          info(`page overlays: the component declares hotspots over its 3D scene (${desc(hs)})`);
+          if (site.rigChoice === 'auto' && site.rig === 'display') fadeRig(st, 'camera', 'page elements over the canvas follow the 3D scene (hotspots, labels)');
+          return;
+        }
+      }
+      const lists = [];
+      if (root) lists.push(root.querySelectorAll('*'));
+      if (host) { try { lists.push(host.querySelectorAll('*')); } catch (e) { /* ignore */ } }
+      for (const all of lists) {
         for (let i = 0; i < all.length && i < 1500 && O.els.length < 80; i++) {
           const el = all[i];
           if (el === st.canvas || el.tagName === 'CANVAS' || el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.contains(st.canvas)) continue;
@@ -1573,7 +1652,7 @@ function dxrCore(cfg, cap, S) {
         }
         e.tri = e.cum = null;
       }
-      parts.push({ pts, k, stride: 3, m, name: e.name });
+      parts.push({ pts, k, stride: 3, m, name: e.name, box: !e.P });
     }
     return parts;
   }
@@ -1777,7 +1856,7 @@ function dxrCore(cfg, cap, S) {
       } else if (!(d > 0) || !isFinite(d)) d = st.conv.d || Math.max(s.near * 50, 1);
     }
     d = src === 'fixed' || !(s.far * 0.9 > s.near * 2) ? Math.max(d, s.near * 2) : clamp(d, s.near * 2, s.far * 0.9);
-    st.conv.d = snap || !st.conv.d || src === 'fixed' ? d : st.conv.d + (d - st.conv.d) * 0.25;
+    st.conv.d = snap || !st.conv.d || src === 'fixed' || (src === 'target' && st.conv.src === 'target') ? d : st.conv.d + (d - st.conv.d) * 0.25;
     const was = st.conv.src;
     st.conv.src = src;
     setScaleOnce(st, src, clamp(raw, s.near * 2, s.far * 0.9) || 0);
@@ -2895,7 +2974,7 @@ function dxrDev(core, ctl) {
           real: [realW(st.canvas), realH(st.canvas)],
           eye: st.R ? [st.R.eyeW, st.R.eyeH] : null,
           active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews, eyesOn: !!st.eyesOn, noDisplay: !!(st.nd || st.noDisplay),
-          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via, verdict: st.verdict && st.verdict.done ? { ...st.verdict.done, R: st.verdict.R, Rf: st.verdict.Rf } : null, overlayTracked: !!st.overlayTracked, morphing: !!st.morph, rigNow: st.rig ? { type: st.rig.type, z: st.rig.position ? st.rig.position.z : 0, vfov: st.rig.verticalFov, diopters: st.rig.convergenceDiopters, m2v: st.rig.metersToVirtual, ipd: st.rig.ipdFactor, par: st.rig.parallaxFactor, vdh: st.rig.virtualDisplayHeight } : null, glass: st.glass && st.glass.d > 0 ? { d: st.glass.d, lo: st.glass.lo, hi: st.glass.hi, n: st.glass.n, parts: st.glass.set ? st.glass.set.parts.length : 0, note: st.glass.set ? st.glass.set.note : null, list: st.glass.set ? st.glass.set.parts.map((p) => [p.name || '', p.k, +(+p.zlo).toFixed(1), +(+p.zhi).toFixed(1)]) : null } : null, openLatched: !!st.openLatched, openWhy: st.openWhy || null, anchor: st.anchor ? { ...st.anchor } : null, nearSurf: st.nearSurf || null, eyeShear: st.haveViews ? st.V.map((v) => [v.proj[8], v.proj[9]]) : null, eyeMid: st.haveViews ? [0, 1, 2].map((k) => (st.V[0].pose[12 + k] + st.V[1].pose[12 + k]) / 2) : null, rigScale: st.rigScale ? { ...st.rigScale } : null,
+          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via, verdict: st.verdict && st.verdict.done ? { ...st.verdict.done, R: st.verdict.R, Rf: st.verdict.Rf } : null, overlayTracked: !!st.overlayTracked, cursor: st.cur ? { support: st.cur.support, over: st.cur.over, last: st.cur.last } : null, morphing: !!st.morph, rigNow: st.rig ? { type: st.rig.type, z: st.rig.position ? st.rig.position.z : 0, vfov: st.rig.verticalFov, diopters: st.rig.convergenceDiopters, m2v: st.rig.metersToVirtual, ipd: st.rig.ipdFactor, par: st.rig.parallaxFactor, vdh: st.rig.virtualDisplayHeight } : null, glass: st.glass && st.glass.d > 0 ? { d: st.glass.d, lo: st.glass.lo, hi: st.glass.hi, n: st.glass.n, parts: st.glass.set ? st.glass.set.parts.length : 0, note: st.glass.set ? st.glass.set.note : null, list: st.glass.set ? st.glass.set.parts.map((p) => [p.name || '', p.k, +(+p.zlo).toFixed(1), +(+p.zhi).toFixed(1)]) : null } : null, openLatched: !!st.openLatched, openWhy: st.openWhy || null, anchor: st.anchor ? { ...st.anchor } : null, nearSurf: st.nearSurf || null, eyeShear: st.haveViews ? st.V.map((v) => [v.proj[8], v.proj[9]]) : null, eyeMid: st.haveViews ? [0, 1, 2].map((k) => (st.V[0].pose[12 + k] + st.V[1].pose[12 + k]) / 2) : null, rigScale: st.rigScale ? { ...st.rigScale } : null,
           rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing, lifted: st.lifted || null,
           pivot: st.piv ? { t: [...st.piv.t], c: [...st.piv.c], d: st.piv.d } : null,
           eyeAt: st.eyeAt ? Array.from(st.eyeAt) : null, // eye 0's world position, as last composed by the adapter
