@@ -110,8 +110,7 @@ function dxrCore(cfg, cap, S) {
     objFitMin: 0.08,     // ... at least this x (a speck is not the point of the page) ...
     objStandoff: 1.2,    // ... and the camera stands at least this x that radius from the target
     targetDrift: 0.05,   // the target may move at most this x its distance while we watch
-    morphMs: 700,        // a rig change after go-live is a MORPH of this length (rigMorph); 0: a cut
-    resumeMs: 2000,      // an object page that was demoted (a fly, a fly-through) is decided AGAIN after this long back outside the subject, looking at it, with no walk hint
+    glassMetric: 'radial', morphMs: 700,        // a rig change after go-live is a MORPH of this length (rigMorph); 0: a cut
     overlayEveryFrames: 30, // page elements over the canvas that move with the camera (hotspots, labels): looked for this often
     glassFront: 1 / 3,   // the share of the core's DEPTH RANGE in front of the glass ...
     glassTrim: 0.05,     // ... the range taken between this percentile of the surface (by area) and its complement: a thin tail falls
@@ -124,7 +123,8 @@ function dxrCore(cfg, cap, S) {
     eyesOffMs: 1000,    // the chip's dot goes amber only after this long continuously without 2-view frames ...
     eyesOnMs: 300,      // ... and back to green after this long with them (eye tracking flips isTracking every few s)
     fakeViews: false,   // TEST ONLY: synthesise a parallel-axis pair when the session reports none
-    guardFps: 15,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ... (David 2026-09-28: heavy splat
+    guardStandDown: false, // false (v0.8.0): a slow page stays in 3D and the guard only logs the rate; true: the 0.7 stand-down and retry
+    guardFps: 15,       // frame-rate guard (guard.js): with guardStandDown, back to 2D when 3D runs below this over guardMs ... (David 2026-09-28: heavy splat
                         // worlds run 25-44 fps on the reference box and read well; 24 still reverted them. 24 in 0.5.2, 40 before)
     guardMs: 2000,      // ... (and below 0.6 x the page's 2D rate, when it has one; was 0.8)
     guardWarmupMs: 4000, // ... no guard window starts within this long after the cover drop (a page still loading its assets)
@@ -926,6 +926,12 @@ function dxrCore(cfg, cap, S) {
     const r = buildRigMode(st, verticalFov, rigMode());
     return st.morph ? rigMorph(st, r) : ((st.anchorW = 1), r);
   }
+  // ONE RIG PER PAGE (David 2026-11-27: "we don't want those rig transitions in the middle of the
+  // experience"). A page decided a simple object keeps the display rig whatever its controls do (orbit,
+  // fly, a zoom into the subject); a page decided anything else keeps the camera rig, orbit mode
+  // included. The page's controls move the content; the rig does not change under them.
+  // Object-like pages (camera rig, focus from the same glass) are kept as decided too.
+  const lockedObject = (st) => !!(st.verdict && st.verdict.done && ((st.verdict.done.object && site.rig === 'display') || (st.verdict.done.like && !st.verdict.done.object)));
   function buildRigMode(st, verticalFov, mode) {
     if (!st.rigs) {
       st.rigs = {
@@ -1082,6 +1088,7 @@ function dxrCore(cfg, cap, S) {
   }
   function decideAutoRig(st, src) {
     if (site.rigChoice !== 'auto' || !HAS_RIG) return;
+    if (lockedObject(st)) return;   // one rig per page: a page decided an object is not decided again
     let rig = 'camera', why;
     if (src === 'fixed' || st.openLatched) why = `open scene${st.openWhy ? ': ' + st.openWhy : ''}`;
     else if (src !== 'target' && T.strictObject === false) why = 'no page target (the estimator)';
@@ -1183,47 +1190,10 @@ function dxrCore(cfg, cap, S) {
     if (st.overlayTracked) return finish(false, true, 'page elements over the canvas follow the 3D scene (hotspots, labels)');
     return finish(true, true, `one compact subject, ${fit.toFixed(2)} x the frame, camera ${(d / R).toFixed(1)} radii away, nothing else in the scene`);
   }
-  // AFTER the verdict the page is still watched (v0.8.0, David 2026-11-27: a preset camera path may
-  // orbit first and fly off later; a viewer may offer a fly mode beside its orbit mode). An object
-  // (or object-like) page is DEMOTED, never promoted, so it cannot flip back and forth, when:
-  //   - the target moves: more than T.targetDrift x its distance from where it was at the verdict
-  //     (a retarget on a detail of the subject, within the subject's radius, is allowed);
-  //   - the camera comes inside the subject (closer to the target than T.objStandoff x its radius is
-  //     allowed down to 1 x: a zoom; inside it is a fly-through).
-  // An automatic display rig then fades to the camera rig; the core focus goes too.
   function verdictWatch(st) {
-    const V = st.verdict;
-    if (!V || !V.done || !V.tgt || !(V.R > 0)) return;
-    let s = null;
-    try { s = st.ad.sampler(st); } catch (e) { s = null; }
-    if (!s) return;
-    const cw = s.cameraPose, fl = Math.hypot(cw[8], cw[9], cw[10]) || 1;
-    const px = cw[12], py = cw[13], pz = cw[14], fx = -cw[8] / fl, fy = -cw[9] / fl, fz = -cw[10] / fl;
-    // Where the subject is from here: how far, and how far off the view axis.
-    const vx = V.tgt[0] - px, vy = V.tgt[1] - py, vz = V.tgt[2] - pz, along = vx * fx + vy * fy + vz * fz;
-    const dist = Math.hypot(vx, vy, vz), off = Math.hypot(vx - along * fx, vy - along * fy, vz - along * fz);
-    if (V.done.object || V.done.like) {
-      let why = null;
-      if (st.conv.src === 'fixed') why = 'the scene became an open world';
-      else if (dist < V.R) why = 'the camera went inside the subject';
-      else if (!(along > 0) || off > Math.max(V.R, T.targetDrift * dist)) why = 'the camera no longer looks at the subject (a fly-through or a pan)';
-      if (!why) return;
-      demote(st, why);
-      if (site.rigChoice === 'auto' && site.rig === 'display') fadeRig(st, 'camera', why);
-      return;
-    }
-    // PROMOTION (David 2026-11-27: "promoting on resuming orbit is the right choice"). Only a page that
-    // WAS an object: back outside the subject, looking at it, nothing saying the camera walks, for
-    // T.resumeMs -> everything is decided again (the open latch included), under a fade to flat.
-    if (!V.was || st.rigSwitch) return;
-    const ok = dist >= T.objStandoff * V.R && along > 0 && off <= V.R && !walkHint(st);
-    if (!ok) { V.resumeSince = 0; return; }
-    const t = now();
-    if (!V.resumeSince) { V.resumeSince = t; return; }
-    if (t - V.resumeSince < T.resumeMs) return;
-    V.resumeSince = 0;
-    info('object test: the camera is back outside the subject, looking at it: deciding again');
-    redecide(st);
+    // ONE DECISION PER PAGE (David 2026-11-27): the page's own controls drive everything after it. An
+    // object stays an object in orbit, fly and zoom; the glass is a function of where the page camera
+    // stands (coreGlass, radial), so nothing here watches the camera any more.
   }
   function demote(st, why) {
     const V = st.verdict;
@@ -1231,28 +1201,6 @@ function dxrCore(cfg, cap, S) {
     V.was = V.done; V.done = { object: false, like: false, why }; V.resumeSince = 0;
     st.objLike = false;
     info(`object test: no longer an object (camera rig) — ${why}`);
-  }
-  // Decide the scene again from scratch (rig, scale, open latch), flat while it happens.
-  function redecide(st) {
-    const reset = () => {
-      st.openLatched = false; st.openWhy = null; st.openByWalk = false; st.surroundRuns = 0; st.walk = null;
-      st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.glass = null; st.piv = null;
-      estimateConvergence(st, true);
-    };
-    if (!st.active || rampK(st) <= 0) { reset(); return; }
-    // A morph when it can: what is showing is frozen as the morph's start, the scene is decided again
-    // at once (the verdict it had is kept: the subject is the same one), and the rig moves to the answer.
-    const V = st.verdict;
-    if (V && V.was && startMorph(st)) {
-      st.openLatched = false; st.openWhy = null; st.openByWalk = false; st.surroundRuns = 0; st.walk = null;
-      V.done = V.was; V.was = null; st.objLike = V.done.like;
-      estimateConvergence(st, true);
-      st.rigScale = { d: Math.max(1e-6, st.conv.d || 1), basis: 'orbit resumed' };
-      if (site.rigChoice === 'auto') setAutoRig(V.done.object ? 'display' : 'camera', `orbit resumed: ${V.done.why}`, false);
-      return;
-    }
-    st.rigSwitch = { reset };
-    startRamp(st, 0);
   }
   // Page elements over the canvas that MOVE WITH THE CAMERA (hotspots, labels, CSS2D annotations):
   // small positioned elements whose box moved between two looks while the camera moved and the canvas
@@ -1420,6 +1368,15 @@ function dxrCore(cfg, cap, S) {
     const u = u0 * u0 * (3 - 2 * u0), a = M.from, b = cameraForm(target, target.type === 'camera' ? 1 : 0, I);
     const lerp = (x, y) => x + (y - x) * u;
     const c = { z: lerp(a.z, b.z), tanV: Math.tan(lerp(Math.atan(a.tanV), Math.atan(b.tanV))), invd: lerp(a.invd, b.invd), e: lerp(a.e, b.e), q: lerp(a.q, b.q), w: lerp(a.w, b.w) };
+    // A DOLLY ZOOM, not two independent moves (panel 2026-11-27: with z and the angle each on its own
+    // curve the subject shrank by a fifth mid-morph and came back, "like a boomerang"). The two rigs
+    // frame one plane identically: the depth x (ahead of the page camera) where (x + z) tanV agrees.
+    // The camera position follows the field of view so that this plane keeps its size at every step.
+    const dt = a.tanV - b.tanV, xs = Math.abs(dt) > 1e-9 ? (b.z * b.tanV - a.z * a.tanV) / dt : NaN;
+    if (isFinite(xs) && xs > 0 && c.tanV > 1e-9) c.z = ((xs + a.z) * a.tanV) / c.tanV - xs;
+    // The convergence plane moves in diopters as seen from the PAGE camera (not from the moving one).
+    const pa = a.invd > 0 ? 1 / a.invd - a.z : 0, pb = b.invd > 0 ? 1 / b.invd - b.z : 0;
+    if (pa > 0 && pb > 0) { const pc = 1 / lerp(1 / pa, 1 / pb); if (pc + c.z > 1e-9) c.invd = 1 / (pc + c.z); }
     M.at = c;
     const r = st.rigs.morph || (st.rigs.morph = { type: 'camera', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } });
     // The scale goes in metersToVirtual so that both factors stay within [0, 1].
@@ -1461,6 +1418,7 @@ function dxrCore(cfg, cap, S) {
     for (const p of set.parts) total += p.k;
     if (!G.buf || G.buf.length < total) G.buf = new Float32Array(total);
     const z = G.buf, near = s.near || 0;
+    const cp = s.cameraPose || invert4(vm), radial = T.glassMetric !== 'axial' && !!cp, cx = cp ? cp[12] : 0, cy = cp ? cp[13] : 0, cz = cp ? cp[14] : 0;
     let n = 0;
     for (const p of set.parts) {
       const m = p.m, q = p.pts, st4 = p.stride || 3;
@@ -1468,6 +1426,16 @@ function dxrCore(cfg, cap, S) {
       const a = vm[2] * m[0] + vm[6] * m[1] + vm[10] * m[2], b = vm[2] * m[4] + vm[6] * m[5] + vm[10] * m[6];
       const c = vm[2] * m[8] + vm[6] * m[9] + vm[10] * m[10], e = vm[2] * m[12] + vm[6] * m[13] + vm[10] * m[14] + vm[14];
       let zlo = Infinity, zhi = -Infinity;
+      if (radial) {
+        // Distance from the page camera, not depth along its axis: turning the camera then never moves
+        // the glass (a rotation must not rescale the scene), and the rule has an answer wherever the
+        // camera stands or looks (inside the subject, past it, away from it).
+        for (let i = 0, end = p.k * st4; i < end; i += st4) {
+          const x = q[i], y = q[i + 1], w = q[i + 2];
+          const d = Math.hypot(m[0] * x + m[4] * y + m[8] * w + m[12] - cx, m[1] * x + m[5] * y + m[9] * w + m[13] - cy, m[2] * x + m[6] * y + m[10] * w + m[14] - cz);
+          if (isFinite(d)) { z[n++] = d; if (d < zlo) zlo = d; if (d > zhi) zhi = d; }
+        }
+      } else
       for (let i = 0, end = p.k * st4; i < end; i += st4) {
         const d = -(a * q[i] + b * q[i + 1] + c * q[i + 2] + e);
         if (d > near && isFinite(d)) { z[n++] = d; if (d < zlo) zlo = d; if (d > zhi) zhi = d; }
@@ -1479,7 +1447,10 @@ function dxrCore(cfg, cap, S) {
     let dz;
     if (T.glassRule === 'surface') dz = selectKth(z, n, Math.min(n - 1, Math.floor(gf * (n - 1))));
     else { const lo = selectKth(z, n, Math.floor(tr * (n - 1))), hi = selectKth(z, n, Math.floor((1 - tr) * (n - 1))); G.lo = lo; G.hi = hi; dz = lo + gf * (hi - lo); }
-    const d = clamp(dz, near * 2, (s.far || Infinity) * 0.9);
+    // Not clamped by the page's clip planes: the glass is a place in the scene, and a page that moves
+    // its far plane about (the supersplat viewer in fly mode sets far 0.01 for moments) dragged it to
+    // 0.009 units: the whole scene shrank into the distance and came back (panel 2026-11-27).
+    const d = Math.max(dz, 1e-6);
     G.d = d; G.n = n;
     if (!G.logged) {
       G.logged = true;
@@ -1685,7 +1656,7 @@ function dxrCore(cfg, cap, S) {
   //       adapter recognises, or the page camera's motion over time.
   // Logged once, naming the signal: `open scene: walk: pointer lock on the canvas — fixed focus for the rest of this page`.
   function latchOpen(st, why) {
-    if (st.openLatched) return;
+    if (st.openLatched || lockedObject(st)) return;
     st.openLatched = true; st.openWhy = why; st.openByWalk = /^walk/.test(why);
     info(`open scene: ${why} — fixed focus for the rest of this page`);
     demote(st, `open scene: ${why}`);
@@ -1856,7 +1827,7 @@ function dxrCore(cfg, cap, S) {
         st.surroundRuns = !o.open && o.surround && T.openSurround !== false ? (st.surroundRuns || 0) + 1 : 0;
         if (st.surroundRuns >= Math.max(1, T.surroundRuns | 0)) latchOpen(st, `surrounded: ${o.surround}`);
       }
-      if (st.openLatched || o.open) {
+      if ((st.openLatched || o.open) && !lockedObject(st)) {
         if (!st.openLatched) latchOpen(st, o.why || 'the camera stands inside a world');
         src = 'fixed'; st.conv.via = 'open scene'; d = +T.openSceneConvM || 2;
         // Scale sanity, a note only: a world whose typical depth in view is millimetres or

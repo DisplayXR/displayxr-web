@@ -1161,14 +1161,24 @@ viewer's own, so it is used only for *a simple object that is the point of the p
 
 No page target is needed (a splat viewer with its own controls qualifies). A page that fails only
 "alone" or "no overlay" is **object-like**: it keeps the camera rig but takes its focus from the same
-core glass. The page is watched afterwards (`verdictWatch`): the camera going inside the subject, looking
-away from it, or the scene latching open (a fly mode: pointer lock) **demotes** it; back outside the
-subject and looking at it with no walk hint for `resumeMs` **promotes** it again.
+core glass.
+
+**One decision per page** (panel 2026-11-27). The verdict is made once, before any depth is shown, and
+kept: an object page keeps the display rig in orbit, fly and zoom; any other page keeps the camera rig,
+an orbit mode included. Nothing is decided again and no rig changes under the user. The page's own
+controls drive everything; the only difference from the 2D page is the rig and its field of view. A
+demote / promote cycle (fly out, orbit back in) was tried and dropped: every change read as the scene
+leaving and coming back. The one late change left is a page whose pinned overlays are found after
+go-live (they need 12 degrees of camera motion to tell): it goes to the camera rig, once.
 
 **The core glass (`coreGlass`).** On the display rig (and on the camera rig of an object-like page) the
-glass sits a third (`glassFront`) of the way into the subject's **depth range**, the range taken between
+glass sits a third (`glassFront`) of the way into the subject's **distance range** from the page camera
+(`glassMetric: 'radial'`), the range taken between
 the `glassTrim` percentiles of its surface *by area* (adapters' `coreSet` -> `core.sampleSurface`), read
-from the page's live camera whenever the camera or the subject moves. By area: a thin tail, strap or
+whenever the camera or the subject moves. Distance from the camera, not depth along its axis: turning
+the camera never moves the glass, and the rule has an answer wherever the camera stands (inside the
+subject, past it, looking away). It is not clamped by the page's clip planes (a viewer that sets far
+0.01 in its fly mode dragged the glass to 0.009 units: the scene shrank away and came back). By area: a thin tail, strap or
 antenna falls outside the range. The stage (anything that holds the camera, a flat part larger than the
 frame, parts off the frame) is left out, and the set is frozen at the verdict. Every angle: a long
 subject is never recessed side-on nor pushed far out end-on, and a zoom (the page's camera moving in) is
@@ -1178,12 +1188,19 @@ third of the surface *area* in front (a watch whose area is mostly in its case p
 Fallbacks: unreadable vertex data, skinned or instanced meshes, and compressed splats whose centres are
 on the GPU use the part's bounding box.
 
+**The frame-rate guard only notes** (`guardStandDown: false`). A page that is live in 3D stays in 3D:
+going back to 2D and retrying 6 s later read as the scene leaving and coming back, worse than a slow 3D
+picture. The guard logs the rate once per canvas (`... staying in 3D (the guard only notes)`).
+`guardStandDown: true` restores the 0.7 stand-down and retry (the harness's guard cases use it).
+
 **The rig morph (`rigMorph`).** The two rigs are one family (the contract: runtime
-`docs/specs/extensions/XR_DXR_view_rig.md` section 4; the code: displayxr-common `dxr_rig_transition`). An
-automatic rig change after go-live writes the rig that was showing in camera form and moves every
-parameter to the new rig's (position and eye scales linearly, convergence in diopters, field of view in
-angle); the eye anchor's weight rides along. No flat phase. Needs the panel size and the nominal viewer;
-without them the change is the old fade.
+`docs/specs/extensions/XR_DXR_view_rig.md` section 4; the code: displayxr-common `dxr_rig_transition`). A
+rig change after go-live writes the rig that was showing in camera form and moves to the new rig's as a
+**dolly zoom**: the field of view moves in angle and the camera position follows it so that the plane the
+two rigs frame alike keeps its size (moving the two independently shrank the subject by a fifth
+mid-way); the focus plane moves in diopters as seen from the page camera. With one decision per page it
+runs only for the late overlay change above. Needs the panel size and the nominal viewer; without them
+the change is the old fade.
 
 **The raw-pair guard.** A canvas must never reach the screen as its raw side-by-side store:
 

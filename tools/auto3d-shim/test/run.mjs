@@ -166,7 +166,7 @@ async function runCase(browser, base, c) {
   // ... and for the 0.7.x store (the element's device size, each eye half its width: eyeScale 0.5), whose
   // sizes they assert. The product default since v0.8.0 is the 2:1 store (eyeScale 1): cases/autorig.mjs.
   if (!(c.cfg && 'eyeScale' in c.cfg)) rigDefault.eyeScale = 0.5;
-  await page.evaluateOnNewDocument(`window.__dxrAuto3DTestCfg = ${JSON.stringify({ guardFps: HARNESS_GUARD_FPS, ...rigDefault, ...(c.cfg || {}) })}; window.__fakeXROpts = ${JSON.stringify(c.fake || {})};${c.commits ? ' window.__fakeXRTrackCommits = true;' : ''}`);
+  await page.evaluateOnNewDocument(`window.__dxrAuto3DTestCfg = ${JSON.stringify({ guardFps: HARNESS_GUARD_FPS, guardStandDown: true, ...rigDefault, ...(c.cfg || {}) })}; window.__fakeXROpts = ${JSON.stringify(c.fake || {})};${c.commits ? ' window.__fakeXRTrackCommits = true;' : ''}`);
   if (c.seed) await page.evaluateOnNewDocument(`if (!sessionStorage.getItem('dxrSeeded')) { sessionStorage.setItem('dxrSeeded', '1'); localStorage.setItem('dxrAuto3D', ${JSON.stringify(JSON.stringify(c.seed))}); }`);
   await page.evaluateOnNewDocument(FAKE);
   for (const s of c.shim) await page.evaluateOnNewDocument(s);

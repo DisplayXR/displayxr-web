@@ -84,7 +84,7 @@ export default function cases({ P, NEW }) {
     // rig goes display -> camera -> display with no flat phase: the rig pushed is never at zero depth,
     // and its field of view moves between the display's own and the page's.
     {
-      id: 'rig-morph', name: 'product viewer, the camera pans off the subject and comes back: display -> camera -> display by a morph, never flat',
+      id: 'rig-morph', name: 'product viewer, the camera pans off the subject and comes back: ONE rig per page, the display rig throughout, nothing decided again',
       url: 'three-turntable.html?still=1&panAt=3500&backAt=6000', expect: 'convert', fovDeg: 30, ready: 'window.__ready', cfg: { rig: 'auto', coreGlass: true, eyeScale: 1 },
       probe: new Function(`return (async () => {
         const out = [], t0 = performance.now();
@@ -99,19 +99,15 @@ export default function cases({ P, NEW }) {
         t('converted within 60 s', r.ok, `${r.ms} ms`);
         const s = r.probe || [];
         const modes = s.map((x) => x.mode).filter((m, i, a) => i === 0 || m !== a[i - 1]);
-        t('rig sequence display -> camera -> display', modes.join('>') === 'display>camera>display', modes.join('>'));
-        const morphs = s.filter((x) => x.morph);
-        t('both changes were morphs (a camera-form rig in flight)', morphs.length >= 6 && morphs.every((x) => x.type === 'camera'), `${morphs.length} morph samples`);
-        const depth = (x) => (x.type === 'display' ? x.ipd : x.ipd * (x.m2v || 1));
-        const flat = s.filter((x) => !(depth(x) > 0) || (x.k !== undefined && x.k !== null && x.k < 1));
-        t('never flat: the eye scale stays above zero and the depth fade is not used', flat.length === 0, flat.length ? JSON.stringify(flat[0]) : 'ok');
-        const fovs = morphs.map((x) => (x.vfov * 180) / Math.PI);
-        t('in flight the field of view is between the display own and the page 30 deg', fovs.every((f) => f > 5 && f < 30.5), `${Math.min(...fovs).toFixed(1)}..${Math.max(...fovs).toFixed(1)} deg`);
-        // Continuity of the camera-form eye scale across the first morph (no step larger than a third of its range).
-        const e = morphs.map((x) => x.ipd * x.m2v), steps = e.slice(1).map((v, i) => Math.abs(v - e[i])), range = Math.max(...e) - Math.min(...e);
-        t('the eye scale moves in small steps', range > 0 && Math.max(...steps) < 0.5 * range, `range ${range.toPrecision(3)}, largest step ${Math.max(...steps).toPrecision(3)}`);
+        t('the display rig throughout (one decision per page)', modes.join('>') === 'display', modes.join('>'));
+        t('no morph, no fade: the rig is never in flight', s.every((x) => !x.morph && x.type === 'display' && (x.k === undefined || x.k === null || x.k >= 1 || x.t < 3000)), `${s.filter((x) => x.morph).length} morph samples`);
+        // The page's pan is a cut (the camera jumps aside and back): the glass is a function of where the
+        // camera stands, so the portal takes exactly two heights, one per camera position, with no ease of ours.
+        const live = s.filter((x) => x.t > 3000), vd = live.map((x) => x.vdh), lo = Math.min(...vd), hi = Math.max(...vd);
+        const mid = vd.filter((v) => v > lo + 0.1 * (hi - lo) && v < hi - 0.1 * (hi - lo));
+        t('the portal follows the page camera at once (no ease of ours)', vd.length > 20 && hi > lo && mid.length <= 2, `${lo.toFixed(3)} / ${hi.toFixed(3)}, ${mid.length} sample(s) in between`);
         const lines = r.log.filter((l) => /object test:|style:/.test(l)).map((l) => l.replace(/^.*dxr-auto3d\] /, '')).join(' | ');
-        t('the console tells the story', /no longer an object/.test(lines) && /deciding again/.test(lines), lines);
+        t('nothing is decided again', !/no longer an object|deciding again|Scene camera/.test(lines), lines);
       },
     },
     // ZOOM: the page dollies its camera to half the distance at 3.5 s. The glass follows the subject (it is
@@ -138,7 +134,7 @@ export default function cases({ P, NEW }) {
         t('still the display rig, still an object', b.mode === 'display' && b.verdict && b.verdict.object, JSON.stringify({ mode: b.mode, verdict: b.verdict }));
         t('the target distance halved', Math.abs(b.target / a.target - 0.5) < 0.03, `${a.target.toFixed(2)} -> ${b.target.toFixed(2)}`);
         const front = (x) => x.target - x.glass;
-        t('the glass followed: it sits the same distance in front of the target as before', Math.abs(front(b) - front(a)) < 0.05 * Math.abs(a.target - a.glass) + 0.02 && Math.abs(-b.z - b.glass) < 1e-3 * b.glass, `in front of the target by ${front(a).toFixed(3)} -> ${front(b).toFixed(3)}; glass ${a.glass.toFixed(2)} -> ${b.glass.toFixed(2)}`);
+        t('the glass followed: it sits the same distance in front of the target as before', Math.abs(front(b) - front(a)) < 0.05 && Math.abs(-b.z - b.glass) < 1e-3 * b.glass, `in front of the target by ${front(a).toFixed(3)} -> ${front(b).toFixed(3)}; glass ${a.glass.toFixed(2)} -> ${b.glass.toFixed(2)}`);
         t('the virtual display height shrank with it', b.vdh < 0.6 * a.vdh, `${a.vdh.toFixed(3)} -> ${b.vdh.toFixed(3)}`);
       },
     },

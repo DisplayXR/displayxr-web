@@ -115,7 +115,13 @@ function dxrGuard(core) {
     s.dts.push(dt); s.sum += dt;
     if (s.sum < T.guardMs) return;
     const fps = (1000 * s.dts.length) / s.sum;
-    if (fps < T.guardFps && (!s.base || fps < GUARD_REL * s.base)) { trip(st, fps, s.base); return; }
+    if (fps < T.guardFps && (!s.base || fps < GUARD_REL * s.base)) {
+      // v0.8.0 (David 2026-11-27): a page that is live in 3D STAYS in 3D. Going back to 2D and retrying
+      // read as the scene leaving and coming back, worse than a slow 3D picture. The guard notes the rate
+      // (once per canvas) and does nothing, unless T.guardStandDown asks for the old behaviour.
+      if (T.guardStandDown === true) { trip(st, fps, s.base); return; }
+      if (!s.noted) { s.noted = true; core.info(`${in3D(fps, s.base)}: staying in 3D (the guard only notes)`); }
+    }
     while (s.dts.length && s.sum - s.dts[0] >= T.guardMs) s.sum -= s.dts.shift();
   };
 
