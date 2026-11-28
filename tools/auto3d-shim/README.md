@@ -14,7 +14,8 @@ dependencies, no bundler: concatenation plus a version stamp) assembles them int
 ```
 dist/auto3d-sentinel.js   (function (cfg, cap) { sentinel.js ... return dxrSentinel(cfg, cap); })
 dist/auto3d-core.js       (function (cfg, cap, S) { core.js surface.js guard.js chip.js dev.js
-                            three-adapter.js playcanvas-adapter.js babylon-adapter.js ... return dxrCore(cfg, cap, S); })
+                            three-adapter.js playcanvas-adapter.js babylon-adapter.js gl-tap.js globe-adapter.js
+                            ... return dxrCore(cfg, cap, S); })
 dist/auto3d-dev.js        (() => { host-dev.js sentinel.js  const CORE = function (cfg, cap, S) {…};
                             dxrSentinel(dxrDevHost(() => CORE)…) })()   <- manifest.json (dev extension)
 VENDOR.json               { name, version, sourceCommit, sourceSha256, files: { <f>: { bytes, sha256 } } }
@@ -34,7 +35,7 @@ wins: the dev extension, or the browser's).
 
 ```
 cfg = { decision: 'allow'|'offer'|'block', depths: { camera, display } (0.02..1), rig: 'camera'|'display',
-        convScale (0.05..20, 1 = automatic), dev, engines: { three, playcanvas, babylon }, test }   // frozen
+        convScale (0.05..20, 1 = automatic), dev, engines: { three, playcanvas, babylon, globe }, test }   // frozen
         // engines: an engine set to false is never detected; a missing key means on
 cap = { loadCore() -> function, save({ decision?, depths?, rig?, convScale? }), report({ status, engine?, reason? }) }
       // report: 'live' | 'converting' | 'standdown' | 'optout' | 'guard' | 'offer' | 'off' | 'flat' | 'idle' — transitions only
@@ -77,13 +78,18 @@ Plus the value-only symbol marker. After an engine is found the core adds what c
 8. possibly **one** `document.adoptedStyleSheets` entry, a single rule
    (`[data-dxr-auto3d-chip]::backdrop{…transparent…}`), appended only when a page-wide `::backdrop`
    rule would otherwise dim the whole page behind the top-layer chip (risk R9);
-9. while a canvas is converted (v0.5.6): the attribute **`data-dxr-auto3d="live"`** on that canvas
+9. on a bare WebGL context (no engine the adapters know; the globe route, v0.8.3), from 3 s after it
+   was created: own, non-enumerable function properties on **that context object** (every WebGL entry
+   point, wrapped by `gl-tap.js`) and on its `ANGLE_instanced_arrays` / `OES_vertex_array_object` /
+   `WEBGL_multi_draw` extension objects (plus a non-enumerable `__dxrOrig` there). Taken off again
+   when another adapter turns out to own the canvas. Nothing on any prototype;
+10. while a canvas is converted (v0.5.6): the attribute **`data-dxr-auto3d="live"`** on that canvas
    (see [Coexistence with Convert to 3D](#coexistence-with-convert-to-3d-v056)). A page's own
    `MutationObserver` sees exactly one set and one remove per conversion.
 
 `test/cases/chip.mjs` `chip-layout` checks that the page's DOM, attributes, boxes and computed styles
 are identical before and after go-live, minus the host and the cover, with item 6 allowlisted and
-item 9 asserted on its own (the only attribute added).
+item 10 asserted on its own (the only attribute added).
 
 **Opt-out.** `<meta name="displayxr-auto3d" content="off">` (name and content case-insensitive,
 content trimmed). The sentinel checks it on the first WebGL (or, since v0.6.0, WebGPU) context and when an engine is found:
@@ -108,6 +114,8 @@ the v0.3 single-depth migration); `window.__dxrAuto3DTestCfg` is read only there
 | `three-adapter.js` | `dxrThree(core)`: the three.js prototype's own code, unchanged in behaviour. Fed by the sentinel's `__THREE_DEVTOOLS__` listener (`observe`, `register`); per-instance wrapping of `render` / `setSize` / getters, per-eye render into each half, flat HUD / post passes, render-on-demand replay, reversed-Z; on a `WebGPURenderer`, the `RenderPipeline` quad per eye (v0.8.2: the node frame's `updateBeforeNode` wrapped on the instance) |
 | `playcanvas-adapter.js` | `dxrPlayCanvas(core)`: takes the app the sentinel found (`consider(app, how, ns)`), drives the page's camera through the engine's `RenderView` path, resizes the store through `device.setResolution`, supplies bounds from `render` / `model` / `gsplat` components, and applies the gsplat footprint fix |
 | `babylon-adapter.js` | `dxrBabylon(core)` (v0.7.0): takes the engine the sentinel found (`consider(engine, how, ns)`), hooks its scenes as they are created, and renders both eyes through the engine's own camera-rig path (two eye cameras on `RIG_MODE_CUSTOM`, as Babylon's WebXR camera does). Sizes the store to the element's device pixels through the engine's hardware scaling level (picking is in store pixels), supplies bounds from the scene's meshes. See [Babylon.js](#babylonjs-7--9x-webgl2-webgl1-webgpu-v070) |
+| `gl-tap.js` | `dxrGlTap(core)` (v0.8.3): the GENERIC WebGL tap, engine-agnostic. `tap(gl, hooks)` wraps ONE context (own, non-enumerable properties on that context and on its `ANGLE_instanced_arrays` / `OES_vertex_array_object` / `WEBGL_multi_draw` objects; no prototype), reports each page frame (draws on screen, draws carrying a clip matrix, each tile's model-origin clip position, sampled vertex positions) and, while `tap.stereo = { k: [kL, kR], C }`, issues every screen draw once per eye into the halves: clip matrices get `row0 += k · (row3 − C · e_w)` (an off-axis eye, the shear in the matrix: no seam), matrix-less draws (labels, icons, full-screen passes) go into both halves unchanged (at the glass), a draw sampling a texture the tap filled side by side is copied through once. `tap.replay()` redraws the page's last screen frame from its recorded calls (state saved and restored around it). See [Globes and 3D maps](#globes-and-3d-maps-raw-webgl-v083) |
+| `globe-adapter.js` | `dxrGlobe(core, glTap)` (v0.8.3): the globe-specific part on that tap: recognition of a TILED WORLD by behaviour (many per-draw clip matrices, their tiles on one surface with relief in view), the world rig (`ad.world()`: open scene, camera rig, fixed focus), the focus rule (the surface at the centre of the view, from sampled vertices, capped at 2 × the nearest surface), replay where the core needs a frame the page did not draw. See [Globes and 3D maps](#globes-and-3d-maps-raw-webgl-v083) |
 | `build.mjs` | the build above; `--check` for drift |
 
 **Convergence: the page's target first.** When the page says what it is looking at, that is the
@@ -882,6 +890,139 @@ Harness cases:
 - An engine created before `document_start` (never, for a content script).
 - Not yet verified on the panel. The harness drives Babylon 9.32.0 only; 7.x / 8.x share the code
   paths used here (`_gl` assignment, `RIG_MODE_CUSTOM`, `_processSubCameras`), not run.
+
+### Globes and 3D maps (raw WebGL, v0.8.3)
+
+A globe or a 3D map is usually not built on an engine the adapters above know: it is a renderer of
+its own on a bare WebGL context. It is recognised by **what it draws**, never by its site: two new
+parts, kept apart so the generic one can be shared,
+
+- `gl-tap.js`, the **generic WebGL tap**: wraps one context (own, non-enumerable properties on that
+  context and on its `ANGLE_instanced_arrays` / `OES_vertex_array_object` / `WEBGL_multi_draw`
+  objects; nothing on any prototype), reports each page frame, draws the side-by-side pair and
+  replays a frame (below);
+- `globe-adapter.js`, the **globe part**: recognition, the world rig, the focus rule.
+
+**How a context reaches it.** The sentinel notes every bare `webgl` / `webgl2` context (at most 8)
+and, 3 s after the first, hands them to `core.globe.consider()`; on a page with no engine that is
+when the core loads. A canvas another adapter tracks is left alone (`g-globe-three`). The tap then
+watches the context's frames; recording for replay starts only once the canvas is recognised.
+
+**Recognition: a tiled world.** A frame qualifies when it draws, on screen, at least 12 draws that
+each carry their own clip matrix (one camera, many model origins: the relative-to-centre tiles every
+globe / 3D-map renderer uses for float precision at planet scale), the tiles' origins lie on one
+surface (a least-squares plane in clip space `(u, v, w)`, median residual under 12 % of its depth)
+and that surface has relief in view (far tiles at least 1.15 × as deep as near ones). Six qualifying
+frames recognise the canvas for the rest of the page. What never qualifies: an engine's layout (one
+view-projection for every draw plus per-draw model matrices: `g-globe-split`), an orthographic 2D
+map (no clip matrix at all: `g-globe-ortho`), a perspective map seen straight down on flat ground
+(no relief: `g-globe-flat`). Google Maps draws its plain 2D map and its flat satellite view in a
+worker the shim never enters, so those stay 2D there whatever the rule says.
+
+**The rig: a world.** The adapter answers `ad.world()` (a new optional hook), and the core latches
+the open scene at once: camera rig, fixed focus, real scale (`metersToVirtual` 1, converged
+`openSceneConvM` ahead), decided once for the page and kept, whatever the page's own controls do.
+The runtime returns off-axis eyes for that rig; the adapter reads each eye's horizontal frustum shear
+`k = −P[8]` (the NDC shift of content at infinity) and hands the tap `{ k, C }`. The page's own
+controls drive everything; nothing of ours is drawn or added.
+
+**How the pair is drawn (gl-tap.js).** Each screen draw is issued once per eye into its half
+(viewport halved, scissored to the half, the page's own viewport and scissor mapped into it):
+
+- a draw with clip matrices: each one is replaced for that eye by `M' = M + k · (row3 − C · e_w)`
+  (row 0 only; `e_w = (0, 0, 0, 1)`), i.e. clip `x' = x + k · (w − C)`: content at view depth `C`
+  stays put, content at depth `z` moves `k · (1 − C / z)` of NDC. That is an eye shifted along the
+  camera's x axis with its frustum sheared to converge at `C` (`k = P00 · e / C`). Only row 0
+  changes, so depth conventions and engine jitter are untouched. The shear is in the matrix, not a
+  viewport shift, so each half is a complete frustum: **no seam** (the spike's ~50 px gap at the
+  centre came from shifting the viewport);
+- a draw with no clip matrix (screen-space labels, icons, pins, full-screen passes) goes into both
+  halves unchanged: **at the glass, in both eyes**; one that samples a texture the tap itself filled
+  side by side is copied through once instead;
+- other framebuffers (shadow maps, atlases, picking) are left alone; a scissored clear is issued per half.
+
+Every piece of state the page can read back is restored after each draw.
+
+**The focus (the comfort rule).** `C` is the depth of the **surface at the centre of the view**: a
+plane through the drawn vertices the tap samples around the centre (the first bytes of every vertex
+buffer upload are kept, and each tile's first vertices are read with the draw's own layout and
+transformed by its matrix), read on the view axis; failing that, their median depth at the centre;
+failing that, the plane through the tile origins (a tile's origin is often a bounding-box corner
+well off the surface). Never more than 2 × the nearest surface in view (its 10th percentile), times
+the user's Focus. A pure function of the page camera and what it draws: no estimator, no easing,
+nothing to hunt. Then content at depth `z` sits at `k · (1 − C / z)`: 0 at the centre of the view,
+`k` at infinity (the open scene's comfort, a quarter of the viewer's IPD at the default depth) and
+at most `−k` for the nearest surface, at every zoom from the whole globe to street level.
+
+**Replay.** A map draws only when something changes. Where the core needs a frame the page did not
+draw (the flip, the first stereo frame, every step of the depth fade, an eye pair that moved, the
+out-cover and the mono frame of a turn-off) the tap replays the page's last screen frame from its
+recorded calls (arguments copied; object creation / deletion, queries, shader work and texture
+uploads are never replayed), through the same wrappers, so the replay is side by side or mono as
+needed. The context state is saved before and restored after, and GL errors a replay raises are
+drained so the page never reads them.
+
+**Harness** (`cases/globe.mjs`, page `pages/globe-tiles.html`: raw WebGL, 256 tiles with their own
+model-view-projection in two passes, a sky and labels / pins with no matrix, a 2D overlay canvas,
+render on demand, tile origins 150 units below the ground, vertex buffers streamed again after 5 s):
+
+- `g-globe-live`: recognised and live as a world (camera rig, open scene latched with the globe
+  reason); at three camera distances the halves show disparity by depth (far behind, near in
+  front), bounded by the rule above, no vertical disparity, no seam at the inner edges, the
+  magenta labels at identical positions in both halves; the surface at the centre of the view
+  within 1 px of the glass, focus read from the drawn vertices;
+- `g-globe-golive-off`: the page idle (render on demand) at go-live and at turn-off: the frame
+  committed before the layer is the side-by-side store under the cover, no raw pair is committed at or
+  after the close, and the page drew nothing itself meanwhile (the frames came from replay);
+- `g-globe-flat`, `g-globe-ortho`, `g-globe-split`: never converted (no session);
+- `g-globe-three`: a three.js page is converted by the three.js adapter, the globe part stays out.
+
+**Live, headless (stock Chrome, the dev build, the fake inline-3D session with the runtime's camera
+rig model; no sign-in, no API key).** `test/gl-level/globe-live.mjs` drives Google Maps into Globe view
++ 3D and grabs the side-by-side store in the drawing task; `disparity.py` block-matches the halves.
+Horizontal disparity in eye pixels (640-px eye; + = behind the glass; the rule's bound is ±18 px at
+the runtime model's eye shear k = ±0.0285, ±10 px at globe scale where Maps widens its field of view):
+
+| view (Google Maps, Globe view + 3D) | focus C | p5 .. p95 (min .. max) | vertical (median dy) |
+|---|---|---|---|
+| whole globe ("space" zoom, Europe / Africa) | 2.2·10⁷ m | −1 .. +1 (−1 .. +2) | 0 |
+| region (California / France) | 1.7·10⁶ m | −3 .. +2 | 0 |
+| city, Paris, 900 m, 39° tilt | 1.86 km | −5 .. +3 (−6 .. +4) | 0 |
+| city, San Francisco piers, 836 m, 39° tilt | 1.18 km | −7 .. +1 (−8 .. +3) | 0 |
+| city, after a Ctrl+drag tilt toward the horizon | 1.30 km | −18 .. 0 (−23 .. +10) | 0 |
+| street (San Francisco, ~80 m to the roofs) | 77 m | −12 .. +1 (−16 .. +2) | 0 |
+
+Converted: terrain, the photorealistic 3D buildings, the globe; labels and pins in both eyes at the
+same place (at the glass); no seam (each half shows a full frustum; the unfilled band at the left of
+each half is where Maps itself does not draw, under its own left rail / side panel, and lands back
+under that panel in the woven picture). Frame rate during a scripted pan: 2D 34.9–47.1 fps (four
+runs), converted 18.6–40.6 fps (five runs; median 21): every 3D draw is issued twice, and the
+photorealistic mesh is vertex-heavy. The plain 2D map and the flat satellite view are drawn by Maps
+in a worker: the shim never sees them and they stay 2D.
+
+Not explained yet: on the San Francisco views the zero of disparity sits ~2–3 px (crossed) off the
+centre of the view, as if the surface were ~15 % nearer than the drawn vertices say (Paris: centred);
+the focus is still the documented rule, the range stays inside the bound.
+
+**Fragility.** Nothing here names a site, a function or a property of one: recognition, the focus
+and the pair only read WebGL calls. What a renderer change can break: a renderer that stops giving
+each tile its own clip matrix (one shared view-projection plus model matrices) stops qualifying and
+stays 2D; clip matrices delivered through uniform buffers or vec4 arrays are not seen (Google Earth
+on the web works that way, below); a renderer that moves its 3D drawing into a worker
+(`OffscreenCanvas`) is out of reach of a main-world shim; draws made with `WEBGL_multi_draw` are
+drawn once, flat.
+
+**Google Earth on the web: not converted.** Its renderer runs on the MAIN thread (no worker
+injection would be needed) and draws its 3D into the default framebuffer, but it does not draw a
+tiled world the way this part recognises one: a shared projection (`uProjectionMatrix`, uploaded once
+per frame), an affine model-view and per-mesh matrices with data packed into their last row, the clip
+position assembled inside shader functions (`1000.0 * pos_in_clip * ComputeMasking(masks)`), and an
+inverse projection (`matrixEyeFromClip`) for the sky. Measured: the tap sees ~27 clip draws per frame
+but one tile origin, so the page is never recognised and stays 2D, untouched. A probe that sheared only
+the projection matrix (spike hook, `--only '^uProjectionMatrix$'`) made the terrain and buildings
+vanish: the projection is not the last word on the position there. Converting it would need the
+shader's data flow (which matrix reaches `gl_Position`), uniform names for programs linked before the
+tap is installed, and a recognition of its own: out of scope here.
 
 ## Try it on the display (Windows box)
 

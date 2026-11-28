@@ -54,7 +54,7 @@ function dxrDevHost(loadCore) {
     rig: cur.rig,
     convScale: cur.convScale,
     dev,
-    engines: Object.freeze({ three: true, playcanvas: true, babylon: true }),
+    engines: Object.freeze({ three: true, playcanvas: true, babylon: true, globe: true }),
     test,
     hud: cur.hud !== false,
   });

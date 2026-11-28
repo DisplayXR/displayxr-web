@@ -18,7 +18,7 @@ test('locate finds the HEAD commit that carries the committed sources', { skip: 
   const { commit } = locate(root, 'HEAD');
   assert.ok(commit, 'a commit on HEAD carries the sources');
   git('merge-base', '--is-ancestor', commit, 'HEAD'); // throws if not on HEAD
-  const last = git('log', '-1', '--format=%H', 'HEAD', '--', 'manifest.json', 'host-dev.js', 'sentinel.js', 'core.js', 'surface.js', 'guard.js', 'chip.js', 'dev.js', 'three-adapter.js', 'playcanvas-adapter.js', 'babylon-adapter.js');
+  const last = git('log', '-1', '--format=%H', 'HEAD', '--', 'manifest.json', 'host-dev.js', 'sentinel.js', 'core.js', 'surface.js', 'guard.js', 'chip.js', 'dev.js', 'three-adapter.js', 'playcanvas-adapter.js', 'babylon-adapter.js', 'gl-tap.js', 'globe-adapter.js');
   assert.equal(commit, last, 'the newest commit touching the sources');
 });
 
