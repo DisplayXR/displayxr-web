@@ -1177,9 +1177,16 @@ refused is watched. Cases `rig-uncover`, `rig-uncover-off`.
 **3D turned back on during the switch to 2D** no longer stays flat: after the fade has ended and before
 the swap, and once the out-cover is already up (it stayed under the still for good).
 
+**Idle replays (three.js).** Each replayed pass runs with the viewport and scissor it was drawn with
+(`replayViewport`), and the frame replayed is the page's last paint in its own order, not what it drew
+between two session-frame callbacks (`replayByFrame`, `pushOp`).
+
 **Also in v0.8.3 (three.js; found on a browser 3D asset hub built on r187 `WebGPURenderer`):** a renderer
-announced without a revision (a build that tree-shook three's `register` event) is gated on the driver's
-hooks alone; an overlay pass (a gizmo drawn after the scene with `autoClear` off and no background) is
+announced without a revision (a build that tree-shook three's `register` event) can be gated on the
+driver's hooks alone, but only with `gpuUnannounced` (off by default): on a panel that page draws two
+full-view screen passes per frame whose outcome depends on three's frame counter, and per eye the
+second one blanked the left eye (atlas capture, 2026-11-28). Until that is understood such a page stays
+2D with a reason, as before; an overlay pass (a gizmo drawn after the scene with `autoClear` off and no background) is
 replayed with the state it ran with; the scene camera is the stereo draw that drew the most, not the
 last; and the scale waits for a page that is still loading (`scaleLoadMaxMs`, a camera whose `far` is
 not finite yet bounds nothing). Cases `three-webgpu-norev`, `a-gizmo`.

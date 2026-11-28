@@ -98,7 +98,12 @@ function dxrThree(core) {
     const tag = rev == null ? 'r? (revision not announced)' : `r${rev}`;
     const miss = missingHooks(r);
     let why = null;
-    if (rev != null && !(rev >= GPU_MIN)) why = `WebGPURenderer r${revision} — the driver needs r${GPU_MIN} or later`;
+    // Unannounced: converted only with T.gpuUnannounced (off by default). The one page of this kind seen
+    // on a panel draws two full-view screen passes per frame whose result depends on three's frame
+    // counter; per eye the second pass blanked the left eye (2026-11-28). Until that is understood such
+    // a page stays 2D, as before v0.8.3.
+    if (rev == null && core.T.gpuUnannounced !== true) why = 'WebGPURenderer with no revision announced (the build dropped the register event of three)';
+    else if (rev != null && !(rev >= GPU_MIN)) why = `WebGPURenderer r${revision} — the driver needs r${GPU_MIN} or later`;
     else if (miss.length) why = `WebGPURenderer ${tag} without what the driver uses: ${miss.join(', ')}`;
     if (why) { core.noteFlat('three.js', r.domElement, why); return; }
     const verified = core.T.gpuVerified || GPU_VERIFIED;
@@ -228,8 +233,15 @@ function dxrThree(core) {
     },
     redraw(st) {
       // A page that drew nothing since the last session frame gets its last screen draws replayed.
+      paintMark();
       if (st.frame.drew) st.lastOps = st.frame.ops.length <= 32 ? st.frame.ops : null;
-      else if (st.lastOps) replay(st, st.lastOps);
+      else {
+        // The page's last PAINT, whole and in its own order (pushOp), in place of "what it drew
+        // between two of our callbacks" when the two differ.
+        const k = st.tick;
+        if (k && k.ops.length && k.ops.length <= 32 && k.stamp !== frameStamp() && core.T.replayByFrame !== false) { st.lastOps = k.ops; st.tick = null; }
+        if (st.lastOps) replay(st, st.lastOps);
+      }
       st.frame = { drew: false, ops: [] };
     },
     // The out-cover's pixels: the left eye of the pair just drawn, read back from the GL context —
@@ -259,7 +271,7 @@ function dxrThree(core) {
     },
     restore(st, wasLive) {
       const last = st.lastOps;
-      st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null;
+      st.lastOps = null; st.frame = { drew: false, ops: [] }; st.idleOps = null; st.tick = null;
       disposeChain(st);
       core.unvirtualizeCanvas(st);
       if (wasLive) {
@@ -485,7 +497,7 @@ function dxrThree(core) {
       if (!top() || rt !== null) return st.call('clear', color, depth, stencil);
       if (!st.active) { recordMono(st, ['clear', color, depth, stencil]); return st.call('clear', color, depth, stencil); }
       st.frame.drew = true;
-      st.frame.ops.push(['clear', color, depth, stencil]);
+      pushOp(st, ['clear', color, depth, stencil]);
       forEyes(st, () => st.call('clear', color, depth, stencil));
     });
     W('render', (scene, camera) => {
@@ -579,20 +591,20 @@ function dxrThree(core) {
       if (st.gpuChain && st.chainQuads.has(scene)) {
         // WebGPURenderer: the chain's full-screen quad, drawn once per eye into its half; the page camera
         // its passes render with is swapped for that eye's camera (nestedRender).
-        st.frame.ops.push(['render', scene, camera, false, false, true]);
+        pushOp(st, ['render', scene, camera, false, false, true]);
         const out = renderGpuChain(st, scene, camera);
         takeCover(st);
         return out;
       }
       if (st.postfx && !isMainPerspective(st, camera) && taintedSwaps(st, scene)) {
         // The chain's final pass to the screen: once per eye, the right eye sampling the twins.
-        st.frame.ops.push(snapDraw(st, ['render', scene, camera, false, true], scene, camera));
+        pushOp(st, snapDraw(st, ['render', scene, camera, false, true], scene, camera));
         const out = renderPostScreen(st, scene, camera);
         takeCover(st);
         return out;
       }
       const stereo = isMainPerspective(st, camera);
-      st.frame.ops.push(snapDraw(st, ['render', scene, camera, stereo], scene, camera));
+      pushOp(st, snapDraw(st, ['render', scene, camera, stereo], scene, camera));
       const out = stereo ? renderStereo(st, scene, camera, st.frame.main || (st.frame.main = { drawn: -1 })) : renderFlat(st, scene, camera);
       if (stereo) takeCover(st); // after the scene draw, never after a background/HUD pass alone
       // WebGPURenderer: a flat screen pass that drew the page camera into a target (a RenderPipeline
@@ -772,7 +784,12 @@ function dxrThree(core) {
   // page may toggle a layer around one draw (lepoly: layer 0 off for its deferred ground plane).
   function snapDraw(st, op, scene, camera) {
     const r = st.r;
-    op.draw = { ac: [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil], bg: scene.background, layers: camera.layers ? camera.layers.mask : undefined };
+    // And the page's viewport + scissor for this draw (in its own units, with the size they are of): a
+    // corner pass (a gizmo in a 128 px viewport, with a background of its own) replayed at the viewport
+    // the page left behind covered the whole eye and wiped the scene (left eye blank, panel 2026-11-28).
+    const L = st.L;
+    op.draw = { ac: [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil], bg: scene.background, layers: camera.layers ? camera.layers.mask : undefined,
+      view: L && L.vp && L.sc && L.w > 0 && L.h > 0 ? { vp: L.vp.slice(), sc: L.sc.slice(), scTest: !!L.scTest, w: L.w, h: L.h } : null };
     return op;
   }
   const carryDraw = (from, to) => { if (from.draw) to.draw = from.draw; return to; };
@@ -781,11 +798,20 @@ function dxrThree(core) {
     const d = op.draw;
     if (!d) return fn();
     const r = st.r, scene = op[1], camera = op[2];
-    const was = { ac: [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil], bg: scene.background, layers: camera.layers ? camera.layers.mask : undefined };
+    const L = st.L;
+    const was = { ac: [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil], bg: scene.background, layers: camera.layers ? camera.layers.mask : undefined,
+      view: d.view && L && L.vp && L.sc ? { vp: L.vp, sc: L.sc, scTest: !!L.scTest, w: L.w, h: L.h } : null };
     const put = (v) => {
       [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil] = v.ac;
       if (scene.background !== v.bg) scene.background = v.bg;
       if (camera.layers && v.layers !== undefined) camera.layers.mask = v.layers;
+      const V = v.view;
+      if (V && was.view && core.T.replayViewport !== false) {
+        // In the page's units as they are now (a resize since the draw scales the rectangle with it).
+        const kx = L.w / V.w, ky = L.h / V.h, sc4 = (a) => [a[0] * kx, a[1] * ky, a[2] * kx, a[3] * ky];
+        L.vp = v === was ? V.vp : sc4(V.vp); L.sc = v === was ? V.sc : sc4(V.sc); L.scTest = V.scTest;
+        if (!st.active) { st.call('setViewport', ...L.vp); st.call('setScissor', ...L.sc); st.call('setScissorTest', L.scTest); } // mono: the renderer's own
+      }
     };
     put(d);
     try { return fn(); } finally { put(was); }
@@ -801,6 +827,31 @@ function dxrThree(core) {
   }
   // The page's screen draws while NOT converted, one list per task (a page draws its frame in one
   // callback). The last complete list is the mono frame wake / flipIdle replay.
+  // A page's frame is what reaches ONE paint, not what it draws between two of our session-frame
+  // callbacks. A page that clears the screen with nothing in view from a task after each paint and
+  // draws its scene in the next animation frame (an asset viewer, panel 2026-11-28: the clear is never
+  // seen in 2D, the scene always lands before the paint) had its draws kept as [scene, empty clear]:
+  // every idle replay ended on the empty pass (one eye blank, then both). So each screen op is also
+  // filed under a paint group: a counter moved by a task posted from our session-frame callback,
+  // which runs after that frame's paint. A group is the draws after one paint up to the next.
+  let paintGroup = 1, paintPosted = false, paintChan = null;
+  function paintMark() {
+    if (paintPosted) return;
+    paintPosted = true;
+    const done = () => { paintPosted = false; paintGroup++; };
+    try {
+      if (!paintChan && typeof MessageChannel === 'function') { paintChan = new MessageChannel(); paintChan.port1.onmessage = () => paintChan.cb && paintChan.cb(); }
+      if (paintChan) { paintChan.cb = done; paintChan.port2.postMessage(0); } else setTimeout(done, 0);
+    } catch (e) { setTimeout(done, 0); }
+  }
+  const frameStamp = () => paintGroup;
+  function pushOp(st, op) {
+    st.frame.ops.push(op);
+    const ts = frameStamp();
+    if (ts == null) { st.tick = null; return; }
+    if (!st.tick || st.tick.stamp !== ts) st.tick = { stamp: ts, ops: [] };
+    st.tick.ops.push(op);
+  }
   function recordMono(st, op) {
     if (!st.monoOpen) {
       st.monoOpen = true;

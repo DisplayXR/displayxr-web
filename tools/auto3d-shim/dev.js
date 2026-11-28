@@ -94,7 +94,7 @@ function dxrDev(core, ctl) {
           // axes, and the anchor (the virtual display's centre) in world space.
           pivot: st.piv ? { t: [...st.piv.t], c: [...st.piv.c], d: st.piv.d } : null,
           eyeAt: st.eyeAt ? Array.from(st.eyeAt) : null, // eye 0's world position, as last composed by the adapter
-          occl: st.occl ? { n: st.occl.els.length, ms: Math.round(now() - st.occl.t0) } : null, occlTries: st.occlTries || 0, nextTryIn: isFinite(st.nextTry) ? Math.round(st.nextTry - now()) : null, pending: !!st.pending, rampK: st.active ? rampK(st) : null, ramping: !!st.ramp, drawnAt: st.drawnAt || null,
+          occl: st.occl ? { n: st.occl.els.length, ms: Math.round(now() - st.occl.t0) } : null, occlTries: st.occlTries || 0, nextTryIn: isFinite(st.nextTry) ? Math.round(st.nextTry - now()) : null, pending: !!st.pending, ops: (st.idleOps || st.lastOps || (st.frame && st.frame.ops) || []).map((op) => (op[0] === 'clear' ? ['clear', op[1], op[2], op[3]] : { cam: op[2] && op[2].type, fov: op[2] && op[2].fov, stereo: !!op[3], post: !!op[4], chain: !!op[5], ac: op.draw && op.draw.ac, bg: op.draw ? (op.draw.bg ? (op.draw.bg.isColor ? 'color' : 'other') : null) : undefined, layers: op.draw && op.draw.layers, view: op.draw && op.draw.view })), rampK: st.active ? rampK(st) : null, ramping: !!st.ramp, drawnAt: st.drawnAt || null,
           why: st.lastWhy, flatReason: st.flatReason, stats: { ...st.stats },
           ...(d.extra || {}),
         });

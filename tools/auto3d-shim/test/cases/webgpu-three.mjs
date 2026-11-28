@@ -86,7 +86,7 @@ export default function cases({ P, NEW, productShim }) {
       // r187 through Vite/Rolldown). No revision is ever known; the renderer's constructor announcement
       // still arrives (r178+ only), so it converts on the hooks alone, with one "not announced" note.
       id: 'three-webgpu-norev', name: 'three.js WebGPURenderer whose build never announces REVISION: converts on the hooks, with one "revision not announced" note', webgpu: true,
-      url: P + 'three-webgpu-orbit.html?norev=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', probe: glProbe,
+      url: P + 'three-webgpu-orbit.html?norev=1', shim: NEW, cfg: { gpuUnannounced: true }, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', probe: glProbe,
       alsoCheck(r, t, h, R) {
         gpuChecks('webgpu', 'fb')(r, t, h, R);
         const n = r.log.filter((l) => /r\? \(revision not announced\).*converting/.test(l)).length;
