@@ -92,7 +92,10 @@
 //      non-enumerable setter for that key on Object.prototype; and, for the rest of a task in which a
 //      Babylon engine created its WebGL (WebGPU) context, a one-shot non-enumerable `_gl` (`_context`)
 //      setter on Object.prototype (only when cfg.engines.babylon !== false; never on a page without Babylon);
-//   and the value-only symbol marker above. No timer, no listener beyond one 'readystatechange' and
+//   5. (cfg.engines.gl !== false) on each WebGL2 context, from its creation, own-property wrappers for
+//      GL_HOOKS (they forward until the GL-level adapter converts the context), and one GL check timer per
+//      such context (GL_WAIT_MS, at most GL_TRIES times); off when an engine adapter claims the canvas;
+//   and the value-only symbol marker above. No timer (other than item 5's), no listener beyond one 'readystatechange' and
 //   the one MutationObserver on the document (not page-visible), no other window key, no prototype
 //   descriptor anywhere else.
 function dxrSentinel(cfg, cap) {
@@ -151,9 +154,10 @@ function dxrSentinel(cfg, cap) {
 
   // ------------------------------------------------------------ state
   const en = cfg.engines || {};
-  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false;
+  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false, wantGL = en.gl !== false;
   const blocked = cfg.decision === 'block' && !cfg.dev;
   let core = null;     // what dxrCore returned, once loaded
+  let engineSeen = false; // an ENGINE adapter's signal (not only the GL-level fallback's)
   let done = false;    // detection finished without a core (opted out / blocked and reported / foreign / load failed)
 
   // ------------------------------------------------------------ the page's opt-out
@@ -186,6 +190,7 @@ function dxrSentinel(cfg, cap) {
   // opt-out is checked); a name when an engine is found (the core loads, unless blocked). Returns
   // the core, or null.
   function signal(engine) {
+    if (engine && engine !== 'WebGL') engineSeen = true;
     if (core) return core;
     if (done) return null;
     if (optedOut()) {
@@ -359,7 +364,7 @@ function dxrSentinel(cfg, cap) {
     lookGlobals();
     if (done || pcFound || bjsFound) return;
     if (++polls < 40) { pollT = sTimeout(poll, 500); return; }
-    if (core) return; // three.js (or another path) loaded the core: this canvas is accounted for
+    if (core && engineSeen) return; // three.js (or another path) loaded the core: this canvas is accounted for
     // Nothing found, and nothing left that could find it: say why, once.
     let tag = null;
     try { tag = glCanvas ? apply(getAttr, glCanvas, ['data-engine']) : null; } catch (e) { tag = null; }
@@ -495,7 +500,95 @@ function dxrSentinel(cfg, cap) {
     }
   }
 
-  if (wantPC || wantBJS) {
+  // ------------------------------------------------------------ the GL-level fallback (v0.9.0)
+  // A WebGL2 context no engine adapter has claimed is handed to the core's GL-level adapter (gl-adapter.js)
+  // GL_WAIT_MS after it was created, once its canvas is in the document and bigger than the default
+  // 300 x 150 (re-checked every GL_WAIT_MS, GL_TRIES times). Decided by behaviour: the adapter then watches
+  // the WebGL stream itself and converts only a canvas drawn with a perspective camera. The core is loaded
+  // for it (signal('WebGL')): on a page with WebGL2 and no engine adapter, the core is parsed.
+  // The RECORDER: from the context's creation, own-property wrappers on THAT context (never a prototype)
+  // for the calls the GL-level adapter hooks (GL_HOOKS, below), so that an engine that caches method
+  // references still goes through them. Until the core takes the context they forward, and record what
+  // cannot be read back later: texImage2D / texStorage2D (a render target's size and format, to twin it)
+  // and getUniformLocation (a uniform's name, to tell the vertex shader's matrices). Cost on a WebGL2 page
+  // with no engine adapter: one extra JS call per hooked GL call. They come off (unwrap) when an engine
+  // adapter claims the canvas or the GL check gives up (a reference the page cached keeps forwarding).
+  const GL_WAIT_MS = 2000, GL_TRIES = 30;
+  // WebGL2RenderingContext is read only once a WebGL2 context exists: touching the interface object at document
+  // start makes the engine build it (and its ~400 methods) on every page (s-cost: 0.2 -> 2 ms).
+  let GL2P = null, getParam = null;
+  const glSeenCtx = new WeakSet();
+  const CW = intrinsics.canvasWidth, CH = intrinsics.canvasHeight;
+  // The calls the GL-level adapter hooks while it converts. They are wrapped HERE, at the context's
+  // creation, because engines cache method references when they build their programs and uniforms (a
+  // wrapper installed later never sees those calls). Until the core attaches a handler (rec.slot[name])
+  // each wrapper only forwards (and records, for the three below).
+  const GL_HOOKS = ['useProgram', 'bindFramebuffer', 'viewport', 'scissor', 'enable', 'disable', 'activeTexture', 'bindTexture',
+    'uniformMatrix4fv', 'uniform1i', 'uniform1iv', 'drawBuffers', 'framebufferTexture2D', 'framebufferRenderbuffer', 'texImage2D', 'texStorage2D',
+    'getUniformLocation', 'generateMipmap', 'clear', 'clearBufferfv', 'clearBufferiv', 'clearBufferuiv', 'clearBufferfi', 'blitFramebuffer',
+    'drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements'];
+  function glRecord(canvas, ctx) {
+    if (!ctx || glSeenCtx.has(ctx)) return;
+    if (!GL2P) { GL2P = WebGL2RenderingContext.prototype; getParam = GL2P.getParameter; }
+    if (!(ctx instanceof WebGL2RenderingContext)) return;
+    glSeenCtx.add(ctx);
+    const tex = new WeakMap(), loc = new WeakMap(), own = [], slot = Object.create(null), base = Object.create(null);
+    const post = {
+      texImage2D(gl, a) {
+        if (a[0] !== 0x0DE1 || a.length < 8 || typeof a[3] !== 'number' || typeof a[4] !== 'number') return; // TEXTURE_2D, the sized form
+        const t = apply(getParam, gl, [0x8069]); // TEXTURE_BINDING_2D (client-side state)
+        if (!t) return;
+        let sp = tex.get(t);
+        if (!sp || sp.k !== 'img') tex.set(t, (sp = { k: 'img', l: {} }));
+        sp.l[a[1]] = [a[2], a[3], a[4], a[6], a[7]];
+      },
+      texStorage2D(gl, a) {
+        if (a[0] !== 0x0DE1) return;
+        const t = apply(getParam, gl, [0x8069]);
+        if (t) tex.set(t, { k: 'sto', levels: a[1], ifmt: a[2], w: a[3], h: a[4] });
+      },
+      getUniformLocation(gl, a, r) { if (r) loc.set(r, String(a[1])); },
+    };
+    for (const name of GL_HOOKS) {
+      const orig = GL2P[name];
+      if (typeof orig !== 'function') continue;
+      const p = post[name];
+      // base: the page's call as it would run without the core (the original, plus the record)
+      const b = p ? function () { const r = apply(orig, this, arguments); try { p(this, arguments, r); } catch (e) { /* never break the page's call */ } return r; } : orig;
+      base[name] = b;
+      try {
+        defProp(ctx, name, { configurable: true, writable: true, enumerable: false, value: function () {
+          const h = slot[name];
+          return h ? h(this, arguments) : apply(b, this, arguments);
+        } });
+        own.push(name);
+      } catch (e) { /* a frozen context: nothing recorded */ }
+    }
+    const r = { canvas, ctx, tries: 0, t: 0, dead: false, rec: { tex, loc, slot, base, unwrap() { for (const n in slot) delete slot[n]; for (const n of own) { try { delete ctx[n]; } catch (e) { /* ignore */ } } own.length = 0; } } };
+    r.t = sTimeout(() => glCheck(r), GL_WAIT_MS);
+  }
+  function glDrop(r) { r.dead = true; if (r.t) { cTimeout(r.t); r.t = 0; } try { r.rec.unwrap(); } catch (e) { /* ignore */ } }
+  function glCheck(r) {
+    r.t = 0;
+    if (r.dead) return;
+    if (done || retired) { glDrop(r); return; }
+    const c = r.canvas;
+    let claimed = false;
+    try { claimed = !!(core && core.claims && core.claims(c)); } catch (e) { claimed = false; }
+    if (claimed) { glDrop(r); return; }
+    let w = 0, h = 0;
+    try { w = apply(CW.get, c, []); h = apply(CH.get, c, []); } catch (e) { /* ignore */ }
+    if (c.isConnected && w * h > 300 * 150) {
+      const k = signal('WebGL');
+      if (k && k.gl) { r.dead = true; k.gl.consider(c, r.ctx, r.rec); }
+      else glDrop(r);
+      return;
+    }
+    if (++r.tries < GL_TRIES) r.t = sTimeout(() => glCheck(r), GL_WAIT_MS);
+    else glDrop(r);
+  }
+
+  if (wantPC || wantBJS || wantGL) {
     const GC = HTMLCanvasElement.prototype.getContext;
     const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
     const seenGL = new WeakSet();
@@ -521,6 +614,7 @@ function dxrSentinel(cfg, cap) {
       HTMLCanvasElement.prototype.getContext = function getContext(type) {
         const ctx = apply(GC, this, arguments);
         try { onContext(this, type, arguments[1]); } catch (e) { /* never break the page's getContext */ }
+        try { if (wantGL && !done && !retired && type === 'webgl2') glRecord(this, ctx); } catch (e) { /* never break the page's getContext */ }
         return ctx;
       };
     } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps / Babylon.js engines may not be found', e); }

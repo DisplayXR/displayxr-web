@@ -1,4 +1,4 @@
-# auto-3D for existing three.js, PlayCanvas and Babylon.js pages (prototype)
+# auto-3D for existing three.js, PlayCanvas and Babylon.js pages, and WebGL2 pages at the GL level (prototype)
 
 Turns an ordinary, already-published three.js, PlayCanvas or Babylon.js page into a woven glasses-free-3D
 window in the DisplayXR Browser, **with no change to the page**: no SDK import, no WebXR, no source
@@ -14,7 +14,7 @@ dependencies, no bundler: concatenation plus a version stamp) assembles them int
 ```
 dist/auto3d-sentinel.js   (function (cfg, cap) { sentinel.js ... return dxrSentinel(cfg, cap); })
 dist/auto3d-core.js       (function (cfg, cap, S) { core.js surface.js guard.js chip.js dev.js
-                            three-adapter.js playcanvas-adapter.js babylon-adapter.js ... return dxrCore(cfg, cap, S); })
+                            three-adapter.js playcanvas-adapter.js babylon-adapter.js gl-adapter.js ... return dxrCore(cfg, cap, S); })
 dist/auto3d-dev.js        (() => { host-dev.js sentinel.js  const CORE = function (cfg, cap, S) {…};
                             dxrSentinel(dxrDevHost(() => CORE)…) })()   <- manifest.json (dev extension)
 VENDOR.json               { name, version, sourceCommit, sourceSha256, files: { <f>: { bytes, sha256 } } }
@@ -34,13 +34,13 @@ wins: the dev extension, or the browser's).
 
 ```
 cfg = { decision: 'allow'|'offer'|'block', depths: { camera, display } (0.02..1), rig: 'camera'|'display',
-        convScale (0.05..20, 1 = automatic), dev, engines: { three, playcanvas, babylon }, test }   // frozen
+        convScale (0.05..20, 1 = automatic), dev, engines: { three, playcanvas, babylon, gl }, test }   // frozen
         // engines: an engine set to false is never detected; a missing key means on
 cap = { loadCore() -> function, save({ decision?, depths?, rig?, convScale? }), report({ status, engine?, reason? }) }
       // report: 'live' | 'converting' | 'standdown' | 'optout' | 'guard' | 'offer' | 'off' | 'flat' | 'idle' — transitions only
 ```
 
-**What a page can see of us.** Before an engine is found, exactly four things (the sentinel's
+**What a page can see of us.** Before an engine is found, exactly four things (five on a page with a WebGL2 context: item 5) (the sentinel's
 header has the details; `test/cases/sentinel.mjs` `s-cost` checks them on a 2,000-element page with
 no engine: no other window key, no other prototype descriptor, no timer, `'pc' in window` false):
 
@@ -53,6 +53,11 @@ no engine: no other window key, no other prototype descriptor, no timer, `'pc' i
    `_gl` (`_context`) setter on `Object.prototype` (the Babylon.js constructor trap, v0.7.0; gone at the
    next microtask checkpoint; since v0.7.1 armed only by a getContext that looks like Babylon's, so
    never on a page without Babylon).
+
+5. (v0.9.0, the GL-level fallback, `cfg.engines.gl !== false`) on each **WebGL2** context, from its creation:
+   own-property wrappers for the calls the GL-level adapter hooks (`GL_HOOKS` in `sentinel.js`), which only
+   forward until a context is converted, and one 2 s timer per such context (re-armed every 2 s while its
+   canvas is small or detached, at most 30 times). They come off when an engine adapter claims the canvas.
 
 Plus one `MutationObserver` on the document (not page-visible; it arms `<canvas>` elements as they are
 added, see R1 below) until an app is found or the first mutation after load + 10 s.
@@ -108,6 +113,7 @@ the v0.3 single-depth migration); `window.__dxrAuto3DTestCfg` is read only there
 | `three-adapter.js` | `dxrThree(core)`: the three.js prototype's own code, unchanged in behaviour. Fed by the sentinel's `__THREE_DEVTOOLS__` listener (`observe`, `register`); per-instance wrapping of `render` / `setSize` / getters, per-eye render into each half, flat HUD / post passes, render-on-demand replay, reversed-Z; on a `WebGPURenderer`, the `RenderPipeline` quad per eye (v0.8.2: the node frame's `updateBeforeNode` wrapped on the instance) |
 | `playcanvas-adapter.js` | `dxrPlayCanvas(core)`: takes the app the sentinel found (`consider(app, how, ns)`), drives the page's camera through the engine's `RenderView` path, resizes the store through `device.setResolution`, supplies bounds from `render` / `model` / `gsplat` components, and applies the gsplat footprint fix |
 | `babylon-adapter.js` | `dxrBabylon(core)` (v0.7.0): takes the engine the sentinel found (`consider(engine, how, ns)`), hooks its scenes as they are created, and renders both eyes through the engine's own camera-rig path (two eye cameras on `RIG_MODE_CUSTOM`, as Babylon's WebXR camera does). Sizes the store to the element's device pixels through the engine's hardware scaling level (picking is in store pixels), supplies bounds from the scene's meshes. See [Babylon.js](#babylonjs-7--9x-webgl2-webgl1-webgpu-v070) |
+| `gl-adapter.js` | `dxrGl(core)` (v0.9.0): the GL-level fallback for a WebGL2 canvas no engine adapter claims (`consider(canvas, gl, rec)` from the sentinel). Per-eye twins of the page's screen-shaped render targets, the camera matrix recognised by value, the orbit pivot read from the camera's motion. See [the GL level](#pages-no-engine-adapter-recognises-the-gl-level-v090-gl-adapterjs) |
 | `build.mjs` | the build above; `--check` for drift |
 
 **Convergence: the page's target first.** When the page says what it is looking at, that is the
@@ -882,6 +888,86 @@ Harness cases:
 - An engine created before `document_start` (never, for a content script).
 - Not yet verified on the panel. The harness drives Babylon 9.32.0 only; 7.x / 8.x share the code
   paths used here (`_gl` assignment, `RIG_MODE_CUSTOM`, `_processSubCameras`), not run.
+
+### Pages no engine adapter recognises: the GL level (v0.9.0, `gl-adapter.js`)
+
+The fallback for a **WebGL2** canvas whose engine none of the adapters above recognises (first target:
+Sketchfab's viewer, its own engine, embed iframe and model page). Decided by **behaviour**, never by a site
+list: the adapter watches the canvas's WebGL calls and converts only a canvas drawn with a perspective camera.
+
+**Taking a canvas.** The sentinel wraps the hooked calls (`GL_HOOKS`) on every WebGL2 context **at its
+creation** (own properties of that context, never a prototype): engines cache method references when they
+build their programs (Sketchfab does), so a wrapper installed later never sees their uniform uploads. Until
+the core attaches handlers the wrappers only forward, and record three things that cannot be read back later
+(a texture's size and format, a uniform location's name). 2 s after the context was created (re-checked every
+2 s, 30 times), a canvas in the document bigger than 300 × 150 that no adapter has claimed is handed to the
+core's GL-level adapter (`signal('WebGL')`: on such a page the core is parsed). An engine adapter that claims
+the canvas later wins: the GL-level adapter backs off for good (`core.claims`, harness `gl-three-untouched`).
+`cfg.engines.gl === false` turns it off.
+
+**Drawing each eye.** The page keeps drawing its own mono frame; the camera-dependent draws are issued once
+per eye:
+
+| draw | per eye |
+|---|---|
+| with the **camera** into a target shaped like the screen (the page's aspect, ≥ 0.45 × its width): a *seed* | twice: the page's target, then its **twin** |
+| into any target that samples a chain texture (bloom mips, SSAO, TAA history, refraction, resolves by blit) | twice, eye 1 with every chain texture swapped for its twin |
+| to the **screen** | once into each eye's offscreen *screen* (the page's own size, its viewport untouched: a pass that reads `gl_FragCoord` sees 2D coordinates), composed into the halves of the 2:1 store at the frame's end |
+| anything else: shadow maps, environment / PMREM passes, picking | once, as drawn |
+
+So each eye has the whole pipeline at the page's own resolution, and post-processing runs per eye with no seam.
+**The camera** is recognised by value: a `mat4` uniform of the vertex shader that projects (a pure P, or a VP /
+MVP) and whose y : x focal ratio is the target's aspect, which keeps a square spot-light shadow projection out
+(Sketchfab uploads one to the same programs). Per eye it becomes `P_eye · inv(E)` (`· inv(P) · C` for a VP / MVP):
+`E` is the core's located eye in the page camera's space (`core.eyePose`), `P_eye` the page's own P with the
+runtime's per-eye shears added and its focal scaled by the runtime's (a lean in). Rows 2 and 3 (depth) are never
+touched. A VP / MVP with no P in the frame gets the clip-space form of the same correction. Programs whose
+`gl_Position` is `.xyww` (a skybox) get the shear only.
+
+**Convergence and rig.** The page's target is the **orbit pivot read from the camera's own motion**: any static
+object's model-view moves exactly as the view, `MV_t · inv(MV_t-1) = Δ`, and an orbit turns about the point of
+the view axis that `Δ` leaves in place (accumulated over frames until the turn exceeds 0.6°, so a slow turntable
+is read too; carried by `Δ` between turns, so a dolly brings it nearer). Before the first turn, the estimator over
+the camera draws' origins. The page's near plane is reported 4× looser to the core (a viewer that fits near to
+its model would put its own target inside the core's `2 × near` guard). The display rig's strict object test
+needs a surface, which the WebGL stream does not give: `object test: not an object — this engine gives no surface
+to read`, so these pages run on the **camera rig**.
+
+**Redraw every frame.** The composed store is copied at the end of every page frame and replayed on a session
+frame the page drew nothing for; the copy also gives the go-live cover (on `flipIdle`), the mono frame at
+turn-off and the out-cover.
+
+**Extension points** (`GLX` in `gl-adapter.js`, for another renderer folded in later): `cameraOf` (which uniform
+values are the camera), `isSeedTarget` (which framebuffers hold the picture), `isInfinite`, `single` (a draw that
+must stay single on a chain target), `target` (the convergence target).
+
+**What a page can see of it, beyond the core's usual items:** the `GL_HOOKS` own-property wrappers on its WebGL2
+contexts (from creation; removed when another adapter claims the canvas), `drawingBufferWidth` /
+`drawingBufferHeight` own accessors on the converted context while live (they report the mono size), the canvas
+`width` / `height` virtualisation and the 2:1 store while live. No DOM element beyond the core's cover, chip and
+`data-dxr-auto3d` marker.
+
+**Harness** (`test/cases/gl.mjs`, page `test/pages/gl-multipass.html`: raw WebGL2, a shadow pass with a square
+perspective light, the scene into a screen-sized target with P as its own uniform, a half-size bloom, a composite
+that reads `gl_FragCoord`, a HUD): `gl-multipass` (+ go-live commit model), `gl-21` (2:1 store), `gl-static`
+(estimator), `gl-pdb0`, `gl-idle-kill` (replay, turn-off, out-cover, re-enable on a frozen page), `gl-idle-aa`
+(the textured-triangle replay on a multisampled screen), `gl-ortho` (stays 2D), `gl-three-untouched`, `gl-resize`.
+Live probe: `test/gl-level/probe-skf.mjs <url> [--iframe]` (dev build, fake session with the runtime's eye model,
+scripted orbit / zoom, saves the store, measures the frame rate converted and in 2D); `disparity.py` measures a
+saved pair.
+
+**Not converted, or limits.**
+- WebGL1 contexts, OffscreenCanvas / worker rendering, `WEBGL_multi_draw` draws, UBO-held camera matrices.
+- A screen drawn in several camera viewports stays 2D.
+- An orthographic camera stays 2D (no perspective to shift).
+- A viewer that stops drawing when still (Sketchfab, a few seconds after its last change): the last pair is
+  replayed, so head motion does not re-render until the page draws again; and if it stops before the depth has
+  faded in, it shows the flat pair until the first interaction (seen on a Sketchfab character model).
+- Passes that compute screen-space effects from the camera's FS-side matrices (TAA reprojection) get the mono
+  matrices for both eyes.
+- HiDPI: the eyes are sized by the core's rule (element device pixels, capped at 3072 wide), so a page that renders
+  larger than an eye is downscaled into it (Sketchfab at DPR 2: its store 1921 x 1080, each eye 1536 x 863).
+- Not yet seen on the panel.
 
 ## Try it on the display (Windows box)
 
