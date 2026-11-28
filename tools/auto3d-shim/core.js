@@ -7,7 +7,7 @@
 //   cfg  frozen data from the host for this frame: { decision: 'allow'|'offer'|'block',
 //        depths: { camera, display } (each DEPTH_MIN..DEPTH_MAX = 0.02..1), rig: 'camera'|'display',
 //        convScale (CONV_SCALE_MIN..CONV_SCALE_MAX = 0.05..20, 1 = automatic), dev,
-//        engines: { three, playcanvas, babylon }, test }
+//        engines: { three, playcanvas, babylon, globe }, test }
 //        The host validates cap.save against the same ranges. A user 'block' outside dev never
 //        reaches the core (the sentinel stays detect-only).
 //   cap  the host's capabilities, closures only: { loadCore(), save(partial), report({status, engine?, reason?}) }
@@ -15,7 +15,7 @@
 //        settle(canvas), devtools }. The core calls S.settle(canvas) when a canvas goes live (the
 //        PlayCanvas search is over unless another canvas has a WebGL context) and S.disarm() when it
 //        stands down for good (the page owns XR, opted out, the frame-rate guard blocked).
-// and gets back { ctl, three: { observe, register }, playcanvas: { consider }, babylon: { consider } }.
+// and gets back { ctl, three: { observe, register }, playcanvas: { consider }, babylon: { consider }, globe: { consider } }.
 //
 // What lives here (everything that is not about one engine):
 //   - document state: one inline-3D session per document (`owner`), standing down for good when
@@ -302,6 +302,10 @@ function dxrCore(cfg, cap, S) {
   //                               ({ x, y, z, via }) or null (controls .target, an orbit script, lookAt)
   //   walkControls()?          -> OPTIONAL (v0.7.12): a string naming first-person / fly controls on the
   //                               page camera (the open-scene walk signal), or null
+  //   world()?                 -> OPTIONAL (v0.8.3): a string when the adapter KNOWS the scene is a world
+  //                               the camera moves through (the globe part: a tiled globe / map), or null.
+  //                               The open scene then latches at once with that reason (fixed focus, real
+  //                               scale, camera rig: one rig per page), with no estimator and no object test
   //   describe()             -> { page, real } for state()
   //   surface()                -> the canvas's graphics-API SURFACE (surface.js): core.surfaces.gl(gl) or
   //                               core.surfaces.gpu({ device, context, flush, alphaMode }), or null while
@@ -1945,6 +1949,7 @@ function dxrCore(cfg, cap, S) {
   function estimateConvergence(st, snap, targetOnly) {
     const s = st.ad.sampler(st);
     if (!s) return false;
+    if (!st.openLatched && typeof st.ad.world === 'function') { const w = st.ad.world(st); if (w) latchOpen(st, w); }
     let d = T.convTarget ? targetDepth(st, s) : 0, src = 'target', raw = d;
     if (!(d > 0)) {
       if (targetOnly) return false;
@@ -2450,11 +2455,12 @@ function dxrCore(cfg, cap, S) {
   const three = en.three === false ? null : dxrThree(core);
   const playcanvas = en.playcanvas === false ? null : dxrPlayCanvas(core);
   const babylon = en.babylon === false ? null : dxrBabylon(core);
+  const globe = en.globe === false ? null : dxrGlobe(core, dxrGlTap(core));
 
   // The page may have asked for inline-3D / WebXR before the core was loaded.
   S.onForeign(yieldTo);
   if (S.foreign()) yieldTo(S.foreign());
   info(`core armed (v${VERSION})`, on() ? '' : '(OFF for this site)');
   notify();
-  return { ctl, three, playcanvas, babylon };
+  return { ctl, three, playcanvas, babylon, globe };
 }

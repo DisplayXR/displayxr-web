@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.8.2 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.8.3 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (function (cfg, cap) {
 'use strict';
 function dxrSentinel(cfg, cap) {
@@ -49,9 +49,10 @@ function dxrSentinel(cfg, cap) {
   } catch (e) { console.warn(TAG, 'could not watch navigator.xr.requestSession — SDK pages may conflict', e); }
 
   const en = cfg.engines || {};
-  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false;
+  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false, wantGL = en.globe !== false;
   const blocked = cfg.decision === 'block' && !cfg.dev;
   let core = null;     // what dxrCore returned, once loaded
+  let engineCore = false; // ... loaded because an ENGINE was found (not by the globe route)
   let done = false;    // detection finished without a core (opted out / blocked and reported / foreign / load failed)
 
   let opted = false;
@@ -79,7 +80,7 @@ function dxrSentinel(cfg, cap) {
   const reportOff = (engine) => reportOnce({ status: 'off', engine });
 
   function signal(engine) {
-    if (core) return core;
+    if (core) { if (engine && engine !== 'WebGL') engineCore = true; return core; }
     if (done) return null;
     if (optedOut()) {
       done = true;
@@ -93,6 +94,7 @@ function dxrSentinel(cfg, cap) {
     try { make = cap.loadCore(); } catch (e) { console.warn(TAG, 'the core could not be loaded', e); }
     if (typeof make !== 'function') { done = true; disarm(); return null; }
     core = make(cfg, cap, S);
+    engineCore = engine !== 'WebGL'; // 'WebGL' = the globe route's bare-context hand-off, not an engine found
     return core;
   }
   function onForeignEarly() {
@@ -239,7 +241,7 @@ function dxrSentinel(cfg, cap) {
     lookGlobals();
     if (done || pcFound || bjsFound) return;
     if (++polls < 40) { pollT = sTimeout(poll, 500); return; }
-    if (core) return; // three.js (or another path) loaded the core: this canvas is accounted for
+    if (core && engineCore) return; // three.js (or another engine) loaded the core: this canvas is accounted for (the globe route's load is not)
     let tag = null;
     try { tag = glCanvas ? apply(getAttr, glCanvas, ['data-engine']) : null; } catch (e) { tag = null; }
     info(`a WebGL canvas (${descCanvas(glCanvas)}${tag ? `, data-engine="${tag}"` : ''}) but no supported engine found — left 2D.`,
@@ -269,7 +271,7 @@ function dxrSentinel(cfg, cap) {
   function settle(canvas) {
     settledOn = canvas;
     for (const c of glCanvases) if (c !== canvas) return;
-    disarmCanvases(); stopPoll(); unobserve();
+    disarmCanvases(); stopPoll(); unobserve(); stopRawLook();
     polling = false; looking = false; // a WebGL context on another canvas later starts the search again
   }
   const glCanvases = [];
@@ -281,7 +283,7 @@ function dxrSentinel(cfg, cap) {
   };
 
   const disarm = () => {
-    retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k); for (const k of [...bjsKeys]) removeBjsKey(k);
+    retired = true; disarmCanvases(); stopPoll(); unobserve(); stopRawLook(); for (const k of [...keyTraps]) removeKeyTrap(k); for (const k of [...bjsKeys]) removeBjsKey(k);
     document.removeEventListener('DOMContentLoaded', lookGlobals);
     window.removeEventListener('load', lookGlobals);
   };
@@ -354,15 +356,41 @@ function dxrSentinel(cfg, cap) {
     }
   }
 
-  if (wantPC || wantBJS) {
+  const RAW_LOOK_MS = 3000, RAW_MAX = 8;
+  const rawGL = [];
+  let rawT = 0;
+  function stopRawLook() { if (rawT) { cTimeout(rawT); rawT = 0; } rawGL.length = 0; }
+  const rawSeen = new WeakSet();
+  function noteRaw(c, ctx) {
+    if (!wantGL || retired || done || !ctx || rawSeen.has(ctx) || rawGL.length >= RAW_MAX || typeof WeakRef !== 'function') return;
+    rawSeen.add(ctx);
+    rawGL.push({ c: new WeakRef(c), g: new WeakRef(ctx) });
+    if (!rawT) rawT = sTimeout(rawLook, RAW_LOOK_MS);
+  }
+  function rawLook() {
+    rawT = 0;
+    if (retired || done || (blocked && !core)) return;
+    const list = rawGL.splice(0);
+    let c = core;
+    for (const e of list) {
+      const cv = e.c.deref(), g = e.g.deref();
+      if (!cv || !g) continue;
+      if (!c) c = signal('WebGL');
+      if (!c) return;
+      if (c.globe) { try { c.globe.consider(cv, g); } catch (x) { console.warn(TAG, 'could not watch a WebGL context', x); } }
+    }
+  }
+
+  if (wantPC || wantBJS || wantGL) {
     const GC = HTMLCanvasElement.prototype.getContext;
     const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
     const seenGL = new WeakSet();
-    const onContext = (c, type, attrs) => {
+    const onContext = (c, type, attrs, ctx) => {
       if (done) return;
       const kind = WEBGL[type];
       if (kind && wantBJS && !retired && bjsLikely(kind, attrs)) trapBjs(kind, c); // first: a Babylon engine assigns the context right after this call
       if (pcFound) return;
+      if (kind === 1) noteRaw(c, ctx);
       sweepLazy();
       if (type === '2d') { unarm(c); return; }
       if (!kind || seenGL.has(c)) return;
@@ -379,7 +407,7 @@ function dxrSentinel(cfg, cap) {
     try {
       HTMLCanvasElement.prototype.getContext = function getContext(type) {
         const ctx = apply(GC, this, arguments);
-        try { onContext(this, type, arguments[1]); } catch (e) { /* never break the page's getContext */ }
+        try { onContext(this, type, arguments[1], ctx); } catch (e) { /* never break the page's getContext */ }
         return ctx;
       };
     } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps / Babylon.js engines may not be found', e); }

@@ -68,6 +68,15 @@
 //   - once a canvas goes live (any engine), the core calls S.settle(canvas): the PlayCanvas search
 //     (poll, id traps, observer) stops, unless a DIFFERENT canvas has a WebGL context, and restarts if
 //     one gets one later. S.disarm() (the core standing down for good) takes everything off for good.
+//   - a BARE WebGL context (v0.8.3, the globe route; only when cfg.engines.globe !== false): no engine
+//     to recognise by name, so the renderer must be recognised by what it DRAWS, which needs the core.
+//     The first webgl / webgl2 context arms ONE timer (RAW_LOOK_MS); when it fires, every bare
+//     context seen so far (at most 8) is handed to the core's globe part (core.globe.consider), which
+//     loads the core on a page with no engine. The globe part watches the context's draws itself
+//     (instance-level wrappers on that context only) and leaves anything that is not a tiled world
+//     alone. A page with an engine (three.js / PlayCanvas / Babylon.js) loads the core anyway; there the
+//     globe part sees the canvas tracked by that engine's adapter and stays out. The timer is cleared
+//     by S.disarm() and by S.settle() when no other canvas has a context.
 //   - the page's opt-out, `<meta name="displayxr-auto3d" content="off">` (S.optedOut()): checked on
 //     the first WebGL context and again when an engine is found; opted out = the core is never
 //     loaded, the traps come off, one { status: 'optout' } report, one console line. Once the core
@@ -85,14 +94,15 @@
 //   1. `window.__THREE_DEVTOOLS__` — a configurable, non-enumerable accessor holding an EventTarget
 //      (only when cfg.engines.three !== false);
 //   2. `HTMLCanvasElement.prototype.getContext` — replaced by a wrapper (the only prototype change;
-//      only when cfg.engines.playcanvas or cfg.engines.babylon is not false);
+//      only when cfg.engines.playcanvas, cfg.engines.babylon or cfg.engines.globe is not false);
 //   3. `navigator.xr.requestSession` — replaced by a wrapper (own property of the XRSystem);
 //   4. an own, non-enumerable `id` accessor on armed <canvas> elements (none on a page without
 //      canvases), plus, for the rest of a task in which an armed canvas's id was read, a one-shot
 //      non-enumerable setter for that key on Object.prototype; and, for the rest of a task in which a
 //      Babylon engine created its WebGL (WebGPU) context, a one-shot non-enumerable `_gl` (`_context`)
 //      setter on Object.prototype (only when cfg.engines.babylon !== false; never on a page without Babylon);
-//   and the value-only symbol marker above. No timer, no listener beyond one 'readystatechange' and
+//   and the value-only symbol marker above. No timer (except, on a page that creates a WebGL context,
+//   the globe route's one-shot look above), no listener beyond one 'readystatechange' and
 //   the one MutationObserver on the document (not page-visible), no other window key, no prototype
 //   descriptor anywhere else.
 function dxrSentinel(cfg, cap) {
@@ -151,9 +161,10 @@ function dxrSentinel(cfg, cap) {
 
   // ------------------------------------------------------------ state
   const en = cfg.engines || {};
-  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false;
+  const wantPC = en.playcanvas !== false, wantBJS = en.babylon !== false, wantGL = en.globe !== false;
   const blocked = cfg.decision === 'block' && !cfg.dev;
   let core = null;     // what dxrCore returned, once loaded
+  let engineCore = false; // ... loaded because an ENGINE was found (not by the globe route)
   let done = false;    // detection finished without a core (opted out / blocked and reported / foreign / load failed)
 
   // ------------------------------------------------------------ the page's opt-out
@@ -186,7 +197,7 @@ function dxrSentinel(cfg, cap) {
   // opt-out is checked); a name when an engine is found (the core loads, unless blocked). Returns
   // the core, or null.
   function signal(engine) {
-    if (core) return core;
+    if (core) { if (engine && engine !== 'WebGL') engineCore = true; return core; }
     if (done) return null;
     if (optedOut()) {
       done = true;
@@ -200,6 +211,7 @@ function dxrSentinel(cfg, cap) {
     try { make = cap.loadCore(); } catch (e) { console.warn(TAG, 'the core could not be loaded', e); }
     if (typeof make !== 'function') { done = true; disarm(); return null; }
     core = make(cfg, cap, S);
+    engineCore = engine !== 'WebGL'; // 'WebGL' = the globe route's bare-context hand-off, not an engine found
     return core;
   }
   // A page that owns XR before any engine was found: outside dev there is nothing left to detect.
@@ -359,7 +371,7 @@ function dxrSentinel(cfg, cap) {
     lookGlobals();
     if (done || pcFound || bjsFound) return;
     if (++polls < 40) { pollT = sTimeout(poll, 500); return; }
-    if (core) return; // three.js (or another path) loaded the core: this canvas is accounted for
+    if (core && engineCore) return; // three.js (or another engine) loaded the core: this canvas is accounted for (the globe route's load is not)
     // Nothing found, and nothing left that could find it: say why, once.
     let tag = null;
     try { tag = glCanvas ? apply(getAttr, glCanvas, ['data-engine']) : null; } catch (e) { tag = null; }
@@ -397,7 +409,7 @@ function dxrSentinel(cfg, cap) {
   function settle(canvas) {
     settledOn = canvas;
     for (const c of glCanvases) if (c !== canvas) return;
-    disarmCanvases(); stopPoll(); unobserve();
+    disarmCanvases(); stopPoll(); unobserve(); stopRawLook();
     polling = false; looking = false; // a WebGL context on another canvas later starts the search again
   }
   const glCanvases = [];
@@ -409,7 +421,7 @@ function dxrSentinel(cfg, cap) {
   };
 
   const disarm = () => {
-    retired = true; disarmCanvases(); stopPoll(); unobserve(); for (const k of [...keyTraps]) removeKeyTrap(k); for (const k of [...bjsKeys]) removeBjsKey(k);
+    retired = true; disarmCanvases(); stopPoll(); unobserve(); stopRawLook(); for (const k of [...keyTraps]) removeKeyTrap(k); for (const k of [...bjsKeys]) removeBjsKey(k);
     document.removeEventListener('DOMContentLoaded', lookGlobals);
     window.removeEventListener('load', lookGlobals);
   };
@@ -495,15 +507,46 @@ function dxrSentinel(cfg, cap) {
     }
   }
 
-  if (wantPC || wantBJS) {
+  // ------------------------------------------------------------ bare WebGL contexts (the globe route)
+  // See the header. Weak references: a page that drops a canvas keeps nothing alive through us.
+  const RAW_LOOK_MS = 3000, RAW_MAX = 8;
+  const rawGL = [];
+  let rawT = 0;
+  function stopRawLook() { if (rawT) { cTimeout(rawT); rawT = 0; } rawGL.length = 0; }
+  const rawSeen = new WeakSet();
+  function noteRaw(c, ctx) {
+    // every distinct context (a canvas may be asked several times: a failed webgl2, then webgl)
+    if (!wantGL || retired || done || !ctx || rawSeen.has(ctx) || rawGL.length >= RAW_MAX || typeof WeakRef !== 'function') return;
+    rawSeen.add(ctx);
+    rawGL.push({ c: new WeakRef(c), g: new WeakRef(ctx) });
+    if (!rawT) rawT = sTimeout(rawLook, RAW_LOOK_MS);
+  }
+  function rawLook() {
+    rawT = 0;
+    // Under a user block nothing is reported for a bare context: it is not known to be a globe (the
+    // core would have to load to tell), and 'off' would offer a re-enable on every WebGL page.
+    if (retired || done || (blocked && !core)) return;
+    const list = rawGL.splice(0);
+    let c = core;
+    for (const e of list) {
+      const cv = e.c.deref(), g = e.g.deref();
+      if (!cv || !g) continue;
+      if (!c) c = signal('WebGL');
+      if (!c) return;
+      if (c.globe) { try { c.globe.consider(cv, g); } catch (x) { console.warn(TAG, 'could not watch a WebGL context', x); } }
+    }
+  }
+
+  if (wantPC || wantBJS || wantGL) {
     const GC = HTMLCanvasElement.prototype.getContext;
     const WEBGL = { webgl: 1, webgl2: 1, 'experimental-webgl': 1, webgpu: 2 };
     const seenGL = new WeakSet();
-    const onContext = (c, type, attrs) => {
+    const onContext = (c, type, attrs, ctx) => {
       if (done) return;
       const kind = WEBGL[type];
       if (kind && wantBJS && !retired && bjsLikely(kind, attrs)) trapBjs(kind, c); // first: a Babylon engine assigns the context right after this call
       if (pcFound) return;
+      if (kind === 1) noteRaw(c, ctx);
       sweepLazy();
       if (type === '2d') { unarm(c); return; }
       if (!kind || seenGL.has(c)) return;
@@ -520,7 +563,7 @@ function dxrSentinel(cfg, cap) {
     try {
       HTMLCanvasElement.prototype.getContext = function getContext(type) {
         const ctx = apply(GC, this, arguments);
-        try { onContext(this, type, arguments[1]); } catch (e) { /* never break the page's getContext */ }
+        try { onContext(this, type, arguments[1], ctx); } catch (e) { /* never break the page's getContext */ }
         return ctx;
       };
     } catch (e) { console.warn(TAG, 'could not watch getContext — PlayCanvas apps / Babylon.js engines may not be found', e); }
