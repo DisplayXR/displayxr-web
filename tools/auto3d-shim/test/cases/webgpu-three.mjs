@@ -15,7 +15,12 @@
 //   three-webgpu-fallback   forceWebGL: the same driver on the WebGL2 backend, a WebGL surface, GL clip.
 //   three-webgpu-near(-ctl) a box at 1.5 x near visible in both eyes; clipped without the conversion.
 //   three-webgpu-kill       Ctrl+Alt+3 off: the out-cover is the GPU read-back of the left eye.
-//   three-webgpu-postfx     PostProcessing (TSL pass()): flat with the reason, nothing converted.
+//   three-webgpu-postfx     PostProcessing (TSL pass()), product mode: live (v0.8.2; before, flat with a reason).
+//   three-webgpu-chain(-live)  pages/three-webgpu-postfx.html, a pass -> rtt -> blur node chain: converts, the
+//                           chain run once per eye with eye-sized targets; idle frames replayed / every frame drawn.
+//   three-webgpu-chain-ctl  control: no page-camera swap -> both halves the same picture.
+//   three-webgpu-chain-size-ctl  control: no eye-sized answer -> store-sized chain targets.
+//   three-webgpu-chain-temporal  a temporal node (AfterImageNode) in the chain: flat with the reason.
 //   p-three-webgpu          product mode: the real WebGPURenderer page reports live.
 import { toClip, near, magenta, RECORD_IN_COVER } from './webgpu.mjs';
 
@@ -159,8 +164,79 @@ export default function cases({ P, NEW, productShim }) {
       },
     })),
     {
-      id: 'three-webgpu-postfx', name: 'product mode: three.js WebGPURenderer + PostProcessing (TSL pass()) reports flat with the reason, converts nothing', webgpu: true,
+      // v0.8.2: three's PostProcessing / RenderPipeline is split per eye (renderGpuChain). Before, this
+      // page reported flat ('WebGPU PostProcessing — not split yet') and converted nothing.
+      id: 'three-webgpu-postfx', name: 'product mode: three.js WebGPURenderer + PostProcessing (TSL pass()) goes live, split per eye', webgpu: true,
       url: P + 'three-webgpu-orbit.html?postfx=1', shim: productShim({ decision: 'allow' }),
+      async run(page) {
+        await page.waitForFunction("(() => { const H = window.__dxrFakeHost; return !!(window.__frozen && H && H.reports.some((r) => r.status === 'live') && window.__fakeXR.frames > 60); })()", { timeout: 30000, polling: 100 });
+        return { P: await page.evaluate(() => ({ reports: window.__dxrFakeHost.reports.map(({ status, engine, reason }) => ({ status, engine: engine || null, reason: reason || null })), layers: window.__fakeXR.layers.length })) };
+      },
+      check(r, t) {
+        const R = (r.P && r.P.reports) || [];
+        t('went live (engine three.js), one layer', r.ok && R.some((x) => x.status === 'live' && x.engine === 'three.js') && r.P.layers === 1, r.error || JSON.stringify(R));
+        t('never flat', !R.some((x) => x.status === 'flat'), JSON.stringify(R));
+      },
+    },
+    ...[['', 'render on demand after 60 frames: idle frames replay the chain per eye', ''], ['-live', 'the page draws every frame', '&live=1'], ['-fallback', 'forceWebGL (the WebGL2 backend)', '&webgl=1'], ['-pr2', 'setPixelRatio(2) (a mono store 2 x the CSS size)', '&pr=2']].map(([k, what, qs]) => ({
+      // pages/three-webgpu-postfx.html: pass(scene, camera) -> rtt() -> a 4-tap blur -> the screen, a spot
+      // light's perspective shadow camera nested inside the scene pass. The generic checks (halves differ,
+      // right = left shifted 0.1 x eye, convergence from the target) pass only when each eye's chain drew
+      // the scene with that eye's camera.
+      id: 'three-webgpu-chain' + k, name: 'three.js WebGPURenderer + a PostProcessing node chain (pass -> rtt -> blur), ' + what + ': converts, the chain run once per eye', webgpu: k !== '-fallback',
+      url: P + 'three-webgpu-postfx.html?x=1' + qs, shim: NEW, expect: 'convert', fovDeg: 40, ready: k ? 'true' : 'window.__frozen',
+      probe: '(() => ({ ...' + glProbe + ', sizes: window.__chainSizes() }))()',
+      alsoCheck(r, t, h, R) {
+        const [ew, eh] = R.eye;
+        t('the chain is split: gpuChain, the node frame found, the page camera swapped for the eye camera once per eye', R.gpuChain === true && R.nodeFrame === true && R.ppSubs && R.ppSubs[0] === 1 && R.ppSubs[1] === 1,
+          'gpuChain ' + R.gpuChain + ', nodeFrame ' + R.nodeFrame + ', ppSubs ' + JSON.stringify(R.ppSubs) + ' (the spot light shadow camera, nested in the scene pass, is not swapped)');
+        const S = r.probe && r.probe.sizes;
+        t('the chain targets are EYE-sized (the PassNode and the RTT size themselves from the renderer, answered with the eye)', !!S && S.pass[0] === ew && S.pass[1] === eh && S.rtt[0] === ew && S.rtt[1] === eh && !!R.ppTarget && R.ppTarget[0] === ew,
+          'eye ' + ew + 'x' + eh + '; pass ' + (S && S.pass.join('x')) + ', rtt ' + (S && S.rtt.join('x')) + ', swapped draw into ' + (R.ppTarget && R.ppTarget.join('x')));
+        const gpu = k !== '-fallback', P0 = R.eyeProj0, G = r.probe && r.probe.glProj0, want = G ? (gpu ? toClip(G) : G) : null;
+        t(gpu ? 'eye 0 drawn with the runtime projection in WebGPU clip z (off-axis kept)' : 'eye 0 drawn with the runtime GL projection as is (WebGL2 backend)', !!(P0 && want && P0.every((v, i) => near(v, want[i]))),
+          P0 ? 'P[8] ' + P0[8].toFixed(5) + ' (want ' + (want && want[8].toFixed(5)) + ')' : 'no eye projection');
+        t('no WebGPU validation error, no page error', !r.log.some((l) => /validation|GPUValidationError|Invalid|pageerror/i.test(l)), r.log.filter((l) => /validation|Invalid|pageerror/i.test(l)).slice(0, 2).join(' | ') || 'none');
+        t('one layer', r.fake.layers === 1, 'layers ' + r.fake.layers);
+      },
+    })),
+    {
+      // Control: the chain still runs once per eye into each half, but the page camera is NOT swapped
+      // (gpuChainSwap: false): both halves are the same mono picture. The swap is what makes the pair.
+      id: 'three-webgpu-chain-ctl', name: 'control: the node chain run per eye WITHOUT swapping the page camera: both halves the same picture', webgpu: true,
+      url: P + 'three-webgpu-postfx.html?live=1', shim: NEW, cfg: { gpuChainSwap: false },
+      async run(page, h) {
+        await page.waitForFunction(settled(60), { timeout: 60000, polling: 200 });
+        const g = await page.evaluate(() => window.__grabFrame());
+        const st = await page.evaluate(() => window.__dxrAuto3D.state().renderers.find((x) => x.active));
+        const px = Buffer.from(g.b64, 'base64'), ew = g.w / 2;
+        return { sh: h.bestShift(px, g.w, g.h, ew, Math.round(0.1 * ew)), subs: st && st.ppSubs, chain: st && st.gpuChain };
+      },
+      check(r, t) {
+        t('converted on the chain path, no swap', r.ok && r.chain === true && !!r.subs && r.subs[0] === 0 && r.subs[1] === 0, r.error || 'gpuChain ' + r.chain + ', ppSubs ' + JSON.stringify(r.subs));
+        t('the halves are the same picture (best shift 0, residual < 1)', r.ok && r.sh.s === 0 && r.sh.e < 1, r.sh ? 'best shift ' + r.sh.s + ' px (residual ' + r.sh.e.toFixed(2) + '), MAE at 0 ' + r.sh.zeroErr.toFixed(2) : '');
+      },
+    },
+    {
+      // Control: without the eye-sized answer (gpuChainEyeSize: false) the chain nodes size their targets
+      // from the whole side-by-side store: still a correct pair (sampled 0..1 into the eye half), at
+      // twice the pixels.
+      id: 'three-webgpu-chain-size-ctl', name: 'control: the node chain WITHOUT the eye-sized answer: its targets take the whole side-by-side store', webgpu: true,
+      url: P + 'three-webgpu-postfx.html?live=1', shim: NEW, cfg: { gpuChainEyeSize: false },
+      async run(page) {
+        await page.waitForFunction(settled(60), { timeout: 60000, polling: 200 });
+        return page.evaluate(() => { const st = window.__dxrAuto3D.state().renderers.find((x) => x.active); return { sizes: window.__chainSizes(), real: st && st.real, eye: st && st.eye }; });
+      },
+      check(r, t) {
+        const S = r.sizes;
+        t('pass and rtt are store-sized (2 x the eye wide)', r.ok && !!S && S.pass[0] === r.real[0] && S.pass[1] === r.real[1] && S.rtt[0] === r.real[0], r.error || 'store ' + (r.real && r.real.join('x')) + ', eye ' + (r.eye && r.eye.join('x')) + '; pass ' + (S && S.pass.join('x')) + ', rtt ' + (S && S.rtt.join('x')));
+      },
+    },
+    {
+      // A node that carries a history from frame to frame (three's AfterImageNode / TRAANode & co.,
+      // here a stand-in with that type): each eye would read the other eye's history. Flat with the reason.
+      id: 'three-webgpu-chain-temporal', name: 'product mode: a node chain with a temporal node (AfterImageNode) reports flat with the reason, converts nothing', webgpu: true,
+      url: P + 'three-webgpu-postfx.html?temporal=1', shim: productShim({ decision: 'allow' }),
       async run(page, h) {
         await page.waitForFunction('window.__frozen', { timeout: 30000, polling: 100 });
         await page.waitForFunction("(() => { const H = window.__dxrFakeHost; return !!(H && H.reports.some((r) => r.status === 'flat')); })()", { timeout: 10000, polling: 100 }).catch(() => {});
@@ -169,21 +245,14 @@ export default function cases({ P, NEW, productShim }) {
           P: await page.evaluate(() => {
             const H = window.__dxrFakeHost || null, c = document.querySelector('canvas');
             const W = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, 'width').get.call(c);
-            return {
-              host: H && { loadCore: H.loadCore, reports: H.reports.map(({ status, engine, reason }) => ({ status, engine: engine || null, reason: reason || null })) },
-              fake: { sessions: window.__fakeXR.sessions.length, layers: window.__fakeXR.layers.length },
-              canvasW: W, innerW: innerWidth,
-            };
+            return { reports: H ? H.reports.map(({ status, engine, reason }) => ({ status, engine: engine || null, reason: reason || null })) : [], layers: window.__fakeXR.layers.length, canvasW: W, innerW: innerWidth };
           }),
         };
       },
       check(r, t) {
-        const X = r.P, H = X && X.host, R = (H && H.reports) || [];
-        const last = R[R.length - 1];
-        t('last report is flat, engine three.js, reason names WebGPU PostProcessing', r.ok && !!last && last.status === 'flat' && last.engine === 'three.js' && /WebGPU PostProcessing/.test(last.reason || ''), r.error || JSON.stringify(R));
-        t('never live', !R.some((x) => x.status === 'live'), JSON.stringify(R));
-        t('no layer', X && X.fake.layers === 0, JSON.stringify(X && X.fake));
-        t('the canvas keeps its mono store', X && X.canvasW === X.innerW, `canvas.width ${X && X.canvasW}, innerWidth ${X && X.innerW}`);
+        const X = r.P || {}, R = X.reports || [], last = R[R.length - 1];
+        t('last report is flat, engine three.js, reason names the AfterImageNode', r.ok && !!last && last.status === 'flat' && last.engine === 'three.js' && /AfterImageNode/.test(last.reason || ''), r.error || JSON.stringify(R));
+        t('never live, no layer, the canvas keeps its mono store', !R.some((x) => x.status === 'live') && X.layers === 0 && X.canvasW === X.innerW, 'layers ' + X.layers + ', canvas.width ' + X.canvasW + ', innerWidth ' + X.innerW);
       },
     },
     {
