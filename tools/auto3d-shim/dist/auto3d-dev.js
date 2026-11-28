@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.7.13 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.7.14 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -489,7 +489,7 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.7.13'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.7.14'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
@@ -510,6 +510,7 @@ function dxrCore(cfg, cap, S) {
     scaleSamples: 3,    // the rig's scale (m2v) is set ONCE per activation (v0.7.11): from this many consecutive estimator samples ...
     scaleSpread: 0.1,   // ... within this fraction of their median, on a quiet page (no resource for guardLoadQuietMs) ...
     scaleMaxWaitMs: 8000, // ... or from what there is this long after the flip (a page that never stops loading). Flat until then.
+    scaleLoadMaxMs: 45000, // ... but with NO estimate yet on a page still loading (a model streaming in), wait up to this long instead
     openSceneMode: 'fixed', // 'fixed' (the legacy-WebXR rule, below) | 'percentile' (the 0.5.3 room rule: convRoomPercentile)
     openSceneConvM: 2,      // 'fixed': converge this far in front of the page camera, scene units read as METRES (Marble worlds and most three.js scenes are metric)
     openSceneRealDepth: 0.5, // 'fixed': the camera-rig depth that means the viewer's REAL IPD (ipdFactor 1); less scales the eye separation down (0.25 halves it)
@@ -1158,10 +1159,11 @@ function dxrCore(cfg, cap, S) {
       const t = now(), xs = W.xs.slice().sort((a, b) => a - b), med = xs.length ? xs[xs.length >> 1] : 0;
       const consistent = xs.length >= T.scaleSamples && med > 0 && xs[xs.length - 1] - xs[0] <= T.scaleSpread * med;
       const quiet = !(guard.loading && guard.loading(t));
-      const late = t - W.t0 >= T.scaleMaxWaitMs; // from this activation's first estimate (the flip)
+      const waitMs = med > 0 || (quiet && st.inView > 0) ? T.scaleMaxWaitMs : Math.max(T.scaleMaxWaitMs, +T.scaleLoadMaxMs || 0);
+      const late = t - W.t0 >= waitMs; // from this activation's first estimate (the flip)
       if (!(consistent && quiet) && !late) return;
-      const d = med > 0 ? med : st.conv.d || 1;
-      st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(T.scaleMaxWaitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
+      const d = med > 0 ? med : st.conv.d > 0 && isFinite(st.conv.d) ? st.conv.d : 1;
+      st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(waitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
     }
     decideAutoRig(st, src);
     info(`scale set: ${scaleText(st, st.rigScale)} (${st.rigScale.basis}; distance ${st.rigScale.d.toPrecision(3)} units)`);
@@ -1347,6 +1349,11 @@ function dxrCore(cfg, cap, S) {
     }
     return { x: +nv.x || 0, y: +nv.y || 0, z: +nv.z, cx: st.nomC.cx, cy: st.nomC.cy };
   }
+  function convRange(s) {
+    const n = s.near > 0 && isFinite(s.near) ? s.near : 0, f = s.far > n && isFinite(s.far) ? s.far : Infinity;
+    const lo = n * 2, hi = f * 0.9;
+    return hi > lo ? [lo, hi] : [0, Infinity];
+  }
   function estimateConvergence(st, snap, targetOnly) {
     const s = st.ad.sampler(st);
     if (!s) return false;
@@ -1357,6 +1364,7 @@ function dxrCore(cfg, cap, S) {
       const o = {};
       d = st.openLatched ? 0 : estimateSubjectDistance(s, o);
       raw = d > 0 && isFinite(d) ? d : 0; // a real estimate (not the fallback below)
+      st.inView = st.openLatched ? -1 : o.inView | 0; // setScaleOnce: nothing in view yet = keep waiting
       if (!st.openLatched) {
         if (o.near > 0) st.nearSurf = o.near; // the nearest surface in view (anchorEyes' lean clamp)
         if (o.extent > 0) st.sceneExtent = o.extent; // the bounded items' size (walkTick's scale)
@@ -1370,13 +1378,14 @@ function dxrCore(cfg, cap, S) {
           st.scaleWarned = true;
           info(`open scene: the ${Math.round(clamp(+T.convRoomPercentile || 0.7, 0.05, 0.95) * 100)}th-percentile depth in view is ${o.p.toPrecision(3)} units: the scene may not be metric; use Focus nearer / farther`);
         }
-      } else if (!(d > 0) || !isFinite(d)) d = st.conv.d || Math.max(s.near * 50, 1);
+      } else if (!(d > 0) || !isFinite(d)) d = st.conv.d > 0 && isFinite(st.conv.d) ? st.conv.d : Math.max((s.near > 0 && isFinite(s.near) ? s.near : 0) * 50, 1);
     }
-    d = clamp(d, s.near * 2, s.far * 0.9);
+    const [lo, hi] = convRange(s);
+    d = clamp(d, lo, hi);
     st.conv.d = snap || !st.conv.d || src === 'fixed' ? d : st.conv.d + (d - st.conv.d) * 0.25;
     const was = st.conv.src;
     st.conv.src = src;
-    setScaleOnce(st, src, clamp(raw, s.near * 2, s.far * 0.9) || 0);
+    setScaleOnce(st, src, raw > 0 ? clamp(raw, lo, hi) : 0);
     if (was !== src && st.active) notify(); // the chip shows the source ('fixed')
     if (st.active && st.convLogged) settleLog(st);
     return true;
@@ -1401,7 +1410,8 @@ function dxrCore(cfg, cap, S) {
     const vx = vm[0] * t.x + vm[4] * t.y + vm[8] * t.z + vm[12];
     const vy = vm[1] * t.x + vm[5] * t.y + vm[9] * t.z + vm[13];
     const z = -(vm[2] * t.x + vm[6] * t.y + vm[10] * t.z + vm[14]);
-    if (!(z > s.near * 2) || !(z < s.far * 0.9)) return 0;
+    const [lo, hi] = convRange(s);
+    if (!(z > lo) || !(z < hi)) return 0;
     const tanV = s.tanHalfFov !== undefined ? s.tanHalfFov : Math.tan(s.verticalFov / 2);
     if (Math.hypot(vx, vy) / z > 0.25 * tanV) return 0;
     st.conv.via = t.via || null;
@@ -1465,6 +1475,7 @@ function dxrCore(cfg, cap, S) {
       return true;
     });
     if (out) {
+      out.inView = items.length; // what the estimate had to go on (0: nothing in view yet)
       let nr = Infinity;
       for (const it of items) if (!it.v) nr = Math.min(nr, Math.max(it.z - it.r, near));
       out.near = isFinite(nr) ? nr : 0;
@@ -2537,14 +2548,16 @@ function dxrThree(core) {
     if (seenCommon.has(r)) return;
     seenCommon.add(r);
     if (!(r.domElement instanceof HTMLCanvasElement)) { warnOnce('webgpu', 'WebGPURenderer seen (no canvas element) — not converted, left 2D'); return; }
-    const rev = parseInt(revision, 10);
+    const rev = revision == null ? null : parseInt(revision, 10);
+    const tag = rev == null ? 'r? (revision not announced)' : `r${rev}`;
     const miss = missingHooks(r);
     let why = null;
-    if (!(rev >= GPU_MIN)) why = `WebGPURenderer r${revision || '?'} — the driver needs r${GPU_MIN} or later`;
-    else if (miss.length) why = `WebGPURenderer r${rev} without what the driver uses: ${miss.join(', ')}`;
+    if (rev != null && !(rev >= GPU_MIN)) why = `WebGPURenderer r${revision} — the driver needs r${GPU_MIN} or later`;
+    else if (miss.length) why = `WebGPURenderer ${tag} without what the driver uses: ${miss.join(', ')}`;
     if (why) { core.noteFlat('three.js', r.domElement, why); return; }
     const verified = core.T.gpuVerified || GPU_VERIFIED;
-    if (rev > verified) warnOnce('webgpu-rev', `WebGPURenderer r${rev} is newer than the last verified r${verified}; converting (every hook the driver uses is present)`);
+    if (rev == null) warnOnce('webgpu-rev', `WebGPURenderer ${tag}: the page's build dropped three's register event; converting (every hook the driver uses is present)`);
+    else if (rev > verified) warnOnce('webgpu-rev', `WebGPURenderer r${rev} is newer than the last verified r${verified}; converting (every hook the driver uses is present)`);
     track(r, true);
   }
   const onRegister = (e) => { if (core.retired) return; if (e && e.detail && e.detail.revision) revision = e.detail.revision; };
@@ -2624,14 +2637,14 @@ function dxrThree(core) {
     },
     firstDraw(st) {
       if (st.idleOps) {
-        const ops = st.idleOps.map((op) => (op[0] === 'clear' ? op : ['render', op[1], op[2], isMainPerspective(st, op[2])]));
+        const ops = st.idleOps.map((op) => (op[0] === 'clear' ? op : carryDraw(op, ['render', op[1], op[2], isMainPerspective(st, op[2])])));
         st.idleOps = null;
         replay(st, ops);
         st.lastOps = ops;
         return;
       }
       if (st.postfx && st.monoOps && st.monoOps.length) {
-        const ops = st.monoOps.map((op) => (op[0] === 'clear' ? op : ['render', op[1], op[2], false]));
+        const ops = st.monoOps.map((op) => (op[0] === 'clear' ? op : carryDraw(op, ['render', op[1], op[2], false])));
         replay(st, ops);
         st.lastOps = ops;
         return;
@@ -2871,17 +2884,19 @@ function dxrThree(core) {
       const toScreen = target === null;
       const xrLive = !!(r.xr && r.xr.enabled && r.xr.isPresenting);
       if (!st.active) {
-        const before = st.r.info && st.r.info.autoReset === false ? drawnSoFar(st) : 0;
+        const before = drawnSoFar(st);
         const out = st.call('render', scene, camera);
         if (!toScreen && !xrLive) {
           const why = seedWhy(st, target, camera);
-          if (why === null) markSeed(st, scene, camera, target, drawnSoFar(st) - before);
+          if (why === null) markSeed(st, scene, camera, target, drawnSince(st, before));
           else if (why) noteSeedMiss(st, why);
         }
         if (toScreen && !xrLive) {
-          recordMono(st, ['render', scene, camera]);
+          recordMono(st, snapDraw(st, ['render', scene, camera], scene, camera));
           const persp = camera.isPerspectiveCamera && !camera.isArrayCamera;
-          if (persp) {
+          const overlay = persp && overlayDraw(st, drawnSince(st, before));
+          if (overlay) { /* a bigger perspective draw in this task is the scene: keep it */ }
+          else if (persp) {
             if (st.seedTask) st.seedTask.direct = true; // the scene also went straight to the screen: not a composer
             st.lastMono = { scene, camera }; st.sawPersp = true;
             hookLookAt(camera); // fallback for a page that built no Scene before its camera (rare)
@@ -2915,9 +2930,9 @@ function dxrThree(core) {
         if (st.postfx) {
           if (isSeed(st, target, camera)) {
             st.mainCam = camera; st.chainStereo = st.haveViews;
-            const before = st.r.info && st.r.info.autoReset === false ? drawnSoFar(st) : 0;
+            const before = drawnSoFar(st);
             const out = renderIntoChain(st, scene, camera, target, true);
-            markSeed(st, scene, camera, target, drawnSoFar(st) - before);
+            markSeed(st, scene, camera, target, drawnSince(st, before));
             st.lastScene = st.seedTask.main.scene;
             return out;
           }
@@ -2927,14 +2942,14 @@ function dxrThree(core) {
       }
       st.frame.drew = true;
       if (st.postfx && !isMainPerspective(st, camera) && taintedSwaps(st, scene)) {
-        st.frame.ops.push(['render', scene, camera, false, true]);
+        st.frame.ops.push(snapDraw(st, ['render', scene, camera, false, true], scene, camera));
         const out = renderPostScreen(st, scene, camera);
         takeCover(st);
         return out;
       }
       const stereo = isMainPerspective(st, camera);
-      st.frame.ops.push(['render', scene, camera, stereo]);
-      const out = stereo ? renderStereo(st, scene, camera) : renderFlat(st, scene, camera);
+      st.frame.ops.push(snapDraw(st, ['render', scene, camera, stereo], scene, camera));
+      const out = stereo ? renderStereo(st, scene, camera, st.frame.main || (st.frame.main = { drawn: -1 })) : renderFlat(st, scene, camera);
       if (stereo) takeCover(st); // after the scene draw, never after a background/HUD pass alone
       if (st.common && !stereo && st.nestPersp && st.nestPersp.camera === st.mainCam) { gpuPostfx(st); core.stand(st, WHY_GPU_POSTFX); }
       return out;
@@ -2965,6 +2980,32 @@ function dxrThree(core) {
     if (st.pending || st.armed) core.stand(st, WHY_GPU_POSTFX);
     core.notify();
   }
+  function snapDraw(st, op, scene, camera) {
+    const r = st.r;
+    op.draw = { ac: [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil], bg: scene.background, layers: camera.layers ? camera.layers.mask : undefined };
+    return op;
+  }
+  const carryDraw = (from, to) => { if (from.draw) to.draw = from.draw; return to; };
+  function withDraw(st, op, fn) {
+    const d = op.draw;
+    if (!d) return fn();
+    const r = st.r, scene = op[1], camera = op[2];
+    const was = { ac: [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil], bg: scene.background, layers: camera.layers ? camera.layers.mask : undefined };
+    const put = (v) => {
+      [r.autoClear, r.autoClearColor, r.autoClearDepth, r.autoClearStencil] = v.ac;
+      if (scene.background !== v.bg) scene.background = v.bg;
+      if (camera.layers && v.layers !== undefined) camera.layers.mask = v.layers;
+    };
+    put(d);
+    try { return fn(); } finally { put(was); }
+  }
+  function overlayDraw(st, drawn) {
+    const t = st.perspTask;
+    if (t) { if (drawn <= t.drawn) return true; t.drawn = drawn; return false; }
+    st.perspTask = { drawn };
+    queueMicrotask(() => { st.perspTask = null; });
+    return false;
+  }
   function recordMono(st, op) {
     if (!st.monoOpen) {
       st.monoOpen = true;
@@ -2977,7 +3018,7 @@ function dxrThree(core) {
     const prevRT = st.call('getRenderTarget');
     if (prevRT !== null) st.call('setRenderTarget', null);
     try {
-      for (const op of ops) { if (op[0] === 'clear') st.call('clear', op[1], op[2], op[3]); else st.call('render', op[1], op[2]); }
+      for (const op of ops) { if (op[0] === 'clear') st.call('clear', op[1], op[2], op[3]); else withDraw(st, op, () => st.call('render', op[1], op[2])); }
     } finally { if (prevRT !== null) st.call('setRenderTarget', prevRT); }
   }
 
@@ -3102,8 +3143,9 @@ function dxrThree(core) {
       o.onBeforeRender = function () { sparkIn++; try { return f.apply(this, arguments); } finally { sparkIn--; } };
     }
   }
-  function renderStereo(st, scene, camera) {
-    st.mainCam = camera; st.lastScene = scene;
+  function renderStereo(st, scene, camera, fm = null) {
+    const before = fm ? drawnSoFar(st) : 0;
+    if (!fm || fm.drawn < 0) { st.mainCam = camera; st.lastScene = scene; }
     hookSpark(st, scene);
     if (!st.haveViews) { // no eyes yet: flat into both halves, never a blank tile
       if (st.stats.twoView > 0) st.stats.flatAfterEyes++;
@@ -3142,6 +3184,10 @@ function dxrThree(core) {
       if (sm) sm.autoUpdate = smAuto;
       st.call('setScissorTest', false);
     }
+    if (fm) { // eye 1's own count (WebGLRenderer, autoReset), or both eyes' (accumulating): one measure per frame
+      const d = drawnSince(st, before);
+      if (d > fm.drawn) { fm.drawn = d; st.mainCam = camera; st.lastScene = scene; }
+    }
     st.stats.stereo++;
     core.drew(st);
   }
@@ -3175,11 +3221,12 @@ function dxrThree(core) {
     if (prevRT !== null) st.call('setRenderTarget', null);
     let drew = false;
     try {
+      const fm = { drawn: -1 }; // the replayed frame's scene: its largest stereo draw (renderStereo)
       for (const op of ops) {
         if (op[0] === 'clear') forEyes(st, () => st.call('clear', op[1], op[2], op[3]));
-        else if (op[4]) renderPostScreen(st, op[1], op[2]);
-        else if (op[3]) renderStereo(st, op[1], op[2]);
-        else renderFlat(st, op[1], op[2]);
+        else if (op[4]) withDraw(st, op, () => renderPostScreen(st, op[1], op[2]));
+        else if (op[3]) withDraw(st, op, () => renderStereo(st, op[1], op[2], fm));
+        else withDraw(st, op, () => renderFlat(st, op[1], op[2]));
       }
       st.stats.replays++;
       drew = true;
@@ -3239,6 +3286,11 @@ function dxrThree(core) {
     if (sd.toScreen && st.mirrorX !== undefined && !st.active && !st.pending && !st.armed) { st.qualifyCam = sd.main.camera; core.considerActivation(st); }
   }
   const drawnSoFar = (st) => { const ri = st.r.info && st.r.info.render; return ri ? (ri.triangles || 0) + (ri.points || 0) + (ri.lines || 0) : 0; };
+  function drawnSince(st, before) {
+    const a = drawnSoFar(st), info = st.r.info;
+    if (!(st.common || (info && info.autoReset === false))) return a;
+    return a >= before ? a - before : a;
+  }
   function noteSeedMiss(st, why) {
     if (st.seedMiss === null) queueMicrotask(() => { st.seedMiss = null; });
     st.seedMiss = why;
