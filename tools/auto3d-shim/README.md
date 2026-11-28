@@ -1143,6 +1143,23 @@ On the camera rig that is `metersToVirtual` (it scales both); on the display rig
 `ipdFactor = parallaxFactor = depth`. When a page is left 2D for
 a structural reason (WebGPU, post effects, several cameras), the HUD shows that reason too.
 
+### v0.8.1: the 3D cursor, an exact target followed at once, declared hotspots
+
+- **The 3D cursor (`cursorTick`, `cursorDepth`).** Where the browser draws its own cursor at depth
+  (`XRDisplayLayer.getCursorDepthSupport()` answers `runtime`), the script reports the depth of the
+  content under the pointer every frame: `setCursorDepth({ u, v, disparityPx })`, raw, in device px
+  between the two eyes. The runtime applies the policy (never behind the glass) and draws; the script
+  draws nothing. The content is read from the surface points the core glass already holds, projected
+  through the frame's two eyes: so object and object-like pages only, and never a part that was read as a
+  bounding box. Elsewhere the cursor is the ordinary one on the glass.
+- **An exact target is followed in the same frame.** The convergence of a page that gives its own target
+  was eased toward it; under a zoom the focus read as catching up with the page's controls. The ease
+  stays for the estimator and for a change of source.
+- **Declared hotspots.** A canvas in a shadow root (`<model-viewer>`): the host's light-DOM children are
+  scanned as overlays too, and `slot="hotspot-..."` children are taken at their word before the decision,
+  so such a page starts on the camera rig and never changes.
+- `corpus/panel-sites.json`: the sites to look at by eye before a release, with the expected decision.
+
 ### v0.8.0: the strict object test, the core glass, the rig morph, the raw-pair guard
 
 Decided on the panel on 2026-11-27 (Model Viewer runs on a helmet, an elongated fox and a long-tailed

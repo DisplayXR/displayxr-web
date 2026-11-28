@@ -110,6 +110,41 @@ export default function cases({ P, NEW }) {
         t('nothing is decided again', !/no longer an object|deciding again|Scene camera/.test(lines), lines);
       },
     },
+    // THE 3D CURSOR (v0.8.1): where the browser draws its cursor at depth, the depth of the subject under the
+    // pointer is reported to the layer (raw, device px between the eyes, < 0 in front of the glass); off the
+    // subject the report carries no depth. Nothing is drawn by the script.
+    {
+      id: 'rig-cursor', name: 'product viewer: the pointer over the subject reports a depth in front of the glass; off it, none',
+      // The camera-rig variant (a hotspot page: object-like, core focus), because the fake models the runtime's
+      // camera rig exactly (fake.nominal + eyeX: two real eyes converged on the glass), not its display rig.
+      url: 'three-turntable.html?still=1&hotspot=1', expect: 'convert', fovDeg: 30, ready: 'window.__ready', cfg: { rig: 'auto', coreGlass: true, eyeScale: 1 }, fake: { nominal: [0, 0.1, 0.6], eyeX: 0.0315 },
+      probe: new Function(`return (async () => {
+        const live = () => { const S = window.__dxrAuto3D.state(), R = S.renderers.find((x) => x.active); return R && R.glass && R.verdict && R.rampK >= 1 ? R : null; };
+        const t0 = performance.now();
+        while (!live() && performance.now() - t0 < 9000) await new Promise((q) => setTimeout(q, 100));
+        if (!live()) return { error: 'never live with a core glass' };
+        await new Promise((q) => setTimeout(q, 1500));
+        const b = document.querySelector('canvas').getBoundingClientRect();
+        const at = async (u, v) => {
+          window.dispatchEvent(new PointerEvent('pointermove', { clientX: b.left + u * b.width, clientY: b.top + v * b.height, bubbles: true }));
+          await new Promise((q) => setTimeout(q, 400));
+          const R = live();
+          return R && R.cursor ? { support: R.cursor.support, last: R.cursor.last } : null;
+        };
+        const centre = await at(0.5, 0.5), corner = await at(0.04, 0.06);
+        return { centre, corner, width: b.width * devicePixelRatio };
+      })();`),
+      check(r, t) {
+        t('converted within 60 s', r.ok, `${r.ms} ms`);
+        const P = r.probe || {};
+        if (P.error || !P.centre) { t('the cursor state could be read', false, JSON.stringify(P)); return; }
+        t('the layer answers that the runtime draws the cursor', P.centre.support === 'runtime', P.centre.support);
+        const d = P.centre.last && P.centre.last.disparityPx;
+        t('over the subject: a depth in front of the glass (crossed, a few px to a few % of the width)', d < -0.5 && d > -0.08 * P.width, `${d} px of ${P.width}`);
+        t('over the subject: reported at the pointer', P.centre.last && Math.abs(P.centre.last.u - 0.5) < 0.01 && Math.abs(P.centre.last.v - 0.5) < 0.01, JSON.stringify(P.centre.last));
+        t('off the subject: the report carries no depth', P.corner && P.corner.last && P.corner.last.disparityPx === undefined, JSON.stringify(P.corner));
+      },
+    },
     // ZOOM: the page dollies its camera to half the distance at 3.5 s. The glass follows the subject (it is
     // read from the live camera), so the portal comes to half the distance and half the height: the
     // subject stays on the glass and is twice as large. (It froze once: a change detector that overflowed.)

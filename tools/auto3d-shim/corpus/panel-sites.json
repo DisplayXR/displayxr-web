@@ -1,0 +1,32 @@
+{
+  "about": "The panel run: live sites to look at BY EYE on a 3D panel before a browser / SDK release, with the decision each one should get. It complements sites.json (the headless no-harm corpus): that one measures cost and outcome, this one is what a person judges. `expect` is the automatic decision (object = display rig for the whole page; world = camera rig for the whole page; object-like = camera rig with the focus from the core glass; none = not converted; standdown = the page uses the SDK). Run tools: none here; open each URL in the DisplayXR Browser. Last full pass: 2026-11-27 (v0.8.1 dev bundle), decisions below as observed.",
+  "check": [
+    "the rig named in the log line `style: ...` matches `expect`, and never changes afterwards",
+    "orbit, zoom (wheel) and any fly / walk mode: no difference from the 2D page other than depth; nothing leaves and comes back",
+    "the canvas is never shown as a raw side-by-side pair, on a fresh browser launch too",
+    "object pages: the subject straddles the glass, about a third of it in front, at every angle",
+    "world pages: the focus does not hunt",
+    "the pointer over a subject that comes out of the glass is drawn in front of it (3D cursor)"
+  ],
+  "sites": [
+    { "id": "supersplat-landing", "group": "landing", "url": "https://superspl.at/scene/ca6a4c9b", "engine": "playcanvas", "expect": "world", "note": "landing-page sample; the camera starts inside the splat volume" },
+    { "id": "three-gltf-webgpu", "group": "landing", "url": "https://threejs.org/examples/webgpu_loader_gltf.html", "engine": "three.js (WebGPU)", "expect": "object", "note": "landing-page sample; decided about 3 s after load" },
+    { "id": "littlest-tokyo", "group": "landing", "url": "https://threejs.org/examples/webgl_animation_keyframes.html", "engine": "three.js", "expect": "object", "note": "landing-page sample; animated" },
+    { "id": "three-bloom", "group": "landing", "url": "https://threejs.org/examples/webgl_postprocessing_unreal_bloom.html", "engine": "three.js", "expect": "object", "note": "landing-page sample (added 2026-11-27); bloom per eye" },
+    { "id": "coit-tower", "group": "landing", "url": "https://wlt-ai-cdn.art/spark-2.0/260413/explore.html?url=https://wlt-ai-cdn.art/spark-2.0/rad/coit-40m-sh1-lod.rad&orient=1,0,0,0&scale=10&startPos=-0.858,2.203,-1.128&startQuat=-0.043,-0.909,-0.097,0.402&moveSpeed=1&splatCount=40%20M&credit=Vincent%20Woo&creditLink=https%3A%2F%2Fvincentwoo.com%2F&showHelp=true&showPaging=true&backgroundColor=cafefe&lodSplatScale=1.5&highDpi=true", "engine": "three.js (Spark)", "expect": "world", "note": "landing-page sample; 40 M splats, walk" },
+    { "id": "splat-object", "group": "splat", "url": "https://superspl.at/scene/285082b2", "engine": "playcanvas", "expect": "object", "note": "orbit AND fly mode on one page: the display rig through both; compressed splat, glass from the bounding box" },
+    { "id": "splat-world", "group": "splat", "url": "https://superspl.at/scene/35b1f2f9", "engine": "playcanvas", "expect": "world", "note": "fly-native; heavy (about 15 fps in 3D on the reference box)" },
+    { "id": "three-gltf-webgl", "group": "object", "url": "https://threejs.org/examples/webgl_loader_gltf.html", "engine": "three.js", "expect": "object" },
+    { "id": "model-viewer", "group": "object", "url": "https://modelviewer.dev/", "engine": "three.js (<model-viewer>)", "expect": "object", "note": "canvas in a shadow root" },
+    { "id": "model-viewer-hotspots", "group": "object", "url": "https://modelviewer.dev/examples/annotations/", "engine": "three.js (<model-viewer>)", "expect": "object-like", "note": "declared hotspots: camera rig from the start, hotspots stay on their points" },
+    { "id": "three-fps", "group": "world", "url": "https://threejs.org/examples/games_fps.html", "engine": "three.js", "expect": "world", "note": "pointer lock, walk" },
+    { "id": "arrival-space", "group": "world", "url": "https://arrival.space/16538486_8412", "engine": "playcanvas", "expect": "world", "note": "slow to load (40 s); legacy post effects per eye" },
+    { "id": "babylon-playground", "group": "world", "url": "https://playground.babylonjs.com/", "engine": "babylon.js", "expect": "world", "note": "Babylon.js gives no surface to read: always the camera rig, focus on the camera's target" },
+    { "id": "bruno-simon", "group": "stays-2d", "url": "https://bruno-simon.com/", "engine": "three.js (WebGPU)", "expect": "none", "note": "WebGPU PostProcessing chains are not split per eye yet: stays 2D by design until they are" },
+    { "id": "pc-swooop", "group": "stays-2d", "url": "https://playcanv.as/p/2OlkUaxF/", "engine": "playcanvas", "expect": "none", "note": "orthographic camera at the start screen: stays 2D" },
+    { "id": "sketchfab-embed", "group": "stays-2d", "url": "https://sketchfab.com/models/442c548d94744641ba279ae94b5f45ec/embed", "engine": "custom", "expect": "none", "note": "its own engine, no adapter: staying 2D cleanly is the pass" },
+    { "id": "google-maps", "group": "stays-2d", "url": "https://www.google.com/maps/@37.7749,-122.4194,15z", "engine": "custom", "expect": "none" },
+    { "id": "sdk-hello-cube", "group": "sdk", "url": "https://displayxr.github.io/displayxr-web/samples/hello-cube/", "expect": "standdown" },
+    { "id": "sdk-model", "group": "sdk", "url": "https://displayxr.github.io/displayxr-web/samples/model/", "expect": "standdown" }
+  ]
+}
