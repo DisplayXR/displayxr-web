@@ -218,6 +218,26 @@ export default function cases({ P, NEW, MARKS }) {
       },
     },
     {
+      // The PRODUCT default (v0.8.0, guardStandDown false): the same page as g-trip stays in 3D; the guard logs the rate once.
+      id: 'g-stay', name: 'frame-rate guard, product default: conversion costs 90 ms a frame -> the page STAYS in 3D, the rate is noted once',
+      url: P + 'pc-orbit.html', shim: [MARKS, ...NEW], cfg: { guardFps: 15, guardStandDown: false }, fake: { frameCostMs: 90 },
+      async run(page, h) {
+        await page.waitForFunction(settled(), { timeout: 30000, polling: 100 });
+        const fps = await fpsOver(page, 9000);
+        const out = await page.evaluate(readOut);
+        return { fps, out };
+      },
+      check(r, t) {
+        const O = r.out, S = O && O.state.renderers.find((x) => x.active);
+        t('went live', r.ok && !!S, r.error || '');
+        if (!O) return;
+        t('3D really runs below guardFps 15', r.fps < 15, `${r.fps.toFixed(1)} session fps`);
+        t('still live: one session, no guard report', S && O.sessions === 1 && !O.reports.some((x) => x.status === 'guard'), `sessions ${O.sessions}; reports ${O.reports.map((x) => x.status).join(' -> ')}`);
+        const notes = r.log.filter((l) => /staying in 3D \(the guard only notes\)/.test(l));
+        t('the rate is noted once in the log', notes.length === 1, `${notes.length} line(s)`);
+      },
+    },
+    {
       id: 'g-30fps', name: 'frame-rate guard: a page that is slow in 2D (its own rAF burns 90 ms a frame) stays in 3D',
       url: P + 'pc-orbit.html', shim: [burnPrelude(90, 3500), ...NEW], cfg: { guardFps: 15 }, // 90 ms: ~10 fps in 2D and 3D: below 15, but never below 0.6 x baseline (3.5 s hold: >= 20 intervals for a baseline)
       async run(page, h) {

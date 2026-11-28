@@ -1,4 +1,4 @@
-// DisplayXR auto-3D 0.7.13 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
+// DisplayXR auto-3D 0.8.0 — built by tools/auto3d-shim/build.mjs from displayxr-web. Do not edit: fix the source, rebuild, re-vendor.
 (() => {
 'use strict';
 function dxrDevHost(loadCore) {
@@ -489,19 +489,21 @@ function dxrSentinel(cfg, cap) {
 const CORE = function (cfg, cap, S) {
 function dxrCore(cfg, cap, S) {
   const TAG = '[dxr-auto3d]';
-  const VERSION = '0.7.13'; // stamped by build.mjs from manifest.json
+  const VERSION = '0.8.0'; // stamped by build.mjs from manifest.json
 
   const DEFAULT_DEPTH = { camera: 0.5, display: 1.0 };
   const DEPTH_MIN = 0.02, DEPTH_MAX = 1;
   const CONV_SCALE_MIN = 0.05, CONV_SCALE_MAX = 20;
 
   const TUNING = {
-    eyeScale: 0.5,      // per-eye width / element DEVICE width: the SBS store is the element's full device size, each eye squeezed to half width (a 2-view lenticular resolves about half anyway; the weave un-squeezes)
+    eyeScale: 1,        // per-eye width / element DEVICE width: the SBS store is the element's full device size, each eye squeezed to half width (a 2-view lenticular resolves about half anyway; the weave un-squeezes)
     maxEyeDpr: 3,       // the device-pixel ratio the eye is sized at, at most
     maxSbsWidth: 3072,  // browser-pvt#24: wider SBS canvases drop off the zero-copy weave path
     maxSbsArea: 5760 * 5760, // Chromium's WebGL drawing-buffer area cap (kMaxArea): past it the buffer is silently scaled down while canvas.width keeps the value (@displayxr/inline3d MAX_DRAWING_BUFFER_AREA)
     minCssPx: 120,      // smaller canvases stay flat (icons, thumbnails)
     holdMs: 1200,       // keep the cover this long after the layer exists (woven-canvas rules, rule 5)
+    withheldMs: 300,    // a live canvas the browser reports 'withheld' (not woven) for this long goes back to 2D; 0: off
+    coverOpacity: 0.996, // the go-live cover's opacity: just under 1, so it is never an opaque occluder of the canvas (takeCover); 1 = opaque (A/B)
     coverMaxMs: 5000,   // ... but never longer than this, stereo or not (R6: a display with nobody seated)
     releaseMaxMs: 500,  // turn-off: release the layer this long after the stand at the latest, mono frame or not
     bindMaxMs: 500,     // go-live: create the layer this long after the flip at the latest, pair drawn or not (#339)
@@ -524,13 +526,27 @@ function dxrCore(cfg, cap, S) {
     eyeAnchor: true,      // false: the runtime's views as they come (≤ 0.7.11), harness A/B
     eyeLeanMax: 0.5,
     nominalFallback: [0, 0.1, 0.6], // the nominal viewer (m, display space) when XRDisplayInfo has none: the runtime's on Leia SR + sim_display      // the scaled head deviation never exceeds this × the nearest surface in view (estimator / target scale only): leaning in cannot enter the model
+    coreGlass: true,     // false: the portal at the frozen scale distance, as 0.7.x (A/B)
+    strictObject: true,  // false: any page target not in an open scene is an object, as 0.7.13 (A/B)
+    settleMs: 1000,      // the surface set must be unchanged for this long before the verdict ...
+    settleMaxMs: 8000,   // ... or this long since the activation's first look (a page that never settles: not an object)
+    objFitMax: 1.3,      // the subject's radius about the target is at most this x the frame's half-size there ...
+    objFitMin: 0.08,     // ... at least this x (a speck is not the point of the page) ...
+    objStandoff: 1.2,    // ... and the camera stands at least this x that radius from the target
+    targetDrift: 0.05,   // the target may move at most this x its distance while we watch
+    glassMetric: 'radial', morphMs: 700,        // a rig change after go-live is a MORPH of this length (rigMorph); 0: a cut
+    overlayEveryFrames: 30, // page elements over the canvas that move with the camera (hotspots, labels): looked for this often
+    glassFront: 1 / 3,   // the share of the core's DEPTH RANGE in front of the glass ...
+    glassTrim: 0.05,     // ... the range taken between this percentile of the surface (by area) and its complement: a thin tail falls
+    glassRule: 'range',  // 'surface' = the share of the surface area in front (the first cut; A/B)
     displayPivot: true, // display rig: the page's rotations pivot about the virtual display's centre (pivotOffset); false = the portal rides the page camera (0.5.4), harness A/B only
     convRoomPercentile: 0.7, // 'percentile' mode: converge at this percentile of the apparent-size-weighted in-view depths (0.5 = the median; see estimateSubjectDistance). 'fixed' mode reads it only for the scale-sanity note
     noViewsMs: 4000,    // no 2-view frame this long after the layer -> back to 2D, retry later
     eyesOffMs: 1000,    // the chip's dot goes amber only after this long continuously without 2-view frames ...
     eyesOnMs: 300,      // ... and back to green after this long with them (eye tracking flips isTracking every few s)
     fakeViews: false,   // TEST ONLY: synthesise a parallel-axis pair when the session reports none
-    guardFps: 15,       // frame-rate guard (guard.js): back to 2D when 3D runs below this over guardMs ... (David 2026-09-28: heavy splat
+    guardStandDown: false, // false (v0.8.0): a slow page stays in 3D and the guard only logs the rate; true: the 0.7 stand-down and retry
+    guardFps: 15,       // frame-rate guard (guard.js): with guardStandDown, back to 2D when 3D runs below this over guardMs ... (David 2026-09-28: heavy splat
     guardMs: 2000,      // ... (and below 0.6 x the page's 2D rate, when it has one; was 0.8)
     guardWarmupMs: 4000, // ... no guard window starts within this long after the cover drop (a page still loading its assets)
     guardRetryMs: 6000,  // ... the first trip stands down, then retries once after at least this long, whatever the 2D rate ...
@@ -803,7 +819,7 @@ function dxrCore(cfg, cap, S) {
     const dr = depthRangeFor(st);
     st.near = dr.near; st.far = dr.far;
     try { st.session.updateRenderState({ depthNear: dr.near, depthFar: dr.far }); } catch (e) { /* ignore */ }
-    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; // a new activation decides the rig's scale again (setScaleOnce)
+    st.rigScale = null; st.rigScaleWait = null; st.rigDecided = false; st.verdict = null; st.objLike = false; st.rigSwitch = null; st.glass = null; st.morph = null; st.anchorW = 1; // a new activation decides the rig's scale again (setScaleOnce)
     estimateConvergence(st, true);
     st.piv = null; // the display rig's pivot re-anchors on the page camera's axis (pivotOffset)
     buildRig(st, ad.rigFov(st));
@@ -1022,7 +1038,24 @@ function dxrCore(cfg, cap, S) {
       }
       if (!estimateConvergence(st, false, true) && st.stats.xrFrames % (st.rigScale ? 30 : 10) === 0) estimateConvergence(st, false);
       if (!st.openLatched && st.stats.xrFrames % Math.max(1, T.walkEveryFrames | 0) === 0) walkTick(st);
+      if (T.strictObject !== false && st.conv.src !== 'fixed' && !(st.verdict && st.verdict.done)) objectVerdict(st);
+      if (st.stats.xrFrames % (st.verdict && st.verdict.done ? Math.max(1, T.overlayEveryFrames | 0) : 10) === 0) overlayTick(st);
+      if (T.strictObject !== false && st.stats.xrFrames % 6 === 0) verdictWatch(st);
       tickRamp(st, t);
+      tickRigSwitch(st);
+      if (T.withheldMs > 0 && !st.cover && !st.releasing && st.layer) {
+        let wsNow = null;
+        try { if ('wovenState' in st.layer) wsNow = st.layer.wovenState; } catch (e) { wsNow = null; }
+        if (wsNow !== 'withheld') st.withheldAt = 0;
+        else if (!st.withheldAt) st.withheldAt = t;
+        else if (t - st.withheldAt >= T.withheldMs) {
+          st.withheldAt = 0;
+          info(`the browser stopped weaving the canvas (withheld for ${T.withheldMs} ms): back to 2D, trying again shortly`);
+          st.nextTry = now() + 3000;
+          stand(st, 'the browser stopped weaving the canvas (wovenState withheld)');
+          return;
+        }
+      }
       if (HAS_RIG && st.layer) { try { st.layer.setViewRig(buildRig(st, ad.rigFov(st))); } catch (e) { warnOnce('rig', 'setViewRig failed', e); } }
     }
     ad.redraw(st);
@@ -1096,6 +1129,11 @@ function dxrCore(cfg, cap, S) {
     if (r.done) st.outCoverDue = r.done; // the out-cover is made after this frame's draw, in the drawing task
   }
   function buildRig(st, verticalFov) {
+    const r = buildRigMode(st, verticalFov, rigMode());
+    return st.morph ? rigMorph(st, r) : ((st.anchorW = 1), r);
+  }
+  const lockedObject = (st) => !!(st.verdict && st.verdict.done && ((st.verdict.done.object && site.rig === 'display') || (st.verdict.done.like && !st.verdict.done.object)));
+  function buildRigMode(st, verticalFov, mode) {
     if (!st.rigs) {
       st.rigs = {
         camera: st.rig,
@@ -1104,11 +1142,13 @@ function dxrCore(cfg, cap, S) {
     }
     const d = rigDistance(st), ds = scaleDistance(st);
     const k = st.rigScale ? rampK(st) : 0;
-    if (rigMode() === 'display') {
+    const dg = mode === 'display' || (st.objLike && st.conv.src !== 'fixed') ? coreGlass(st) * site.convScale : (st.glass = null, 0);
+    if (mode === 'display') {
       const r = st.rigs.display;
-      r.position.x = r.position.y = 0; r.position.z = -ds;
+      const dp = dg > 0 ? dg : ds;
+      r.position.x = r.position.y = 0; r.position.z = -dp;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
-      r.virtualDisplayHeight = 2 * ds * Math.tan(verticalFov / 2);
+      r.virtualDisplayHeight = 2 * dp * Math.tan(verticalFov / 2);
       const dep = depthOf('display');
       r.ipdFactor = dep * k;
       r.parallaxFactor = dep * k;
@@ -1121,7 +1161,7 @@ function dxrCore(cfg, cap, S) {
     rig.position.x = rig.position.y = rig.position.z = 0;
     rig.orientation.x = rig.orientation.y = rig.orientation.z = 0; rig.orientation.w = 1;
     rig.verticalFov = verticalFov;
-    rig.convergenceDiopters = 1 / d;
+    rig.convergenceDiopters = 1 / (dg > 0 ? dg : d);
     if (st.conv.src === 'fixed') {
       rig.metersToVirtual = 1;
       const f = k * clamp(depthOf('camera') / (+T.openSceneRealDepth || 0.5), 0, 1);
@@ -1151,6 +1191,7 @@ function dxrCore(cfg, cap, S) {
     }
     if (S) return;
     if (src === 'target' && raw > 0) {
+      if (T.strictObject !== false && site.rigChoice === 'auto' && !st.openLatched && !objectVerdict(st)) return;
       st.rigScale = { d: raw, basis: `target${st.conv.via ? ': ' + st.conv.via : ''}` };
     } else {
       const W = st.rigScaleWait || (st.rigScaleWait = { t0: now(), xs: [] });
@@ -1160,6 +1201,7 @@ function dxrCore(cfg, cap, S) {
       const quiet = !(guard.loading && guard.loading(t));
       const late = t - W.t0 >= T.scaleMaxWaitMs; // from this activation's first estimate (the flip)
       if (!(consistent && quiet) && !late) return;
+      if (T.strictObject !== false && site.rigChoice === 'auto' && src === 'estimator' && !st.openLatched && !late && !objectVerdict(st)) return;
       const d = med > 0 ? med : st.conv.d || 1;
       st.rigScale = { d, basis: consistent && quiet ? `estimator: ${xs.length} consistent samples` : `estimator after ${(T.scaleMaxWaitMs / 1000).toFixed(0)} s${med > 0 ? (quiet ? ', samples not consistent' : ', page still loading') : ', no estimate'}` };
     }
@@ -1178,9 +1220,10 @@ function dxrCore(cfg, cap, S) {
   }
   function decideAutoRig(st, src) {
     if (site.rigChoice !== 'auto' || !HAS_RIG) return;
+    if (lockedObject(st)) return;   // one rig per page: a page decided an object is not decided again
     let rig = 'camera', why;
     if (src === 'fixed' || st.openLatched) why = `open scene${st.openWhy ? ': ' + st.openWhy : ''}`;
-    else if (src !== 'target') why = 'no page target (the estimator)';
+    else if (src !== 'target' && T.strictObject === false) why = 'no page target (the estimator)';
     else {
       const w = walkHint(st);
       if (w) why = `the camera may walk: ${w}`;
@@ -1189,9 +1232,11 @@ function dxrCore(cfg, cap, S) {
         let s = null;
         try { s = st.ad.sampler(st); } catch (e) { s = null; }
         if (s) estimateSubjectDistance(s, o);
+        const v = T.strictObject !== false ? objectVerdict(st) : null;
         if (o.open) why = o.why;
         else if (o.surround) why = `surrounded: ${o.surround}`;
-        else { rig = 'display'; why = `object on a turntable (target: ${st.conv.via || 'the page'})`; }
+        else if (T.strictObject !== false && !(v && v.object)) why = v ? v.why : 'the scene has not settled';
+        else { rig = 'display'; why = src === 'target' ? `object on a turntable (target: ${st.conv.via || 'the page'})` : 'an object seen from outside (no page target: the estimator)'; }
       }
     }
     setAutoRig(rig, why, !st.rigDecided);
@@ -1205,10 +1250,365 @@ function dxrCore(cfg, cap, S) {
   }
   function scaleReady(st) { if (!st.cover && !st.coverForced && rampK(st) < 1 && !st.ramp && !st.releasing) startRamp(st, 1); }
 
+  function objectVerdict(st) {
+    const V = st.verdict || (st.verdict = { t0: now(), set: null, since: 0, tgt: null, moved: false, done: null });
+    if (V.done) return V.done;
+    const finish = (object, like, why) => {
+      V.done = { object, like, why };
+      st.objLike = like;
+      info(`object test: ${object ? 'a simple object (display rig)' : like ? 'object-like, not certain (camera rig, core focus)' : 'not an object (camera rig)'} — ${why}`);
+      return V.done;
+    };
+    if (typeof st.ad.coreSet !== 'function') return finish(false, false, 'this engine gives no surface to read');
+    let s = null, set = null;
+    try { s = st.ad.sampler(st); } catch (e) { s = null; }
+    const t = now(), late = t - V.t0 >= T.settleMaxMs, d = st.conv.d || 0;
+    if (!s || !(d > 0)) return late ? finish(false, false, 'no camera target to measure from') : null;
+    const F = stageFrame(s, d);
+    if (!V.tgt || Math.hypot(F.tx - V.tgt[0], F.ty - V.tgt[1], F.tz - V.tgt[2]) > 0.001 * d) V.tgtAt = now();
+    V.tgt = [F.tx, F.ty, F.tz];
+    V.moved = now() - V.tgtAt < T.settleMs;
+    try { set = st.ad.coreSet(st, s, { d }); } catch (e) { set = null; }
+    if (set !== V.set) { V.set = set; V.since = t; }
+    const quiet = !(guard.loading && guard.loading(t));
+    if (!late && (!set || t - V.since < T.settleMs || !quiet || V.moved)) return null;
+    if (!late && !st.overlayTracked && !(st.ovl && st.ovl.looks >= 3) && t - V.t0 < 2500) return null;
+    if (!set) return finish(false, false, 'no subject found in the scene');
+    if (V.moved) return finish(false, false, 'the camera target moves (a follow camera, a pan or a scripted path)');
+    let n = 0;
+    for (const p of set.parts) n += p.k;
+    const r = new Float32Array(n);
+    let j = 0;
+    for (const p of set.parts) {
+      const m = p.m, q = p.pts, st4 = p.stride || 3;
+      for (let i = 0, end = p.k * st4; i < end; i += st4) {
+        const x = m[0] * q[i] + m[4] * q[i + 1] + m[8] * q[i + 2] + m[12] - F.tx;
+        const y = m[1] * q[i] + m[5] * q[i + 1] + m[9] * q[i + 2] + m[13] - F.ty;
+        const z = m[2] * q[i] + m[6] * q[i + 1] + m[10] * q[i + 2] + m[14] - F.tz;
+        r[j++] = Math.hypot(x, y, z);
+      }
+    }
+    const R = selectKth(r, n, Math.min(n - 1, Math.floor(0.95 * (n - 1))));
+    V.R = R; V.Rf = F.Rf;
+    V.F = F; // the frame the subject was recognised in: the stage test keeps using it (a zoom must not change which parts count)
+    const fit = R / F.Rf;
+    if (!(fit <= T.objFitMax)) return finish(false, false, `the scene is larger than the frame (${fit.toFixed(2)} x)`);
+    if (!(fit >= T.objFitMin)) return finish(false, false, `the subject is a speck in the frame (${fit.toFixed(3)} x)`);
+    if (!(d >= T.objStandoff * R)) return finish(false, false, `the camera is too close to, or inside, the subject (${(d / R).toFixed(2)} radii)`);
+    if (set.other > 0) return finish(false, true, `${set.other} other part(s) in the scene besides the subject`);
+    if (st.overlayTracked) return finish(false, true, 'page elements over the canvas follow the 3D scene (hotspots, labels)');
+    return finish(true, true, `one compact subject, ${fit.toFixed(2)} x the frame, camera ${(d / R).toFixed(1)} radii away, nothing else in the scene`);
+  }
+  function verdictWatch(st) {
+  }
+  function demote(st, why) {
+    const V = st.verdict;
+    if (!V || !V.done || !(V.done.object || V.done.like)) return;
+    V.was = V.done; V.done = { object: false, like: false, why }; V.resumeSince = 0;
+    st.objLike = false;
+    info(`object test: no longer an object (camera rig) — ${why}`);
+  }
+  function overlayTick(st) {
+    if (st.overlayTracked || !st.canvas || !st.canvas.isConnected) return;
+    let s = null;
+    try { s = st.ad.sampler(st); } catch (e) { s = null; }
+    if (!s) return;
+    const O = st.ovl || (st.ovl = { els: [], scanAt: -Infinity, pos: new WeakMap(), obs: new WeakMap(), self: new WeakSet(), cam: null, cr: null, looks: 0 });
+    O.looks++;
+    const cr = st.canvas.getBoundingClientRect(), t = now();
+    if (!(cr.width > 0 && cr.height > 0)) return;
+    if (t - O.scanAt > 2000) {
+      O.scanAt = t; O.els = [];
+      let root = st.canvas.parentElement;
+      for (let i = 0; i < 2 && root && root.parentElement && root !== document.body; i++) root = root.parentElement;
+      if (root) {
+        const all = root.querySelectorAll('*');
+        for (let i = 0; i < all.length && i < 1500 && O.els.length < 80; i++) {
+          const el = all[i];
+          if (el === st.canvas || el.tagName === 'CANVAS' || el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.contains(st.canvas)) continue;
+          if (el.hasAttribute('data-dxr-auto3d-hud') || el.hasAttribute('data-dxr-auto3d-chip')) continue;
+          let cs = null;
+          try { cs = getComputedStyle(el); } catch (e) { continue; }
+          if (!cs || cs.visibility === 'hidden' || cs.display === 'none' || (cs.position !== 'absolute' && cs.position !== 'fixed' && cs.transform === 'none')) continue;
+          const b = el.getBoundingClientRect();
+          if (!(b.width > 0 && b.height > 0) || b.width > 0.4 * cr.width || b.height > 0.4 * cr.height) continue;
+          if (b.right < cr.left || b.left > cr.right || b.bottom < cr.top || b.top > cr.bottom) continue;
+          O.els.push(el);
+        }
+      }
+    }
+    const cp = s.cameraPose;
+    let camMoved = false;
+    if (O.cam) { let dsum = 0; for (let i = 0; i < 16; i++) dsum += Math.abs(cp[i] - O.cam[i]); camMoved = dsum > 1e-4; }
+    const still = O.cr && Math.abs(cr.left - O.cr.left) < 0.5 && Math.abs(cr.top - O.cr.top) < 0.5 && Math.abs(cr.width - O.cr.width) < 0.5;
+    const tanV = s.tanHalfFov !== undefined ? s.tanHalfFov : Math.tan(s.verticalFov / 2), tanH = tanV * (s.aspect || cr.width / cr.height);
+    const sx = Math.hypot(cp[0], cp[1], cp[2]) || 1, sy = Math.hypot(cp[4], cp[5], cp[6]) || 1, sz = Math.hypot(cp[8], cp[9], cp[10]) || 1;
+    let hit = null;
+    for (const el of O.els) {
+      if (!el.isConnected) continue;
+      const b = el.getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2, was = O.pos.get(el);
+      const mv = was && Math.hypot(x - was[0], y - was[1]) > 2;
+      O.pos.set(el, [x, y]);
+      if (!was || !still) continue;
+      if (mv && !camMoved) { O.self.add(el); O.obs.delete(el); continue; }   // moves on its own: a spinner, a CSS animation
+      if (!camMoved || O.self.has(el)) continue;
+      if (!mv) { O.obs.delete(el); continue; }                               // the camera moved, it did not: fixed UI
+      const cx = (((x - cr.left) / cr.width) * 2 - 1) * tanH, cy = (1 - ((y - cr.top) / cr.height) * 2) * tanV;
+      let dx = (cp[0] / sx) * cx + (cp[4] / sy) * cy - cp[8] / sz, dy = (cp[1] / sx) * cx + (cp[5] / sy) * cy - cp[9] / sz, dz = (cp[2] / sx) * cx + (cp[6] / sy) * cy - cp[10] / sz;
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      dx /= dl; dy /= dl; dz /= dl;
+      let L = O.obs.get(el);
+      if (!L) O.obs.set(el, (L = []));
+      L.push([cp[12], cp[13], cp[14], dx, dy, dz]);
+      if (L.length > 16) L.shift();
+      if (L.length >= 5 && pinnedTo3D(L, st.conv.d || 1)) { hit = el; break; }
+    }
+    O.cam = Float64Array.from(cp); O.cr = { left: cr.left, top: cr.top, width: cr.width };
+    if (hit) {
+      st.overlayTracked = true;
+      info(`page overlays: an element over the canvas is pinned to a point of the 3D scene (${desc(hit)})`);
+      if (site.rigChoice === 'auto' && site.rig === 'display') fadeRig(st, 'camera', 'page elements over the canvas follow the 3D scene (hotspots, labels)');
+    }
+  }
+  function pinnedTo3D(L, scale) {
+    let spread = 0;
+    for (const r of L) spread = Math.max(spread, Math.hypot(r[0] - L[0][0], r[1] - L[0][1], r[2] - L[0][2]));
+    if (spread < 0.03 * scale) return false;
+    let a00 = 0, a01 = 0, a02 = 0, a11 = 0, a12 = 0, a22 = 0, b0 = 0, b1 = 0, b2 = 0;
+    for (const [ox, oy, oz, dx, dy, dz] of L) {
+      const m00 = 1 - dx * dx, m01 = -dx * dy, m02 = -dx * dz, m11 = 1 - dy * dy, m12 = -dy * dz, m22 = 1 - dz * dz;
+      a00 += m00; a01 += m01; a02 += m02; a11 += m11; a12 += m12; a22 += m22;
+      b0 += m00 * ox + m01 * oy + m02 * oz; b1 += m01 * ox + m11 * oy + m12 * oz; b2 += m02 * ox + m12 * oy + m22 * oz;
+    }
+    const c00 = a11 * a22 - a12 * a12, c01 = a02 * a12 - a01 * a22, c02 = a01 * a12 - a02 * a11;
+    const det = a00 * c00 + a01 * c01 + a02 * c02;
+    if (!(Math.abs(det) > 1e-9)) return false;
+    const c11 = a00 * a22 - a02 * a02, c12 = a01 * a02 - a00 * a12, c22 = a00 * a11 - a01 * a01;
+    const px = (c00 * b0 + c01 * b1 + c02 * b2) / det, py = (c01 * b0 + c11 * b1 + c12 * b2) / det, pz = (c02 * b0 + c12 * b1 + c22 * b2) / det;
+    let minCos = 1;
+    const f = L[0], fx = f[0] - px, fy = f[1] - py, fz = f[2] - pz, fl = Math.hypot(fx, fy, fz) || 1;
+    for (const r of L) { const x = r[0] - px, y = r[1] - py, z = r[2] - pz; minCos = Math.min(minCos, (x * fx + y * fy + z * fz) / ((Math.hypot(x, y, z) || 1) * fl)); }
+    if (minCos > Math.cos((12 * Math.PI) / 180) || fl > 4 * scale) return false;
+    let err = 0;
+    for (const [ox, oy, oz, dx, dy, dz] of L) {
+      const vx = px - ox, vy = py - oy, vz = pz - oz, along = vx * dx + vy * dy + vz * dz;
+      if (!(along > 0)) return false; // behind a camera
+      err = Math.max(err, Math.hypot(vx - along * dx, vy - along * dy, vz - along * dz) / along);
+    }
+    return err < 0.02; // within ~1 degree of every ray
+  }
+  function fadeRig(st, rig, why) {
+    if (site.rig === rig && !st.rigSwitch) return;
+    if (!st.active || !st.rigScale || rampK(st) <= 0) { st.rigSwitch = null; setAutoRig(rig, why, false); return; }
+    if (startMorph(st)) { st.rigSwitch = null; setAutoRig(rig, why, false); return; }   // a morph, not a fade
+    st.rigSwitch = { rig, why };
+    startRamp(st, 0);
+  }
+  function tickRigSwitch(st) {
+    const W = st.rigSwitch;
+    if (!W || st.ramp || rampK(st) > 0) return;
+    st.rigSwitch = null;
+    if (W.reset) { W.reset(); return; }   // the scale decision fades it back in (scaleReady)
+    setAutoRig(W.rig, W.why, false);
+    startRamp(st, 1);
+  }
+
+  function rigDisplayInfo(st) {
+    const di = st.di, nom = nominalOf(st);
+    const Hpx = di && di.displayPixelHeight, hm = di && di.displayHeightMeters;
+    if (!nom || !(Hpx > 0 && hm > 0) || !(nom.z > 0)) return null;
+    let h = 0;
+    try { h = st.canvas.getBoundingClientRect().height * (window.devicePixelRatio || 1); } catch (e) { h = 0; }
+    const H = (hm * h) / Hpx;
+    return H > 0 && isFinite(H) ? { H, N: nom.z } : null;
+  }
+  function cameraForm(rig, w, I) {
+    if (rig.type === 'display') {
+      const p = rig.perspectiveFactor > 0 ? rig.perspectiveFactor : 1, es = (p * rig.virtualDisplayHeight) / I.H;
+      return { z: rig.position.z + es * I.N, tanV: I.H / (2 * I.N) / p, invd: 1 / (es * I.N), e: (+rig.ipdFactor || 0) * es, q: (+rig.parallaxFactor || 0) * es, w: 0 };
+    }
+    const m = rig.metersToVirtual > 0 ? rig.metersToVirtual : 1;
+    return { z: rig.position.z, tanV: Math.tan(rig.verticalFov / 2), invd: +rig.convergenceDiopters || 0, e: (+rig.ipdFactor || 0) * m, q: (+rig.parallaxFactor || 0) * m, w };
+  }
+  function startMorph(st) {
+    const I = T.morphMs > 0 && st.active && st.rig && st.rigScale && rampK(st) >= 1 && !st.ramp ? rigDisplayInfo(st) : null;
+    if (!I) return false;
+    st.morph = { from: st.morph && st.morph.at ? { ...st.morph.at } : cameraForm(st.rig, st.rig.type === 'camera' ? 1 : 0, I), t0: now(), at: null };
+    return true;
+  }
+  function rigMorph(st, target) {
+    const M = st.morph, I = rigDisplayInfo(st);
+    const u0 = T.morphMs > 0 ? clamp((now() - M.t0) / T.morphMs, 0, 1) : 1;
+    if (!I || u0 >= 1) { st.morph = null; st.anchorW = 1; return target; }
+    const u = u0 * u0 * (3 - 2 * u0), a = M.from, b = cameraForm(target, target.type === 'camera' ? 1 : 0, I);
+    const lerp = (x, y) => x + (y - x) * u;
+    const c = { z: lerp(a.z, b.z), tanV: Math.tan(lerp(Math.atan(a.tanV), Math.atan(b.tanV))), invd: lerp(a.invd, b.invd), e: lerp(a.e, b.e), q: lerp(a.q, b.q), w: lerp(a.w, b.w) };
+    const dt = a.tanV - b.tanV, xs = Math.abs(dt) > 1e-9 ? (b.z * b.tanV - a.z * a.tanV) / dt : NaN;
+    if (isFinite(xs) && xs > 0 && c.tanV > 1e-9) c.z = ((xs + a.z) * a.tanV) / c.tanV - xs;
+    const pa = a.invd > 0 ? 1 / a.invd - a.z : 0, pb = b.invd > 0 ? 1 / b.invd - b.z : 0;
+    if (pa > 0 && pb > 0) { const pc = 1 / lerp(1 / pa, 1 / pb); if (pc + c.z > 1e-9) c.invd = 1 / (pc + c.z); }
+    M.at = c;
+    const r = st.rigs.morph || (st.rigs.morph = { type: 'camera', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } });
+    const m = Math.max(c.e, c.q, 1e-9);
+    r.position.z = c.z; r.verticalFov = 2 * Math.atan(c.tanV); r.convergenceDiopters = c.invd;
+    r.metersToVirtual = m; r.ipdFactor = c.e / m; r.parallaxFactor = c.q / m;
+    st.anchorW = c.w;
+    st.rig = r;
+    return r;
+  }
+
+  function coreGlass(st) {
+    if (T.coreGlass === false || !st.active || typeof st.ad.coreSet !== 'function') { st.glass = null; return 0; }
+    let s = null, set = null;
+    try { s = st.ad.sampler(st); } catch (e) { s = null; }
+    if (!s) return st.glass ? st.glass.d : 0;
+    const vm = s.viewMatrix || invert4(s.cameraPose);
+    try { set = st.ad.coreSet(st, s, { d: st.conv.d || 0, F: st.verdict && st.verdict.done ? st.verdict.F : null }); } catch (e) { warnOnce('core-set', 'could not read the scene surface: the glass stays at the scale distance', e); set = null; }
+    if (!set || !set.parts || !set.parts.length) { st.glass = null; return 0; }
+    const G = st.glass || (st.glass = { key: null, d: 0, buf: null, n: 0, logged: false });
+    const kn = 16 * (set.parts.length + 1);
+    let same = G.set === set && G.key && G.key.length === kn;
+    if (!G.key || G.key.length !== kn) G.key = new Float64Array(kn);
+    const K = G.key;
+    for (let i = 0; i < 16; i++) { if (K[i] !== vm[i]) { same = false; K[i] = vm[i]; } }
+    for (let j = 0; j < set.parts.length; j++) { const m = set.parts[j].m, o = 16 * (j + 1); for (let i = 0; i < 16; i++) { if (K[o + i] !== m[i]) { same = false; K[o + i] = m[i]; } } }
+    if (same) return G.d;
+    G.set = set;
+    let total = 0;
+    for (const p of set.parts) total += p.k;
+    if (!G.buf || G.buf.length < total) G.buf = new Float32Array(total);
+    const z = G.buf, near = s.near || 0;
+    const cp = s.cameraPose || invert4(vm), radial = T.glassMetric !== 'axial' && !!cp, cx = cp ? cp[12] : 0, cy = cp ? cp[13] : 0, cz = cp ? cp[14] : 0;
+    let n = 0;
+    for (const p of set.parts) {
+      const m = p.m, q = p.pts, st4 = p.stride || 3;
+      const a = vm[2] * m[0] + vm[6] * m[1] + vm[10] * m[2], b = vm[2] * m[4] + vm[6] * m[5] + vm[10] * m[6];
+      const c = vm[2] * m[8] + vm[6] * m[9] + vm[10] * m[10], e = vm[2] * m[12] + vm[6] * m[13] + vm[10] * m[14] + vm[14];
+      let zlo = Infinity, zhi = -Infinity;
+      if (radial) {
+        for (let i = 0, end = p.k * st4; i < end; i += st4) {
+          const x = q[i], y = q[i + 1], w = q[i + 2];
+          const d = Math.hypot(m[0] * x + m[4] * y + m[8] * w + m[12] - cx, m[1] * x + m[5] * y + m[9] * w + m[13] - cy, m[2] * x + m[6] * y + m[10] * w + m[14] - cz);
+          if (isFinite(d)) { z[n++] = d; if (d < zlo) zlo = d; if (d > zhi) zhi = d; }
+        }
+      } else
+      for (let i = 0, end = p.k * st4; i < end; i += st4) {
+        const d = -(a * q[i] + b * q[i + 1] + c * q[i + 2] + e);
+        if (d > near && isFinite(d)) { z[n++] = d; if (d < zlo) zlo = d; if (d > zhi) zhi = d; }
+      }
+      p.zlo = zlo; p.zhi = zhi;
+    }
+    if (n < 16) { G.d = 0; return 0; }
+    const gf = clamp(+T.glassFront || 1 / 3, 0.02, 0.98), tr = clamp(+T.glassTrim || 0, 0, 0.3);
+    let dz;
+    if (T.glassRule === 'surface') dz = selectKth(z, n, Math.min(n - 1, Math.floor(gf * (n - 1))));
+    else { const lo = selectKth(z, n, Math.floor(tr * (n - 1))), hi = selectKth(z, n, Math.floor((1 - tr) * (n - 1))); G.lo = lo; G.hi = hi; dz = lo + gf * (hi - lo); }
+    const d = Math.max(dz, 1e-6);
+    G.d = d; G.n = n;
+    if (!G.logged) {
+      G.logged = true;
+      info(`glass: core ${T.glassRule === 'surface' ? 'surface' : 'depth range'}, ${Math.round(gf * 100)}% in front at every angle (${n} points over ${set.parts.length} part(s)${set.note ? '; ' + set.note : ''}); now ${d.toPrecision(3)} units`);
+    }
+    return d;
+  }
+  function sampleSurface(cands, budget, maxTris) {
+    let total = 0;
+    for (const e of cands) {
+      const m = e.m;
+      if (e.pts) continue;
+      if (!e.P) {
+        const sx = Math.hypot(m[0], m[1], m[2]), sy = Math.hypot(m[4], m[5], m[6]), sz = Math.hypot(m[8], m[9], m[10]);
+        const ex = (e.max[0] - e.min[0]) * sx, ey = (e.max[1] - e.min[1]) * sy, ez = (e.max[2] - e.min[2]) * sz;
+        e.area = 2 * (ex * ey + ey * ez + ez * ex); total += e.area > 0 && isFinite(e.area) ? e.area : 0;
+        continue;
+      }
+      const P = e.P, I = e.I && e.I.length >= 3 ? e.I : null, sp = e.stride || 3, nV = Math.floor(P.length / sp);
+      const nTri = Math.floor((I ? I.length : nV) / 3), step = Math.max(1, Math.ceil(nTri / maxTris)), nt = Math.ceil(nTri / step);
+      const tri = new Float32Array(nt * 9), cum = new Float64Array(nt);
+      let k = 0, acc = 0;
+      for (let t = 0; t < nTri; t += step) {
+        const i0 = (I ? I[t * 3] : t * 3) * sp, i1 = (I ? I[t * 3 + 1] : t * 3 + 1) * sp, i2 = (I ? I[t * 3 + 2] : t * 3 + 2) * sp;
+        if (i0 + 2 >= P.length || i1 + 2 >= P.length || i2 + 2 >= P.length) continue;
+        const o9 = k * 9;
+        tri[o9] = P[i0]; tri[o9 + 1] = P[i0 + 1]; tri[o9 + 2] = P[i0 + 2];
+        tri[o9 + 3] = P[i1]; tri[o9 + 4] = P[i1 + 1]; tri[o9 + 5] = P[i1 + 2];
+        tri[o9 + 6] = P[i2]; tri[o9 + 7] = P[i2 + 1]; tri[o9 + 8] = P[i2 + 2];
+        const ax = tri[o9 + 3] - tri[o9], ay = tri[o9 + 4] - tri[o9 + 1], az = tri[o9 + 5] - tri[o9 + 2];
+        const bx = tri[o9 + 6] - tri[o9], by = tri[o9 + 7] - tri[o9 + 1], bz = tri[o9 + 8] - tri[o9 + 2];
+        const e1x = m[0] * ax + m[4] * ay + m[8] * az, e1y = m[1] * ax + m[5] * ay + m[9] * az, e1z = m[2] * ax + m[6] * ay + m[10] * az;
+        const e2x = m[0] * bx + m[4] * by + m[8] * bz, e2y = m[1] * bx + m[5] * by + m[9] * bz, e2z = m[2] * bx + m[6] * by + m[10] * bz;
+        const area = 0.5 * Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
+        acc += area > 0 && isFinite(area) ? area : 0;
+        cum[k++] = acc;
+      }
+      e.tri = tri; e.cum = cum; e.nt = k; e.area = acc * step; total += e.area;
+    }
+    let seed = 0x9e3779b9;
+    const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+    const parts = [];
+    for (const e of cands) {
+      const m = e.m;
+      if (e.pts) {
+        const st4 = e.stride || 3, stepS = Math.max(1, Math.ceil(e.k / budget));
+        let pts = e.pts, k = e.k;
+        if (stepS > 1) { k = Math.floor(e.k / stepS); pts = new Float32Array(k * st4); for (let i = 0; i < k; i++) for (let c = 0; c < st4; c++) pts[i * st4 + c] = e.pts[i * stepS * st4 + c]; }
+        if (k > 0) parts.push({ pts, k, stride: st4, m, name: e.name });
+        continue;
+      }
+      if (!(total > 0) || !(e.area > 0) || !isFinite(e.area)) continue;
+      const k = Math.max(8, Math.round((budget * e.area) / total)), pts = new Float32Array(k * 3);
+      if (!e.P) {
+        for (let i = 0; i < k; i++) for (let c = 0; c < 3; c++) pts[i * 3 + c] = e.min[c] + rnd() * (e.max[c] - e.min[c]);
+      } else {
+        const tri = e.tri, cum = e.cum, nt = e.nt, top = nt ? cum[nt - 1] : 0;
+        if (!(top > 0)) continue;
+        for (let i = 0; i < k; i++) {
+          const r = rnd() * top;
+          let lo = 0, hi = nt - 1;
+          while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid] < r) lo = mid + 1; else hi = mid; }
+          let u = rnd(), v = rnd();
+          if (u + v > 1) { u = 1 - u; v = 1 - v; }
+          const o9 = lo * 9;
+          for (let c = 0; c < 3; c++) pts[i * 3 + c] = tri[o9 + c] + u * (tri[o9 + 3 + c] - tri[o9 + c]) + v * (tri[o9 + 6 + c] - tri[o9 + c]);
+        }
+        e.tri = e.cum = null;
+      }
+      parts.push({ pts, k, stride: 3, m, name: e.name });
+    }
+    return parts;
+  }
+  function isStage(wx, wy, wz, wr, ex, ey, ez, F) {
+    if (Math.hypot(wx - F.px, wy - F.py, wz - F.pz) <= wr) return 1;
+    const big = Math.max(ex, ey, ez), thin = Math.min(ex, ey, ez);
+    if (thin < 0.03 * big && wr > 1.5 * F.Rf) return 3;
+    if (wr > 4 * F.Rf) return 2;
+    return Math.hypot(wx - F.tx, wy - F.ty, wz - F.tz) - wr > 1.5 * F.Rf ? 4 : 0;
+  }
+  function stageFrame(s, d) {
+    const cw = s.cameraPose, fl = Math.hypot(cw[8], cw[9], cw[10]) || 1;
+    const tanV = s.tanHalfFov !== undefined ? s.tanHalfFov : Math.tan(s.verticalFov / 2);
+    return { px: cw[12], py: cw[13], pz: cw[14], tx: cw[12] - (cw[8] / fl) * d, ty: cw[13] - (cw[9] / fl) * d, tz: cw[14] - (cw[10] / fl) * d,
+      Rf: d > 0 ? d * tanV * Math.max(1, s.aspect || 1) : Infinity };
+  }
+  function selectKth(a, n, k) {
+    let lo = 0, hi = n - 1;
+    while (lo < hi) {
+      const pv = a[(lo + hi) >> 1];
+      let i = lo, j = hi;
+      while (i <= j) {
+        while (a[i] < pv) i++;
+        while (a[j] > pv) j--;
+        if (i <= j) { const t = a[i]; a[i] = a[j]; a[j] = t; i++; j--; }
+      }
+      if (k <= j) hi = j; else if (k >= i) lo = i; else return a[k];
+    }
+    return a[k];
+  }
+
   const PIVOT_CUT_COS = Math.cos(Math.PI / 6);
   const ZERO3 = Object.freeze([0, 0, 0]);
   function pivotOffset(st, m) {
-    if (rigMode() !== 'display' || T.displayPivot === false || !m) { st.piv = null; return null; }
+    if (rigMode() !== 'display' || T.displayPivot === false || !m || (st.glass && st.glass.d > 0)) { st.piv = null; return null; }
     const d = scaleDistance(st), P = st.piv; // the portal's distance (buildRig places it at the scale distance)
     if (P && P.d === d) {
       let same = true;
@@ -1250,10 +1650,12 @@ function dxrCore(cfg, cap, S) {
     return o[i];
   }
   function latchOpen(st, why) {
-    if (st.openLatched) return;
+    if (st.openLatched || lockedObject(st)) return;
     st.openLatched = true; st.openWhy = why; st.openByWalk = /^walk/.test(why);
     info(`open scene: ${why} — fixed focus for the rest of this page`);
-    if (site.rigChoice === 'auto' && site.rig === 'display') setAutoRig('camera', `open scene: ${why}`);
+    demote(st, `open scene: ${why}`);
+    st.objLike = false;
+    if (site.rigChoice === 'auto' && site.rig === 'display') fadeRig(st, 'camera', `open scene: ${why}`);
   }
   function walkTick(st) {
     if (T.openWalk === false || st.openLatched || !st.active) return;
@@ -1294,7 +1696,9 @@ function dxrCore(cfg, cap, S) {
     const nom = nominalOf(st);
     if (!nom) return;
     const m2v = rig.metersToVirtual > 0 ? rig.metersToVirtual : 1, pf = +rig.parallaxFactor || 0, invd = +rig.convergenceDiopters || 0;
-    const r = [m2v * pf * (nom.x - nom.cx), m2v * pf * (nom.y - nom.cy), 0];
+    const aw = st.anchorW === undefined ? 1 : clamp(st.anchorW, 0, 1); // 1; < 1 only while a rig morph is in flight (rigMorph)
+    if (!(aw > 0)) return;
+    const r = [aw * m2v * pf * (nom.x - nom.cx), aw * m2v * pf * (nom.y - nom.cy), 0];
     const A = st.V[0].pose, Bp = st.V[1].pose;
     const c = [(A[12] + Bp[12]) / 2, (A[13] + Bp[13]) / 2, (A[14] + Bp[14]) / 2];
     const dev = [c[0] - r[0], c[1] - r[1], c[2] - r[2]];
@@ -1305,7 +1709,7 @@ function dxrCore(cfg, cap, S) {
       const nr = Math.min(st.conv.d > 0 ? st.conv.d : Infinity, st.nearSurf > 0 ? st.nearSurf : Infinity);
       if (isFinite(nr)) lim = (+T.eyeLeanMax || 0.5) * nr;
     }
-    const k = dl > lim ? lim / dl : 1;
+    const k = 1 + ((dl > lim ? lim / dl : 1) - 1) * aw;
     for (const V of st.V) {
       const e = V.pose, P = V.proj;
       const n = [dev[0] * k + e[12] - c[0], dev[1] * k + e[13] - c[1], dev[2] * k + e[14] - c[2]];
@@ -1363,7 +1767,7 @@ function dxrCore(cfg, cap, S) {
         st.surroundRuns = !o.open && o.surround && T.openSurround !== false ? (st.surroundRuns || 0) + 1 : 0;
         if (st.surroundRuns >= Math.max(1, T.surroundRuns | 0)) latchOpen(st, `surrounded: ${o.surround}`);
       }
-      if (st.openLatched || o.open) {
+      if ((st.openLatched || o.open) && !lockedObject(st)) {
         if (!st.openLatched) latchOpen(st, o.why || 'the camera stands inside a world');
         src = 'fixed'; st.conv.via = 'open scene'; d = +T.openSceneConvM || 2;
         if (o.p > 0 && !st.scaleWarned && (o.p < 0.2 || o.p > 200)) {
@@ -1372,7 +1776,7 @@ function dxrCore(cfg, cap, S) {
         }
       } else if (!(d > 0) || !isFinite(d)) d = st.conv.d || Math.max(s.near * 50, 1);
     }
-    d = clamp(d, s.near * 2, s.far * 0.9);
+    d = src === 'fixed' || !(s.far * 0.9 > s.near * 2) ? Math.max(d, s.near * 2) : clamp(d, s.near * 2, s.far * 0.9);
     st.conv.d = snap || !st.conv.d || src === 'fixed' ? d : st.conv.d + (d - st.conv.d) * 0.25;
     const was = st.conv.src;
     st.conv.src = src;
@@ -1568,6 +1972,7 @@ function dxrCore(cfg, cap, S) {
         if (ready) ready = ready.then(() => { img.src = c.toDataURL('image/png'); });
         else img.src = c.toDataURL('image/png');
         img.style.cssText = c.style.cssText; img.style.objectFit = 'fill';
+        if (!eyeOnly && T.coverOpacity > 0 && T.coverOpacity < 1) img.style.opacity = String(T.coverOpacity);
         if (pre) return { el: img, fixed, ready: (ready || Promise.resolve()).then(() => (typeof img.decode === 'function' ? img.decode() : null)).then(() => true, () => true) };
         if (!eyeOnly) insertCover(cv, img); // the out-cover is inserted by its caller, once decoded
         st.cover = ready ? { el: img, fixed, out: !!eyeOnly, ready } : { el: img, fixed, out: !!eyeOnly };
@@ -1588,11 +1993,19 @@ function dxrCore(cfg, cap, S) {
       if (st.coverForced && st.stats.stereo > (st.stereo0 || 0)) { st.coverForced = false; if (st.rampK < 1 && !st.ramp && st.rigScale) startRamp(st, 1); }
       return;
     }
-    if (!cv.out && st.layerAt > 0 && t - st.layerAt >= T.holdMs && st.stats.stereo > 0) {
+    let joined = true, ws = null;
+    try { if (st.layer && 'wovenState' in st.layer) { ws = st.layer.wovenState; joined = ws === 'woven'; } } catch (e) { joined = true; }
+    if (!cv.out && st.layerAt > 0 && t - st.layerAt >= T.holdMs && st.stats.stereo > 0 && joined) {
       dropCover(st); // a hard cut, never a fade: the picture under it is flat (rampK 0) and fades in from here
       st.coverDropAt = t; // the frame-rate guard's warm-up counts from here
-      info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms)`);
+      info(`cover released ${Math.round(t - st.layerAt)} ms after the layer (hold ${T.holdMs} ms${ws ? `, the browser reports the canvas ${ws}` : ''})`);
       if (st.rampK < 1 && st.rigScale) startRamp(st, 1); // else it fades in once the scale is set (scaleReady)
+      return;
+    }
+    if (!cv.out && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt >= T.coverMaxMs && ws !== null && !joined && st.stats.stereo > 0) {
+      info(`the browser did not weave the canvas within ${T.coverMaxMs} ms (it reports ${ws}): staying 2D`);
+      st.nextTry = now() + 30000;
+      stand(st, `the browser did not weave the canvas (wovenState ${ws})`);
       return;
     }
     if (!cv.out && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt >= T.coverMaxMs) {
@@ -1711,7 +2124,7 @@ function dxrCore(cfg, cap, S) {
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
     newState, noteFlat, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
     realSizeFor, fitEyes, virtualizeCanvas, unvirtualizeCanvas,
-    buildRig, pivotOffset, eyePose, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
+    buildRig, pivotOffset, eyePose, sampleSurface, isStage, stageFrame, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, surfaces, surfaceOf, readGlEye: surfaces.readGlEye,
     rigMode, depthOf, convSource, convText, rampK, flatNote, statusOf, setEnabled,
   };
@@ -1928,7 +2341,10 @@ function dxrGuard(core) {
     s.dts.push(dt); s.sum += dt;
     if (s.sum < T.guardMs) return;
     const fps = (1000 * s.dts.length) / s.sum;
-    if (fps < T.guardFps && (!s.base || fps < GUARD_REL * s.base)) { trip(st, fps, s.base); return; }
+    if (fps < T.guardFps && (!s.base || fps < GUARD_REL * s.base)) {
+      if (T.guardStandDown === true) { trip(st, fps, s.base); return; }
+      if (!s.noted) { s.noted = true; core.info(`${in3D(fps, s.base)}: staying in 3D (the guard only notes)`); }
+    }
     while (s.dts.length && s.sum - s.dts[0] >= T.guardMs) s.sum -= s.dts.shift();
   };
 
@@ -2479,7 +2895,7 @@ function dxrDev(core, ctl) {
           real: [realW(st.canvas), realH(st.canvas)],
           eye: st.R ? [st.R.eyeW, st.R.eyeH] : null,
           active: st.active, pending: !!(st.pending || st.armed), haveViews: st.haveViews, eyesOn: !!st.eyesOn, noDisplay: !!(st.nd || st.noDisplay),
-          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via, openLatched: !!st.openLatched, openWhy: st.openWhy || null, anchor: st.anchor ? { ...st.anchor } : null, nearSurf: st.nearSurf || null, eyeShear: st.haveViews ? st.V.map((v) => [v.proj[8], v.proj[9]]) : null, eyeMid: st.haveViews ? [0, 1, 2].map((k) => (st.V[0].pose[12 + k] + st.V[1].pose[12 + k]) / 2) : null, rigScale: st.rigScale ? { ...st.rigScale } : null,
+          convergence: st.conv.d, convergenceSource: convSource(st), convergenceVia: st.conv.via, verdict: st.verdict && st.verdict.done ? { ...st.verdict.done, R: st.verdict.R, Rf: st.verdict.Rf } : null, overlayTracked: !!st.overlayTracked, morphing: !!st.morph, rigNow: st.rig ? { type: st.rig.type, z: st.rig.position ? st.rig.position.z : 0, vfov: st.rig.verticalFov, diopters: st.rig.convergenceDiopters, m2v: st.rig.metersToVirtual, ipd: st.rig.ipdFactor, par: st.rig.parallaxFactor, vdh: st.rig.virtualDisplayHeight } : null, glass: st.glass && st.glass.d > 0 ? { d: st.glass.d, lo: st.glass.lo, hi: st.glass.hi, n: st.glass.n, parts: st.glass.set ? st.glass.set.parts.length : 0, note: st.glass.set ? st.glass.set.note : null, list: st.glass.set ? st.glass.set.parts.map((p) => [p.name || '', p.k, +(+p.zlo).toFixed(1), +(+p.zhi).toFixed(1)]) : null } : null, openLatched: !!st.openLatched, openWhy: st.openWhy || null, anchor: st.anchor ? { ...st.anchor } : null, nearSurf: st.nearSurf || null, eyeShear: st.haveViews ? st.V.map((v) => [v.proj[8], v.proj[9]]) : null, eyeMid: st.haveViews ? [0, 1, 2].map((k) => (st.V[0].pose[12 + k] + st.V[1].pose[12 + k]) / 2) : null, rigScale: st.rigScale ? { ...st.rigScale } : null,
           rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing, lifted: st.lifted || null,
           pivot: st.piv ? { t: [...st.piv.t], c: [...st.piv.c], d: st.piv.d } : null,
           eyeAt: st.eyeAt ? Array.from(st.eyeAt) : null, // eye 0's world position, as last composed by the adapter
@@ -2608,6 +3024,7 @@ function dxrThree(core) {
         forEachBounds: (cb) => forEachBounds(scene, cam, cb),
       };
     },
+    coreSet: (st, s, ref) => coreSet(st, s, ref),
     fakeViewParams(st) {
       const cam = st.mainCam;
       return {
@@ -3626,6 +4043,70 @@ function dxrThree(core) {
     return true;
   }
 
+  const CORE_POINTS = 12000, CORE_TRIS = 24000, CORE_CHECK_MS = 500;
+  const coreCache = new WeakMap(); // state -> { at, key, set }
+  function positionsOf(pos) {
+    if (!pos || !(pos.count >= 3)) return null;
+    const arr = pos.array;
+    if (arr instanceof Float32Array && pos.itemSize === 3 && !pos.isInterleavedBufferAttribute && !pos.normalized) return arr.length >= 9 ? arr : null;
+    const has = arr ? arr.length > 0 : !!(pos.data && pos.data.array && pos.data.array.length);
+    if (!has || typeof pos.getX !== 'function') return null;
+    const out = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) { out[i * 3] = pos.getX(i); out[i * 3 + 1] = pos.getY(i); out[i * 3 + 2] = pos.getZ(i); }
+    return out;
+  }
+  function coreSet(st, s, ref) {
+    const scene = st.lastScene, cam = st.mainCam;
+    if (!scene || !cam) return null;
+    const now = performance.now(), C = coreCache.get(st);
+    if (C && now - C.at < CORE_CHECK_MS) return C.set;
+    const F = (ref && ref.F) || core.stageFrame(s, ref && ref.d > 0 ? ref.d : 0);
+    const found = [];
+    let key = '', skipped = 0, other = 0;
+    scene.traverseVisible((o) => {
+      const splat = isSplatMesh(o);
+      if (!splat && !(o.isMesh || o.isPoints)) return;
+      if (isSparkRenderer(o)) return;
+      if (cam.layers && o.layers && typeof cam.layers.test === 'function' && !cam.layers.test(o.layers)) return;
+      const m = o.matrixWorld.elements, sc = maxScale(m);
+      if (splat) {
+        const S = splatSample(o);
+        if (!S) return;
+        const wx = xfX(m, S.cx, S.cy, S.cz), wy = xfY(m, S.cx, S.cy, S.cz), wz = xfZ(m, S.cx, S.cy, S.cz);
+        if (Math.hypot(wx - F.px, wy - F.py, wz - F.pz) <= S.r * sc) { skipped++; return; } // a splat world: no core
+        found.push({ o, splat: S }); key += `s${o.id}:${S.n};`;
+        return;
+      }
+      const g = o.geometry, mat = Array.isArray(o.material) ? o.material[0] : o.material;
+      if (!g || (mat && (mat.isShadowMaterial || mat.visible === false || (mat.transparent && mat.opacity < 0.05)))) return;
+      if (!g.boundingBox && typeof g.computeBoundingBox === 'function') { try { g.computeBoundingBox(); } catch (e) { /* ignore */ } }
+      if (!g.boundingSphere && typeof g.computeBoundingSphere === 'function') { try { g.computeBoundingSphere(); } catch (e) { /* ignore */ } }
+      const bs = o.boundingSphere || g.boundingSphere, bb = o.boundingBox || g.boundingBox;
+      if (!bs || !bb || !(bs.radius > 0) || !isFinite(bs.radius)) return;
+      const c = bs.center;
+      const sg = core.isStage(xfX(m, c.x, c.y, c.z), xfY(m, c.x, c.y, c.z), xfZ(m, c.x, c.y, c.z), bs.radius * sc, bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z, F);
+      if (sg) { skipped++; if (sg === 2 || sg === 4) other++; return; }
+      const pos = g.attributes && g.attributes.position;
+      found.push({ o, g, pos, bb });
+      key += `${o.id}:${g.id}:${pos ? pos.count + '.' + (pos.version || 0) : 0};`;
+    });
+    if (C && C.key === key) { C.at = now; return C.set; }
+    const t0 = performance.now(), cands = [];
+    let boxed = 0;
+    for (const e of found) {
+      const m = e.o.matrixWorld.elements;
+      if (e.splat) { cands.push({ m, pts: e.splat.pts, k: e.splat.k, stride: 4 }); continue; }
+      const P = e.o.isSkinnedMesh || e.o.isInstancedMesh ? null : positionsOf(e.pos);
+      if (e.o.isPoints) { if (P) cands.push({ m, pts: P, k: Math.floor(P.length / 3), stride: 3 }); continue; }
+      if (!P) { boxed++; cands.push({ m, min: [e.bb.min.x, e.bb.min.y, e.bb.min.z], max: [e.bb.max.x, e.bb.max.y, e.bb.max.z] }); continue; }
+      { const mt = Array.isArray(e.o.material) ? e.o.material[0] : e.o.material; cands.push({ m, P, I: e.g.index && e.g.index.count >= 3 ? e.g.index.array : null, name: `${e.o.name || e.o.type}|${mt ? mt.type + (mt.transparent ? ' transp ' + (+mt.opacity).toFixed(2) : '') + (mt.depthWrite === false ? ' noDepthWrite' : '') : ''}|ro${e.o.renderOrder}` }); }
+    }
+    const parts = core.sampleSurface(cands, CORE_POINTS, CORE_TRIS);
+    const set = parts.length ? { parts, other, note: `${found.length} mesh(es) read${boxed ? `, ${boxed} by bounding box` : ''}, ${skipped} left out as stage (${other} of them other geometry); ${(performance.now() - t0).toFixed(1)} ms` } : null;
+    coreCache.set(st, { at: now, key, set });
+    return set;
+  }
+
   info(`three.js adapter armed (core v${core.VERSION})`);
   return { observe: onObserve, register: onRegister };
 }
@@ -3830,6 +4311,7 @@ function dxrPlayCanvas(core) {
         forEachBounds: (cb) => forEachBounds(st, cb),
       };
     },
+    coreSet: (st, s, ref) => coreSet(st, s, ref),
     fakeViewParams(st) { const p = pageCam(st); return { near: p.near, far: p.far, t: p.near * Math.tan(p.vfov / 2), aspect: p.aspect }; },
     beforeActive(st) {
       st.L.w = realW(st.canvas); st.L.h = realH(st.canvas);
@@ -4652,6 +5134,94 @@ function dxrPlayCanvas(core) {
       if (!(r >= 0) || !isFinite(r)) continue;
       more = cb(wx, wy, wz, r, false, true) !== false; // a splat volume: holding the camera, it is a world (core estimateSubjectDistance)
     }
+  }
+
+  const CORE_POINTS = 12000, CORE_TRIS = 24000, CORE_CHECK_MS = 500;
+  const coreCache = new WeakMap(); // state -> { at, key, set }
+  function splatCentres(g) {
+    const cands = [g.resource, g._resource, g.instance && g.instance.resource, g.instance && g.instance.splat, g._placement && g._placement.resource, g._assetReference && g._assetReference.asset && g._assetReference.asset.resource, g.asset && st0AssetResource(g)];
+    for (const r of cands) {
+      if (!r) continue;
+      let c = null;
+      try { c = r.centers || r._centers || (r.gsplatData && (r.gsplatData._centers || (typeof r.gsplatData.getCenters === 'function' ? r.gsplatData.getCenters() : null))); } catch (e) { c = null; }
+      if (c && c.length >= 48) return c;
+    }
+    return null;
+  }
+  function st0AssetResource(g) {
+    try { const a = typeof g.asset === 'object' ? g.asset : null; return a && a.resource ? a.resource : null; } catch (e) { return null; }
+  }
+  function coreSet(st, s, ref) {
+    const now = performance.now(), C = coreCache.get(st);
+    if (C && now - C.at < CORE_CHECK_MS) return C.set;
+    const root = st.app.root, camLayers = st.cam.layers;
+    const F = (ref && ref.F) || core.stageFrame(s, ref && ref.d > 0 ? ref.d : 0);
+    const found = [];
+    let key = '', skipped = 0, other = 0;
+    const meshes = (comp) => {
+      if (!comp || !comp.enabled || !comp.entity || !comp.entity.enabled || !layersMeet(comp.layers, camLayers)) return;
+      for (const mi of comp.meshInstances || []) {
+        if (!mi || mi.visible === false || !mi.mesh || !mi.node) continue;
+        const bb = mi.aabb;
+        if (!bb) continue;
+        const h = bb.halfExtents, r = Math.hypot(h.x, h.y, h.z);
+        if (!(r > 0) || !isFinite(r)) continue;
+        const sg = core.isStage(bb.center.x, bb.center.y, bb.center.z, r, h.x, h.y, h.z, F);
+        if (sg) { skipped++; if (sg === 2 || sg === 4) other++; continue; }
+        found.push({ mi });
+        key += `${mi.mesh.id}:${mi.node._guid || ''};`;
+      }
+    };
+    for (const c of root.findComponents('render')) meshes(c);
+    for (const c of root.findComponents('model')) meshes(c);
+    for (const g of root.findComponents('gsplat')) {
+      if (!g.enabled || !g.entity.enabled || !layersMeet(g.layers, camLayers)) continue;
+      const ctr = splatCentres(g);
+      let bb = g.customAabb || (g.instance && g.instance.resource && g.instance.resource.aabb) || (g.resource && g.resource.aabb) || null;
+      if (!bb) continue;
+      const m = g.entity.getWorldTransform().data, c = bb.center;
+      const sc = Math.sqrt(Math.max(m[0] * m[0] + m[1] * m[1] + m[2] * m[2], m[4] * m[4] + m[5] * m[5] + m[6] * m[6], m[8] * m[8] + m[9] * m[9] + m[10] * m[10]));
+      const wx = m[0] * c.x + m[4] * c.y + m[8] * c.z + m[12], wy = m[1] * c.x + m[5] * c.y + m[9] * c.z + m[13], wz = m[2] * c.x + m[6] * c.y + m[10] * c.z + m[14];
+      if (Math.hypot(wx - F.px, wy - F.py, wz - F.pz) <= Math.hypot(bb.halfExtents.x, bb.halfExtents.y, bb.halfExtents.z) * sc) { skipped++; continue; } // a splat world: no core
+      found.push({ g, ctr, m, bb });
+      key += `g${g.entity._guid || ''}:${ctr ? ctr.length : 'box'};`;
+    }
+    if (C && C.key === key) { C.at = now; return C.set; }
+    const t0 = performance.now(), cands = [];
+    let boxed = 0;
+    for (const e of found) {
+      if (e.g && e.ctr) { cands.push({ m: e.m, pts: e.ctr, k: Math.floor(e.ctr.length / 3), stride: 3 }); continue; }
+      if (e.g) {
+        const c = e.bb.center, h = e.bb.halfExtents;
+        boxed++;
+        cands.push({ m: e.m, min: [c.x - h.x, c.y - h.y, c.z - h.z], max: [c.x + h.x, c.y + h.y, c.z + h.z] });
+        continue;
+      }
+      const mi = e.mi, mesh = mi.mesh, m = mi.node.getWorldTransform().data;
+      let P = null, I = null;
+      if (!mi.skinInstance) {
+        try {
+          const pa = [];
+          if (mesh.getPositions(pa) >= 3 && pa.length >= 9) {
+            P = pa;
+            const prim = mesh.primitive && mesh.primitive[0];
+            if (prim && prim.indexed) { const ia = []; if (mesh.getIndices(ia) >= 3) I = prim.base || prim.count < ia.length ? ia.slice(prim.base || 0, (prim.base || 0) + prim.count) : ia; }
+          }
+        } catch (err) { P = null; }
+      }
+      if (!P) {
+        const lb = mesh.aabb;
+        if (!lb) continue;
+        boxed++;
+        cands.push({ m, min: [lb.center.x - lb.halfExtents.x, lb.center.y - lb.halfExtents.y, lb.center.z - lb.halfExtents.z], max: [lb.center.x + lb.halfExtents.x, lb.center.y + lb.halfExtents.y, lb.center.z + lb.halfExtents.z] });
+        continue;
+      }
+      cands.push({ m, P, I });
+    }
+    const parts = core.sampleSurface(cands, CORE_POINTS, CORE_TRIS);
+    const set = parts.length ? { parts, other, note: `${found.length} part(s) read${boxed ? `, ${boxed} by bounding box` : ''}, ${skipped} left out as stage (${other} of them other geometry); ${(performance.now() - t0).toFixed(1)} ms` } : null;
+    coreCache.set(st, { at: now, key, set });
+    return set;
   }
 
   function mul4(a, b, o) {
