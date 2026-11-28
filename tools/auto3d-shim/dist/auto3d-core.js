@@ -242,6 +242,38 @@ function dxrCore(cfg, cap, S) {
     return st.surf;
   }
 
+  function overCanvas(canvas) {
+    const chain = new Set(), out = new Set();
+    for (let n = canvas; n; n = n.parentNode || n.host) chain.add(n);
+    let r = null;
+    try { r = canvas.getBoundingClientRect(); } catch (e) { return []; }
+    for (const [fx, fy] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+      let L = [];
+      try { L = document.elementsFromPoint(r.left + r.width * fx, r.top + r.height * fy); } catch (e) { L = []; }
+      for (const e of L) {
+        if (chain.has(e)) break;
+        let ours = false;
+        try { for (const at of e.attributes) if (at.name.startsWith('data-dxr-auto3d')) { ours = true; break; } } catch (e2) { ours = false; }
+        if (!ours) out.add(e);
+      }
+    }
+    return [...out];
+  }
+  function waitUncovered(st, els) {
+    if (st.occl) clearInterval(st.occl.id);
+    st.occlTries = (st.occlTries || 0) + 1;
+    if (st.occlTries > 4) { st.occl = null; return; }
+    const o = (st.occl = { els, id: 0, t0: now() });
+    o.id = setInterval(() => {
+      if (st.occl !== o) { clearInterval(o.id); return; }
+      const cur = new Set(overCanvas(st.canvas));
+      const gone = o.els.some((e) => !cur.has(e));
+      if (!gone && now() - o.t0 < 120000) return;
+      clearInterval(o.id); st.occl = null;
+      if (gone && on() && !owner && !st.active && !st.pending) { info(`the canvas is uncovered: trying 3D again on ${desc(st.canvas)}`); st.nextTry = 0; st.tries = 0; wake(st); }
+    }, 500);
+  }
+
   function considerActivation(st) {
     const t = now();
     guard.draw(st, t); // the page's 2D rate (the frame-rate guard's baseline)
@@ -463,8 +495,11 @@ function dxrCore(cfg, cap, S) {
     info('auto-3D', on() ? 'ON' : 'OFF', 'for', location.origin);
     if (!on() && owner) turnOff(owner, 'turned off for this site');
     if (on() && owner) owner.offTok = null; // a turn-off still fading / covering out does not stand any more
-    if (on() && owner && owner.active && !owner.cover && !owner.coverForced && !owner.releasing &&
-        ((owner.ramp && owner.ramp.to === 0) || (!owner.ramp && owner.rigScale && rampK(owner) < 1))) { owner.outCoverDue = null; startRamp(owner, 1); }
+    if (on() && owner && owner.active && !owner.releasing) {
+      if (owner.cover && owner.cover.out) dropCover(owner);
+      if (!owner.cover && !owner.coverForced &&
+          ((owner.ramp && owner.ramp.to === 0) || (!owner.ramp && owner.rigScale && rampK(owner) < 1))) { owner.outCoverDue = null; startRamp(owner, 1); }
+    }
     if (on()) {
       for (const w of tracked) {
         const st = w.deref();
@@ -1650,8 +1685,10 @@ function dxrCore(cfg, cap, S) {
       return;
     }
     if (!cv.out && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt >= T.coverMaxMs && ws !== null && !joined && st.stats.stereo > 0) {
-      info(`the browser did not weave the canvas within ${T.coverMaxMs} ms (it reports ${ws}): staying 2D`);
+      const over = T.waitUncovered === false ? [] : overCanvas(st.canvas);
+      info(`the browser did not weave the canvas within ${T.coverMaxMs} ms (it reports ${ws}): staying 2D` + (over.length ? `; ${over.length} page element(s) lie over the canvas (${desc(over[0])}), trying again when that changes` : ''));
       st.nextTry = now() + 30000;
+      if (over.length) waitUncovered(st, over);
       stand(st, `the browser did not weave the canvas (wovenState ${ws})`);
       return;
     }
@@ -2546,7 +2583,7 @@ function dxrDev(core, ctl) {
           rig: st.active ? JSON.parse(JSON.stringify(st.rig)) : null, releasing: !!st.releasing, lifted: st.lifted || null,
           pivot: st.piv ? { t: [...st.piv.t], c: [...st.piv.c], d: st.piv.d } : null,
           eyeAt: st.eyeAt ? Array.from(st.eyeAt) : null, // eye 0's world position, as last composed by the adapter
-          rampK: st.active ? rampK(st) : null, ramping: !!st.ramp, drawnAt: st.drawnAt || null,
+          occl: st.occl ? { n: st.occl.els.length, ms: Math.round(now() - st.occl.t0) } : null, occlTries: st.occlTries || 0, nextTryIn: isFinite(st.nextTry) ? Math.round(st.nextTry - now()) : null, pending: !!st.pending, rampK: st.active ? rampK(st) : null, ramping: !!st.ramp, drawnAt: st.drawnAt || null,
           why: st.lastWhy, flatReason: st.flatReason, stats: { ...st.stats },
           ...(d.extra || {}),
         });
