@@ -1166,6 +1166,17 @@ glass plane keeps its size. Both directions use it; nothing changes on the camer
 panel size and the nominal viewer (`rigDisplayInfo`); without them the display rig fades by its
 factors alone, as before. `flatMorph: false` restores 0.8.2. Cases `rig-flat`, `rig-flat-off`.
 
+**A canvas under a loading overlay (`waitUncovered`, `overCanvas`).** An opaque page element over the
+canvas makes the compositor drop the canvas's quad, so the browser reports it `withheld` and, at the
+cover's maximum, the canvas goes back to 2D. It used to try again 30 s later, and only if the page was
+still drawing: a viewer that streams its model under a full-size overlay stayed 2D for good. Now the
+elements lying over the canvas at that moment are watched (on a timer) and 3D is tried again as soon as
+one of them is gone; at most 4 times per canvas. Nothing is guessed up front: only a canvas the browser
+refused is watched. Cases `rig-uncover`, `rig-uncover-off`.
+
+**3D turned back on during the switch to 2D** no longer stays flat: after the fade has ended and before
+the swap, and once the out-cover is already up (it stayed under the still for good).
+
 **Also in v0.8.3 (three.js; found on a browser 3D asset hub built on r187 `WebGPURenderer`):** a renderer
 announced without a revision (a build that tree-shook three's `register` event) is gated on the driver's
 hooks alone; an overlay pass (a gizmo drawn after the scene with `autoClear` off and no background) is

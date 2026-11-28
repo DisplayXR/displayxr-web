@@ -175,6 +175,10 @@
       this._rec = H.layers[H.layers.length - 1];
       if (this.rig) H.lastRig = this.rig;
       if (OPTS.noDisplayApi) { this.getDisplayInfo = undefined; this.getRenderingModes = undefined; }
+      // OPTS.wovenByCover: the browser's verdict (wovenState), modelled on what the compositor does: a
+      // canvas under a page element marked [data-test-opaque-cover] has no quad to join ('withheld').
+      // Absent otherwise, as on a browser without the attribute.
+      if (OPTS.wovenByCover) Object.defineProperty(this, 'wovenState', { get: () => (document.querySelector('[data-test-opaque-cover]') ? 'withheld' : 'woven') });
       if (OPTS.noDisplay) { this.getDisplayInfo = () => Promise.resolve(null); this.getRenderingModes = () => Promise.resolve([]); }
     }
     setViewRig(rig) { this.rig = JSON.parse(JSON.stringify(rig)); H.lastRig = this.rig; H.rigPushes++; }

@@ -214,6 +214,32 @@ export default function cases({ P, NEW }) {
         t('the depth only falls and the field of view only moves toward the page\'s', mono(e, -1) && (mono(f, 1) || mono(f, -1)) && e[0] > 0, `eye scale ${e[0].toExponential(2)} -> ${e[e.length - 1].toExponential(2)}, fov ${(f[0] * 57.2958).toFixed(2)} -> ${(f[f.length - 1] * 57.2958).toFixed(2)} deg`);
       },
     })),
+    // A LOADING OVERLAY (v0.8.3): an opaque page element over the canvas, the browser reports the canvas
+    // 'withheld', the cover's maximum passes: back to 2D, and 3D again as soon as the overlay is gone
+    // (not 30 s later, on a page that may have stopped drawing).
+    ...[['rig-uncover', true], ['rig-uncover-off', false]].map(([id, on]) => ({
+      id, name: on ? 'product viewer under an opaque loading overlay for 4 s: back to 2D at the cover\'s maximum, 3D again when the overlay goes' : 'A/B waitUncovered false: no retry when the overlay goes (0.8.2: 30 s)',
+      url: 'three-turntable.html?still=1&cover=4000', expect: 'convert', fovDeg: 30, ready: 'window.__ready', cfg: { rig: 'auto', coreGlass: true, eyeScale: 1, coverMaxMs: 1500, waitUncovered: on }, fake: { wovenByCover: true },
+      probe: new Function(`return (async () => {
+        // Times are the page's own clock (the fake's layer records, the page's overlay), so a slow box does not matter.
+        const L = () => window.__fakeXR.layers, t0 = performance.now();
+        while (performance.now() - t0 < 20000) {
+          if (L().length >= 2) break;
+          if (window.__uncoveredAt && L()[0] && L()[0].closedAt && performance.now() - window.__uncoveredAt > 6000) break;
+          await new Promise((q) => setTimeout(q, 100));
+        }
+        return { closed: L()[0] ? L()[0].closedAt : null, uncovered: window.__uncoveredAt || null, second: L()[1] ? L()[1].at : null };
+      })();`),
+      check(r, t) {
+        const p = r.probe || {};
+        t('went back to 2D while covered (the browser reported withheld at the cover\'s maximum)', p.closed > 0 && p.uncovered > 0 && p.closed < p.uncovered, JSON.stringify(p));
+        const line = r.log.some((l) => /page element\(s\) lie over the canvas/.test(l));
+        if (on) {
+          t('the console names what lies over the canvas', line, r.log.filter((l) => /did not weave/.test(l)).join(' | ') || 'no line');
+          t('3D again within 2 s of the overlay going', p.second > p.uncovered && p.second - p.uncovered < 2000, JSON.stringify(p));
+        } else t('no retry in the 6 s after the overlay goes', !line && (!p.second || p.second - p.uncovered > 6000), JSON.stringify(p));
+      },
+    })),
     // A/B: the 0.7.13 rule.
     rigCase('rig-loose', 'A/B strictObject false: any page target is an object (0.7.13)', 'three-orbit.html', 'display', 'object on a turntable', { cfg: { strictObject: false }, until: 'R.rigScale && S.rigMode === "display"' }),
   ].map(fix);

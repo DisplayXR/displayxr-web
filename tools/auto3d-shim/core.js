@@ -410,6 +410,43 @@ function dxrCore(cfg, cap, S) {
     return st.surf;
   }
 
+  // The page's elements in front of the canvas (hit order) at its centre and quarter points; ours
+  // (cover, chip, HUD) left out.
+  function overCanvas(canvas) {
+    const chain = new Set(), out = new Set();
+    for (let n = canvas; n; n = n.parentNode || n.host) chain.add(n);
+    let r = null;
+    try { r = canvas.getBoundingClientRect(); } catch (e) { return []; }
+    for (const [fx, fy] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+      let L = [];
+      try { L = document.elementsFromPoint(r.left + r.width * fx, r.top + r.height * fy); } catch (e) { L = []; }
+      for (const e of L) {
+        if (chain.has(e)) break;
+        let ours = false;
+        try { for (const at of e.attributes) if (at.name.startsWith('data-dxr-auto3d')) { ours = true; break; } } catch (e2) { ours = false; }
+        if (!ours) out.add(e);
+      }
+    }
+    return [...out];
+  }
+  // After a canvas the browser would not weave: watch the elements that lay over it, and try again when
+  // one of them is no longer there (on a timer: the page may not be drawing). At most 4 times per
+  // canvas, for 2 minutes each.
+  function waitUncovered(st, els) {
+    if (st.occl) clearInterval(st.occl.id);
+    st.occlTries = (st.occlTries || 0) + 1;
+    if (st.occlTries > 4) { st.occl = null; return; }
+    const o = (st.occl = { els, id: 0, t0: now() });
+    o.id = setInterval(() => {
+      if (st.occl !== o) { clearInterval(o.id); return; }
+      const cur = new Set(overCanvas(st.canvas));
+      const gone = o.els.some((e) => !cur.has(e));
+      if (!gone && now() - o.t0 < 120000) return;
+      clearInterval(o.id); st.occl = null;
+      if (gone && on() && !owner && !st.active && !st.pending) { info(`the canvas is uncovered: trying 3D again on ${desc(st.canvas)}`); st.nextTry = 0; st.tries = 0; wake(st); }
+    }, 500);
+  }
+
   // ------------------------------------------------------------ activation
   function considerActivation(st) {
     const t = now();
@@ -680,8 +717,14 @@ function dxrCore(cfg, cap, S) {
     // Turned back on mid-fade: fade back up. Also once the fade has ENDED and the swap has not been made
     // yet (a render-on-demand page waits up to a second for a draw to take the out-cover from): with
     // the turn-off cancelled above, nothing else would bring the depth back (it stayed flat, v0.8.2).
-    if (on() && owner && owner.active && !owner.cover && !owner.coverForced && !owner.releasing &&
-        ((owner.ramp && owner.ramp.to === 0) || (!owner.ramp && owner.rigScale && rampK(owner) < 1))) { owner.outCoverDue = null; startRamp(owner, 1); }
+    // And once the out-cover is up with the swap still to come (two frames and an image decode; long
+    // on a slow page): the cover goes, a cut between two identical flat pictures, and the depth returns
+    // (it stayed flat under the still for good, panel 2026-11-28).
+    if (on() && owner && owner.active && !owner.releasing) {
+      if (owner.cover && owner.cover.out) dropCover(owner);
+      if (!owner.cover && !owner.coverForced &&
+          ((owner.ramp && owner.ramp.to === 0) || (!owner.ramp && owner.rigScale && rampK(owner) < 1))) { owner.outCoverDue = null; startRamp(owner, 1); }
+    }
     if (on()) {
       // A render-on-demand page draws nothing until input, so nothing would ever reach
       // considerActivation: ask each adapter for one frame (finding 1 of the first panel run).
@@ -2350,8 +2393,14 @@ function dxrCore(cfg, cap, S) {
     // is the raw side-by-side store: go back to 2D instead (the store is mono again before the cover
     // goes), and leave the page alone for a while.
     if (!cv.out && T.coverMaxMs > 0 && st.layerAt > 0 && t - st.layerAt >= T.coverMaxMs && ws !== null && !joined && st.stats.stereo > 0) {
-      info(`the browser did not weave the canvas within ${T.coverMaxMs} ms (it reports ${ws}): staying 2D`);
+      // Something of the page's over the canvas (a loading overlay: an opaque cover makes the compositor
+      // drop the canvas's quad, and the browser has nothing to join): try again as soon as it is gone,
+      // not in 30 s on a page that may have stopped drawing by then (an asset viewer that streams its
+      // model under a full-size overlay stayed 2D for good, panel 2026-11-28).
+      const over = T.waitUncovered === false ? [] : overCanvas(st.canvas);
+      info(`the browser did not weave the canvas within ${T.coverMaxMs} ms (it reports ${ws}): staying 2D` + (over.length ? `; ${over.length} page element(s) lie over the canvas (${desc(over[0])}), trying again when that changes` : ''));
       st.nextTry = now() + 30000;
+      if (over.length) waitUncovered(st, over);
       stand(st, `the browser did not weave the canvas (wovenState ${ws})`);
       return;
     }
