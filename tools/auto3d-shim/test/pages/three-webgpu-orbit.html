@@ -20,10 +20,19 @@
        ?pr=N      setPixelRatio(N) instead of devicePixelRatio: the page's mono store (N x the CSS size)
                   differs from the side-by-side store, so three's own size reads must see the real one.
        ?live=1    never stops the loop.
+       ?norev=1   three's module-level `register` event (the one that carries REVISION) is dropped, as a
+                  bundler that tree-shakes three's side effects does (lepoly.com, r187): the renderer
+                  still announces itself from its constructor, with no revision known.
      Test hooks: window.__grabFrame() renders one frame NOW and reads the canvas back in that task (a
      WebGPU canvas reads back empty once presented). window.__backend: the backend after init. -->
 <html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three WebGPURenderer orbit (test)</title>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block}</style>
+<script>
+if (new URLSearchParams(location.search).has('norev')) {
+  const d = EventTarget.prototype.dispatchEvent;
+  EventTarget.prototype.dispatchEvent = function (e) { return e && e.type === 'register' && e.detail && 'revision' in e.detail ? true : d.call(this, e); };
+}
+</script>
 <script type="importmap">{ "imports": { "three": "/deps/three/three.webgpu.js" } }</script>
 </head><body>
 <script type="module">

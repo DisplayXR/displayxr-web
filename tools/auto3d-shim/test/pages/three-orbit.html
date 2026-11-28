@@ -4,7 +4,13 @@
      where the estimator converges (8 units away), but the controls orbit (0, 1, 3), 5 units in
      front of the camera. The page's explicit target wins: expected convergence 5, source 'target'.
      Render-on-demand, as orbit pages usually are: it draws on the controls' 'change' event and for
-     its first 60 frames, then stops. -->
+     its first 60 frames, then stops.
+       ?gizmo=1  after the scene, an overlay pass drawn the way lepoly.com draws its gizmo: the SAME scene
+                 through a second PerspectiveCamera that sees only layer 1, with autoClear off and
+                 scene.background null, both restored after it. Its layer-1 object sits behind that
+                 camera, so the pass draws nothing (lepoly's drew no mesh either): a replay must give
+                 it the state it ran with, or it clears the eye; and it must not become the page
+                 camera (the convergence stays the scene camera's target). -->
 <html><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>three orbit target (test)</title>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#20242c}canvas{display:block}</style>
 <script type="importmap">{ "imports": { "three": "/deps/three/three.module.js" } }</script>
@@ -35,7 +41,20 @@ mk(ball, 0x9dff4a, 0, 1, 1.8); mk(ball, 0x9dff4a, 0, 1, -1.8);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1, 3);
 controls.update(); // camera.lookAt(target): the camera now looks at (0, 1, 3)
-const render = () => renderer.render(scene, camera);
+const gizmo = new URLSearchParams(location.search).has('gizmo');
+const gizmoCamera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 10);
+gizmoCamera.position.set(40, 0, 0); gizmoCamera.lookAt(80, 0, 0); gizmoCamera.layers.set(1);
+const marker = new THREE.Mesh(new THREE.OctahedronGeometry(0.3), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+marker.position.set(39, 0, 0); marker.layers.set(1); // behind gizmoCamera: culled, nothing drawn
+if (gizmo) scene.add(marker);
+const render = () => {
+  renderer.render(scene, camera);
+  if (!gizmo) return;
+  const bg = scene.background;
+  renderer.autoClear = false; scene.background = null;
+  renderer.render(scene, gizmoCamera);
+  renderer.autoClear = true; scene.background = bg;
+};
 // Test hooks (cases/pivot.mjs): the page camera's world matrix, and an orbit of the controls' own
 // kind (about controls.target, yaw), ending in controls.update() as a drag does.
 window.__camWorld = () => { camera.updateMatrixWorld(); return Array.from(camera.matrixWorld.elements); };

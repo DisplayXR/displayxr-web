@@ -77,6 +77,19 @@ export default function cases({ P, NEW, productShim }) {
       },
     },
     {
+      // A build that drops three's module-level `register` event (tree-shaken side effects: lepoly.com,
+      // r187 through Vite/Rolldown). No revision is ever known; the renderer's constructor announcement
+      // still arrives (r178+ only), so it converts on the hooks alone, with one "not announced" note.
+      id: 'three-webgpu-norev', name: 'three.js WebGPURenderer whose build never announces REVISION: converts on the hooks, with one "revision not announced" note', webgpu: true,
+      url: P + 'three-webgpu-orbit.html?norev=1', shim: NEW, expect: 'convert', fovDeg: 40, ready: 'window.__frozen', probe: glProbe,
+      alsoCheck(r, t, h, R) {
+        gpuChecks('webgpu', 'fb')(r, t, h, R);
+        const n = r.log.filter((l) => /r\? \(revision not announced\).*converting/.test(l)).length;
+        t('one "revision not announced; converting" console note', n === 1, `${n} note(s)`);
+        t('one layer', r.fake.layers === 1, `layers ${r.fake.layers}`);
+      },
+    },
+    {
       // The direct path: no frame-buffer target, the scene draws straight to the canvas, whose clear
       // (loadOp 'clear') ignores the scissor. The generic checks (halves differ, right = left shifted
       // 0.1 x eye) only pass when BOTH eyes survive; the corners check the clear colour in each half.
