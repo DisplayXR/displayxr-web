@@ -112,6 +112,7 @@ function dxrCore(cfg, cap, S) {
     targetDrift: 0.05,   // the target may move at most this x its distance while we watch
     cursorDepth: true,   // the 3D cursor (cursorTick): report the depth under the pointer where the browser draws its cursor at depth
     zoomLocal: true,     // display rig: the portal distance is applied to the located eyes in the frame the page camera moves (eyeScale); false: through the rig, three frames late
+    flatMorph: true,     // display rig: the depth fade (rampK) is also the MORPH to the page's own camera, so flat IS the page's 2D picture (rigFlatten); false: flat = the portal seen from the nominal viewer (0.8.2)
     glassMetric: 'radial', morphMs: 700,        // a rig change after go-live is a MORPH of this length (rigMorph); 0: a cut
     overlayEveryFrames: 30, // page elements over the canvas that move with the camera (hotspots, labels): looked for this often
     glassFront: 1 / 3,   // the share of the core's DEPTH RANGE in front of the glass ...
@@ -675,7 +676,11 @@ function dxrCore(cfg, cap, S) {
     info('auto-3D', on() ? 'ON' : 'OFF', 'for', location.origin);
     if (!on() && owner) turnOff(owner, 'turned off for this site');
     if (on() && owner) owner.offTok = null; // a turn-off still fading / covering out does not stand any more
-    if (on() && owner && owner.active && owner.ramp && owner.ramp.to === 0) startRamp(owner, 1); // turned back on mid-fade: fade back up
+    // Turned back on mid-fade: fade back up. Also once the fade has ENDED and the swap has not been made
+    // yet (a render-on-demand page waits up to a second for a draw to take the out-cover from): with
+    // the turn-off cancelled above, nothing else would bring the depth back (it stayed flat, v0.8.2).
+    if (on() && owner && owner.active && !owner.cover && !owner.coverForced && !owner.releasing &&
+        ((owner.ramp && owner.ramp.to === 0) || (!owner.ramp && owner.rigScale && rampK(owner) < 1))) { owner.outCoverDue = null; startRamp(owner, 1); }
     if (on()) {
       // A render-on-demand page draws nothing until input, so nothing would ever reach
       // considerActivation: ask each adapter for one frame (finding 1 of the first panel run).
@@ -927,7 +932,9 @@ function dxrCore(cfg, cap, S) {
   // from the rig that was showing to the active mode's (rigMorph).
   function buildRig(st, verticalFov) {
     const r = buildRigMode(st, verticalFov, rigMode());
-    return st.morph ? rigMorph(st, r) : ((st.anchorW = 1), r);
+    if (st.morph) return rigMorph(st, r);
+    st.anchorW = 1;
+    return r.type === 'display' ? rigFlatten(st, r, verticalFov) : r;
   }
   // ONE RIG PER PAGE (David 2026-11-27: "we don't want those rig transitions in the middle of the
   // experience"). A page decided a simple object keeps the display rig whatever its controls do (orbit,
@@ -980,7 +987,8 @@ function dxrCore(cfg, cap, S) {
       // distance is applied to the located eyes when the adapter composes them (eyeScale): the same
       // views, in the frame the camera moved. The projections do not depend on d.
       let dq = dp;
-      if (dg > 0 && T.zoomLocal !== false) { if (st.morph || !(st.dp0 > 0)) st.dp0 = dp; dq = st.dp0; } else st.dp0 = 0;
+      st.dpLive = dp;
+      if (dg > 0 && T.zoomLocal !== false) { if (st.morph || k < 1 || !(st.dp0 > 0)) st.dp0 = dp; dq = st.dp0; } else st.dp0 = 0;
       r.position.x = r.position.y = 0; r.position.z = -dq;
       r.orientation.x = r.orientation.y = r.orientation.z = 0; r.orientation.w = 1;
       r.virtualDisplayHeight = 2 * dq * Math.tan(verticalFov / 2);
@@ -1479,6 +1487,11 @@ function dxrCore(cfg, cap, S) {
     const u0 = T.morphMs > 0 ? clamp((now() - M.t0) / T.morphMs, 0, 1) : 1;
     if (!I || u0 >= 1) { st.morph = null; st.anchorW = 1; return target; }
     const u = u0 * u0 * (3 - 2 * u0), a = M.from, b = cameraForm(target, target.type === 'camera' ? 1 : 0, I);
+    const c = (M.at = blendForm(a, b, u));
+    return declareForm(st, c, Math.max(c.e, c.q, 1e-9));
+  }
+  // Two rigs in camera form, a fraction u of the way from a to b.
+  function blendForm(a, b, u) {
     const lerp = (x, y) => x + (y - x) * u;
     const c = { z: lerp(a.z, b.z), tanV: Math.tan(lerp(Math.atan(a.tanV), Math.atan(b.tanV))), invd: lerp(a.invd, b.invd), e: lerp(a.e, b.e), q: lerp(a.q, b.q), w: lerp(a.w, b.w) };
     // A DOLLY ZOOM, not two independent moves (panel 2026-11-27: with z and the angle each on its own
@@ -1490,15 +1503,36 @@ function dxrCore(cfg, cap, S) {
     // The convergence plane moves in diopters as seen from the PAGE camera (not from the moving one).
     const pa = a.invd > 0 ? 1 / a.invd - a.z : 0, pb = b.invd > 0 ? 1 / b.invd - b.z : 0;
     if (pa > 0 && pb > 0) { const pc = 1 / lerp(1 / pa, 1 / pb); if (pc + c.z > 1e-9) c.invd = 1 / (pc + c.z); }
-    M.at = c;
+    return c;
+  }
+  // A camera form declared as the rig. The scale m goes in metersToVirtual so that both factors stay
+  // within [0, 1].
+  function declareForm(st, c, m) {
     const r = st.rigs.morph || (st.rigs.morph = { type: 'camera', position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } });
-    // The scale goes in metersToVirtual so that both factors stay within [0, 1].
-    const m = Math.max(c.e, c.q, 1e-9);
     r.position.z = c.z; r.verticalFov = 2 * Math.atan(c.tanV); r.convergenceDiopters = c.invd;
-    r.metersToVirtual = m; r.ipdFactor = c.e / m; r.parallaxFactor = c.q / m;
+    r.metersToVirtual = m; r.ipdFactor = clamp(c.e / m, 0, 1); r.parallaxFactor = clamp(c.q / m, 0, 1);
     st.anchorW = c.w;
     st.rig = r;
     return r;
+  }
+  // FLAT IS THE PAGE (T.flatMorph, v0.8.3; David 2026-11-27: "3D loses depth, once flat switch to 2D,
+  // and conversely", and 2D is the page's own picture). A display rig with its factors at 0 is not the
+  // page's picture: it is the portal seen from the nominal viewer, with the display's field of view,
+  // and only the glass plane agrees with the page (everything off the glass jumped when the lens
+  // switched). So on the display rig the depth fade is ALSO the dolly zoom to the page's own camera:
+  // at rampK 1 the display rig as declared, at 0 the page camera itself (both eyes on it, its field of
+  // view), and between them the same family in camera form (blendForm), the glass plane keeping its
+  // size. The 2D -> 3D fade in is the same move backwards. Without the panel size and the nominal
+  // viewer (rigDisplayInfo) the display rig is faded by its factors alone, as before.
+  function rigFlatten(st, r, verticalFov) {
+    const k = st.rigScale ? rampK(st) : 0, dp = st.dpLive;
+    if (k >= 1 || T.flatMorph === false || !(dp > 0)) return r;
+    const I = rigDisplayInfo(st);
+    if (!I) return r;
+    const dep = depthOf('display'), tv = Math.tan(verticalFov / 2);
+    const a = cameraForm({ type: 'display', position: { z: -dp }, virtualDisplayHeight: 2 * dp * tv, perspectiveFactor: 1, ipdFactor: dep, parallaxFactor: dep }, 0, I);
+    const c = blendForm({ z: 0, tanV: tv, invd: 1 / dp, e: 0, q: 0, w: 1 }, a, clamp(k, 0, 1));
+    return declareForm(st, c, Math.max(a.e, a.q, 1e-9));
   }
 
   // ------------------------------------------------------------ the core glass (v0.8.0)

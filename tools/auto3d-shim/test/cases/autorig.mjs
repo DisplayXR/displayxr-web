@@ -173,6 +173,47 @@ export default function cases({ P, NEW }) {
         t('the virtual display height shrank with it', b.vdh < 0.6 * a.vdh, `${a.vdh.toFixed(3)} -> ${b.vdh.toFixed(3)}`);
       },
     },
+    // FLAT IS THE PAGE (v0.8.3, T.flatMorph). 3D -> 2D on the display rig: the depth fade is also the
+    // dolly zoom to the page's own camera, so the last rig before the lens switches is the page camera
+    // itself (its field of view, both eyes on it), and the glass plane kept its size on the way.
+    ...[['rig-flat', true], ['rig-flat-off', false]].map(([id, on]) => ({
+      id, name: on ? 'product viewer, 3D turned off: the display rig morphs to the page camera while the depth fades (flat = the page\'s 2D picture)' : 'A/B flatMorph false: flat is the display rig with its factors at 0 (0.8.2)',
+      url: 'three-turntable.html?still=1', expect: 'convert', fovDeg: 30, ready: 'window.__ready', cfg: { rig: 'auto', coreGlass: true, eyeScale: 1, flatMorph: on }, fake: { nominal: [0, 0.1, 0.6], eyeX: 0.0315 },
+      probe: new Function(`return (async () => {
+        const R = () => { const S = window.__dxrAuto3D.state(); return S.renderers.find((x) => x.active) || S.renderers[0] || null; };
+        const t0 = performance.now(); let live = null;
+        while (performance.now() - t0 < 12000) { const r = R(); if (r && r.active && r.rampK === 1 && !r.ramping && r.glass && r.glass.d > 0 && window.__fakeXR.lastRig && window.__fakeXR.lastRig.type === 'display') { live = { rig: window.__fakeXR.lastRig, glass: r.glass.d, k: r.rigNow.k }; break; } await new Promise((q) => setTimeout(q, 100)); }
+        if (!live) return { live: null };
+        const seen = []; let pushes = window.__fakeXR.rigPushes;
+        window.__dxrAuto3D.set('enabled', false);
+        const t1 = performance.now();
+        while (performance.now() - t1 < 4000) {
+          await new Promise((q) => requestAnimationFrame(q));
+          if (window.__fakeXR.rigPushes !== pushes) { pushes = window.__fakeXR.rigPushes; seen.push(JSON.parse(JSON.stringify(window.__fakeXR.lastRig))); }
+          const r = R(); if (!r || !r.active) break;
+        }
+        return { live, seen, ms: Math.round(performance.now() - t1) };
+      })();`),
+      check(r, t) {
+        t('converted within 60 s', r.ok, `${r.ms} ms`);
+        const p = r.probe || {};
+        if (!p.live || !p.seen || !p.seen.length) { t('live on the display rig, then rigs pushed during the turn-off', false, JSON.stringify({ live: p.live, n: p.seen && p.seen.length })); return; }
+        const fov = (30 * Math.PI) / 180, d = p.live.glass, last = p.seen[p.seen.length - 1];
+        if (!on) {
+          t('the last rig is the display rig, flat', last.type === 'display' && last.ipdFactor === 0 && last.parallaxFactor === 0, JSON.stringify(last));
+          return;
+        }
+        t('the last rig before the lens switches is the page camera: at its position, its field of view, both eyes on it',
+          last.type === 'camera' && Math.abs(last.position.z) < 1e-6 * d && Math.abs(last.verticalFov - fov) < 1e-6 && last.ipdFactor === 0 && last.parallaxFactor === 0, JSON.stringify(last));
+        const cam = p.seen.filter((g) => g.type === 'camera');
+        const size = cam.map((g) => (d + g.position.z) * Math.tan(g.verticalFov / 2)), want = d * Math.tan(fov / 2);
+        const worst = Math.max(...size.map((x) => Math.abs(x / want - 1)));
+        t('the glass plane kept its size at every step (a dolly zoom)', cam.length >= 5 && worst < 5e-3, `${cam.length} steps, worst ${(worst * 100).toFixed(3)} %`);
+        const e = cam.map((g) => g.ipdFactor * g.metersToVirtual), f = cam.map((g) => g.verticalFov);
+        const mono = (a, sgn) => a.every((x, i) => i === 0 || sgn * (x - a[i - 1]) >= -1e-9);
+        t('the depth only falls and the field of view only moves toward the page\'s', mono(e, -1) && (mono(f, 1) || mono(f, -1)) && e[0] > 0, `eye scale ${e[0].toExponential(2)} -> ${e[e.length - 1].toExponential(2)}, fov ${(f[0] * 57.2958).toFixed(2)} -> ${(f[f.length - 1] * 57.2958).toFixed(2)} deg`);
+      },
+    })),
     // A/B: the 0.7.13 rule.
     rigCase('rig-loose', 'A/B strictObject false: any page target is an object (0.7.13)', 'three-orbit.html', 'display', 'object on a turntable', { cfg: { strictObject: false }, until: 'R.rigScale && S.rigMode === "display"' }),
   ].map(fix);

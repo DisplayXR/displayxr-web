@@ -304,6 +304,8 @@ in 5 s is most likely a second browser instance, `XR_ERROR_LIMIT_REACHED`): the 
 outline pill with the tooltip *3D display not available to this window*, and the report is
 `{ status: 'flat', reason: 'no-display' }` (never `'live'`) until a two-view frame arrives.
 
+On the display rig the fade is also the morph to the page's camera, in both directions (v0.8.3, below: *flat is the page*).
+
 **3D → 2D (`Ctrl+Alt+3` off).** The depth fades out to `rampK` 0 first and holds two frames (a rig
 drives the NEXT locate). Then the **out-cover** goes over the canvas: one eye of that flat pair, which
 IS the mono picture. The mono draw and the layer release (mono first, release after, above) happen
@@ -1144,6 +1146,22 @@ parallax together, so less depth flattens the stereo and damps the look-around b
 On the camera rig that is `metersToVirtual` (it scales both); on the display rig it is
 `ipdFactor = parallaxFactor = depth`. When a page is left 2D for
 a structural reason (WebGPU, post effects, several cameras), the HUD shows that reason too.
+
+### v0.8.3: flat is the page (the 2D <-> 3D switch on the display rig)
+
+The switch is a depth fade: 3D loses its depth, and once flat the lens switches (and the reverse on the
+way in). "Flat" has to be the page's own 2D picture, since that is what the page draws once the layer
+is gone. On the camera rig it always was (both eyes on the page camera). On the display rig it was
+not: with its factors at 0 the display rig is the portal seen from the nominal viewer, with the
+display's field of view, and only the glass plane agrees with the page, so everything off the glass
+changed size when the cover came off.
+
+Since v0.8.3 (`flatMorph`, `rigFlatten`) the display rig's depth fade is also the dolly zoom to the
+page's camera, through the rig correspondence the rig morph uses (`blendForm`): at `rampK` 1 the
+display rig as declared, at 0 the page camera itself, and between them one camera-form rig whose
+glass plane keeps its size. Both directions use it; nothing changes on the camera rig. It needs the
+panel size and the nominal viewer (`rigDisplayInfo`); without them the display rig fades by its
+factors alone, as before. `flatMorph: false` restores 0.8.2. Cases `rig-flat`, `rig-flat-off`.
 
 ### v0.8.2: three.js WebGPU post-processing per eye
 
