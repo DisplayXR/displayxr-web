@@ -211,6 +211,7 @@ function dxrCore(cfg, cap, S) {
 
   // ------------------------------------------------------------ document-level state
   const tracked = [];           // WeakRef<state>, for state() and the HUD
+  let gl = null;                // the GL-level fallback adapter (gl-adapter.js), once the parts are made
   let owner = null;             // the one canvas converted (or converting) — one inline-3D session per document
   let lastTarget = null;        // the last canvas we converted: the chip keeps pointing at it after release
   let candidate = null;         // while OFF (offer / block in dev): a canvas that would convert — the chip's target
@@ -314,6 +315,8 @@ function dxrCore(cfg, cap, S) {
   // and calls core.drew(st) after every draw / replay on the live SBS store (the first one starts
   // the no-views timer).
   function newState(engine, canvas, ad) {
+    // An engine adapter claiming a canvas the GL-level adapter is watching: the GL-level one backs off.
+    if (engine !== 'WebGL' && gl) { try { gl.yieldCanvas(canvas); } catch (e) { /* ignore */ } }
     const st = {
       engine, canvas, ad,
       active: false, pending: false, armed: null, binding: null, tries: 0, nextTry: 0, lastWhy: null, flatReason: null,
@@ -327,6 +330,11 @@ function dxrCore(cfg, cap, S) {
     };
     tracked.push(new WeakRef(st));
     return st;
+  }
+  // Does an adapter other than `except` track this canvas? (the GL-level fallback never takes one)
+  function claims(canvas, except) {
+    for (const w of tracked) { const st = w.deref(); if (st && st.canvas === canvas && st.engine !== except && !st.dead) return true; }
+    return false;
   }
   // A canvas an adapter can see but will never drive (a three.js WebGPURenderer of an unverified revision): a state that only
   // carries its flat reason, for statusOf() (the host's 'flat' report), the chip and the HUD. Nothing
@@ -2436,7 +2444,7 @@ function dxrCore(cfg, cap, S) {
     on, meta, tracked, engines,
     registerEngine(name) { if (!engines.includes(name)) engines.push(name); },
     info, warnOnce, clamp, now, desc, realW, realH, CANVAS_W, CANVAS_H,
-    newState, noteFlat, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
+    newState, noteFlat, claims, considerActivation, canvasPlacement, cssEffect, flip, stand, monoDrawn, drew, yieldTo, notify, turnOff, save, standDownForGood, wake,
     realSizeFor, fitEyes, virtualizeCanvas, unvirtualizeCanvas,
     buildRig, pivotOffset, eyePose, sampleSurface, isStage, stageFrame, estimateSubjectDistance, estimateConvergence, invert4, fakeViews,
     makeCover, dropCover, takeOutCover, surfaces, surfaceOf, readGlEye: surfaces.readGlEye,
@@ -2450,11 +2458,12 @@ function dxrCore(cfg, cap, S) {
   const three = en.three === false ? null : dxrThree(core);
   const playcanvas = en.playcanvas === false ? null : dxrPlayCanvas(core);
   const babylon = en.babylon === false ? null : dxrBabylon(core);
+  gl = en.gl === false ? null : dxrGl(core);
 
   // The page may have asked for inline-3D / WebXR before the core was loaded.
   S.onForeign(yieldTo);
   if (S.foreign()) yieldTo(S.foreign());
   info(`core armed (v${VERSION})`, on() ? '' : '(OFF for this site)');
   notify();
-  return { ctl, three, playcanvas, babylon };
+  return { ctl, three, playcanvas, babylon, gl, claims: (c) => claims(c, 'WebGL') };
 }
