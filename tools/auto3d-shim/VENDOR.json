@@ -1,7 +1,7 @@
 {
   "name": "displayxr-auto3d",
   "version": "0.7.14",
-  "sourceCommit": "97618bbaaa615381886274cbd09c1875fd587039+dirty",
+  "sourceCommit": "95b1ea7916180ee4681a5c269a7ddba8a9d046f3",
   "sourceSha256": "70bf92cf4f01dfeaa0924b8d0c00684c9977420d233b83fefa9c4e02910ea275",
   "files": {
     "dist/auto3d-sentinel.js": {
