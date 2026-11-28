@@ -14,7 +14,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { installCallDom, doc, FakeTrack, FakeStream } from './call-dom.mjs';
-import { mirrorSwapOps, mirrorSwapPixels, eyeCropRect, looksSbs } from '../js/camera/geometry.js';
+import { mirrorSwapOps, mirrorSwapPixels, eyeCropRect, looksSbs, looksNativeSbs } from '../js/camera/geometry.js';
 import { buildStereoXmp, parseStereoXmp, jpegWithXmp, readJpegXmp, readJpegStereoMeta, webmWithTags, readWebmTags, readWebmStereoMeta, stereoTagEntries, buildWebmTags, normalizeStereoMeta } from '../js/camera/metadata.js';
 import { noCameraCode, isDeniedError, isBusyError } from '../js/camera/capture.js';
 import { isHalfSbsCamera, unsqueezedSize, unsqueezeHalfSbs } from '../js/camera/half-sbs.js';
@@ -723,4 +723,96 @@ test('half-SBS: without MediaStreamTrackProcessor the source is left as it opene
   const source = { applyConstraints: async () => asked++, getSettings: () => ({ width: 3840, height: 1080 }) };
   assert.equal(await unsqueezeHalfSbs(source), null);
   assert.equal(asked, 0);
+});
+
+// ── a 16:9 camera CROPPED to 3840x1080 by the engine is not a pair ──────────────────────
+
+test('looksNativeSbs: the shape counts only when it is the camera\'s own', () => {
+  assert.equal(looksNativeSbs({ width: 3840, height: 1080, resizeMode: 'crop-and-scale', maxWidth: 3840, maxHeight: 2160 }), false);
+  assert.equal(looksNativeSbs({ width: 3840, height: 1080, resizeMode: 'crop-and-scale' }), false, 'a crop, whatever the capabilities');
+  assert.equal(looksNativeSbs({ width: 3840, height: 1080, resizeMode: 'none', maxWidth: 3840, maxHeight: 1080 }), true);
+  assert.equal(looksNativeSbs({ width: 2560, height: 720, resizeMode: 'none', maxWidth: 3840, maxHeight: 2160 }), true, 'delivered as the device produces it');
+  assert.equal(looksNativeSbs({ width: 3840, height: 1080, maxWidth: 4032, maxHeight: 3024 }), false, 'no resizeMode: the largest mode is not wide');
+  assert.equal(looksNativeSbs({ width: 1280, height: 480 }), true, 'nothing reported: the shape alone, as before');
+  assert.equal(looksNativeSbs({ width: 1920, height: 1080, resizeMode: 'none' }), false);
+});
+
+/**
+ * An engine with Chromium's resize behaviour: each device has native modes; a request is met by the
+ * native mode nearest the ideal when `resizeMode: 'none'` is asked (and `honour`), else by a crop of
+ * the largest mode to the ideal size, reported as 'crop-and-scale'. `reportResize: false` is an
+ * engine that reports no resizeMode (capabilities only).
+ */
+function resizeMedia(cams, { honour = true, reportResize = true } = {}) {
+  const opens = [];
+  return {
+    opens,
+    async getUserMedia({ video }) {
+      const id = video && video.deviceId ? video.deviceId.exact : cams[0].id;
+      const cam = cams.find((c) => c.id === id);
+      const iw = (video && video.width && video.width.ideal) || 0;
+      const ih = (video && video.height && video.height.ideal) || 0;
+      const wantNone = honour && video && video.resizeMode && video.resizeMode.ideal === 'none';
+      const maxW = Math.max(...cam.modes.map((m) => m[0]));
+      const maxH = Math.max(...cam.modes.map((m) => m[1]));
+      let w, h, rm;
+      if (!iw || !ih || wantNone) {
+        const dist = (m) => (iw ? Math.abs(m[0] - iw) / iw + Math.abs(m[1] - ih) / ih : -m[0]);
+        [w, h] = [...cam.modes].sort((a, b) => dist(a) - dist(b))[0];
+        rm = 'none';
+      } else {
+        w = Math.min(iw, maxW);
+        h = Math.min(ih, maxH);
+        rm = cam.modes.some((m) => m[0] === w && m[1] === h) ? 'none' : 'crop-and-scale';
+      }
+      opens.push(`${id}:${w}x${h}:${rm}`);
+      const track = Object.assign(new FakeTrack('video'), {
+        label: cam.label,
+        getSettings: () => ({ width: w, height: h, deviceId: id, ...(reportResize ? { resizeMode: rm } : {}) }),
+        getCapabilities: () => ({ width: { min: 1, max: maxW }, height: { min: 1, max: maxH } }),
+      });
+      return new FakeStream([track]);
+    },
+    async enumerateDevices() {
+      return cams.map((c) => ({ kind: 'videoinput', deviceId: c.id, label: c.label }));
+    },
+  };
+}
+const WEBCAM_16X9 = { id: 'web', label: 'USB 4K Webcam', modes: [[3840, 2160], [1920, 1080], [1280, 720]] };
+const USB_PAIR = { id: 'pair', label: 'USB Camera', modes: [[3840, 1080], [2560, 720], [1280, 360]] };
+
+test('openCamera(deviceId): a 16:9 camera is mono, even when the engine crops it to 3840x1080', async () => {
+  for (const opts of [{}, { honour: false }, { honour: false, reportResize: false }]) {
+    const md = resizeMedia([WEBCAM_16X9], opts);
+    const cam = await openCamera({ prefer: 'web', mediaDevices: md });
+    assert.equal(cam.format, 'mono', JSON.stringify(opts) + ' ' + md.opens.join(' '));
+    cam.stop && cam.stop();
+  }
+  // The probe asks for native modes: the camera is not cropped in the first place.
+  const md = resizeMedia([WEBCAM_16X9]);
+  await openCamera({ prefer: 'web', mediaDevices: md });
+  assert.equal(md.opens[0], 'web:1920x1080:none');
+});
+
+test('openCamera(deviceId): a native 3840x1080 / 2560x720 USB pair is still sbs', async () => {
+  const md = resizeMedia([USB_PAIR]);
+  const cam = await openCamera({ prefer: 'pair', mediaDevices: md });
+  assert.equal(cam.format, 'sbs');
+  assert.equal(cam.width, 3840);
+  assert.equal(cam.height, 1080);
+  const small = resizeMedia([{ id: 'p2', label: 'USB Camera', modes: [[2560, 720], [1280, 360]] }]);
+  const cam2 = await openCamera({ prefer: 'p2', mediaDevices: small });
+  assert.equal(cam2.format, 'sbs');
+  assert.equal(cam2.width, 2560);
+  // An engine that reports no resizeMode: the largest mode is wide, so the shape is trusted.
+  const quiet = await openCamera({ prefer: 'pair', mediaDevices: resizeMedia([USB_PAIR], { honour: false, reportResize: false }) });
+  assert.equal(quiet.format, 'sbs');
+});
+
+test('openCamera auto: a cropped 16:9 webcam next to a real pair → the pair; alone → mono', async () => {
+  const both = await openCamera({ prefer: 'auto', mediaDevices: resizeMedia([WEBCAM_16X9, USB_PAIR], { honour: false }), stereoWaitMs: 0 });
+  assert.equal(both.format, 'sbs');
+  assert.equal(both.deviceId, 'pair');
+  const alone = await openCamera({ prefer: 'auto', mediaDevices: resizeMedia([WEBCAM_16X9, { ...WEBCAM_16X9, id: 'web2', label: 'Second webcam' }], { honour: false }), stereoWaitMs: 0 });
+  assert.equal(alone.format, 'mono');
 });

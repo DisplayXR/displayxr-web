@@ -7,6 +7,20 @@ which tier they touch, because that is what tells you whether an upgrade can mov
 
 ## Unreleased
 
+### Fixed — camera (`./camera`, `./call`): a plain camera is no longer sent as a side-by-side pair
+
+- **A 16:9 camera cropped by the browser was taken for a stereo pair.** The probe for a pair asks a
+  camera for its widest mode (3840x1080), and Chromium and Safari meet that by default with
+  `resizeMode: 'crop-and-scale'`: an ordinary webcam or phone camera came back cropped to exactly
+  3840x1080, wider than the 2.5:1 pair test, and was sent as `sbs`. Seen after switching cameras
+  with `setCamera(deviceId)` in the DisplayXR Browser, and on a phone in Safari.
+- The probe now asks for `resizeMode: 'none'` (as an `ideal`, so an engine that ignores it still
+  opens the camera), and a frame's shape counts as a pair only when it is the camera's own: never
+  when the track reports `resizeMode: 'crop-and-scale'`, and, where the engine reports no
+  `resizeMode`, only when the camera's largest mode (`getCapabilities()`) is itself wider than
+  2.5:1. A track that describes itself as stereo (the DisplayXR Browser's "3D Camera (DisplayXR)")
+  and the half-SBS path are unchanged; a native 2560x720 or 3840x1080 USB pair is still `sbs`.
+
 ### Changed — lift (`./lift`, preview tier): Explore is faster, and the chip no longer hides
 
 - **The live conversion is held while Explore makes the scene.** From *Explore* until the

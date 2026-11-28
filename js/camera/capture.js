@@ -40,14 +40,17 @@
 // `rectified: false`, and the `rectify` hook (addCall option) is where a calibrated step plugs in:
 // `(stream, info) => MediaStream | Promise<MediaStream>`, returning a rectified SBS stream.
 
-import { looksSbs } from './geometry.js';
+import { looksNativeSbs } from './geometry.js';
 import { isHalfSbsCamera, unsqueezeHalfSbs } from './half-sbs.js';
 import { isAppShareDevice, isAppShareHint } from './app-share.js';
 
 const MONO_CONSTRAINTS = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
 // Ask a candidate stereo device for its widest mode; a 2560x720 or 3840x1080 pair comes back as
 // itself, a 1280x480 one as 1280x480. `ideal`, never `min`: a smaller real pair is still a pair.
-const PROBE_CONSTRAINTS = { width: { ideal: 3840 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
+// `resizeMode: 'none'` (ideal, not required, so an engine that ignores it still opens): without it
+// Chromium and WebKit may CROP a plain 16:9 camera to exactly 3840x1080 to meet the ideal, and the
+// crop looks like a pair by shape. isPair also refuses a shape the track reports as a crop.
+const PROBE_CONSTRAINTS = { width: { ideal: 3840 }, height: { ideal: 1080 }, frameRate: { ideal: 30 }, resizeMode: { ideal: 'none' } };
 export const AUDIO_CONSTRAINTS = Object.freeze({ echoCancellation: true, noiseSuppression: true, autoGainControl: true });
 
 // How long `'auto'` / `'stereo'` waits, in a DisplayXR Browser with labels visible, for the
@@ -223,7 +226,17 @@ export async function openCamera(want = 'auto', o = {}) {
       }
     }
     const appShare = isAppShareDevice({ label: t.label || '', deviceId: st.deviceId || '' }) || isAppShareHint(st.displayxrStereo);
-    return { stream: s, track: t, width: st.width, height: st.height, deviceId: st.deviceId || null, label: t.label || '', stereo, appShare };
+    return { stream: s, track: t, width: st.width, height: st.height, resizeMode: st.resizeMode, ...maxSize(t), deviceId: st.deviceId || null, label: t.label || '', stereo, appShare };
+  };
+  // The camera's largest mode, where the engine reports capabilities (a crop cannot be wider than it).
+  const maxSize = (t) => {
+    let c = null;
+    try {
+      c = typeof t.getCapabilities === 'function' ? t.getCapabilities() : null;
+    } catch {
+      /* no capabilities: the shape is judged without them */
+    }
+    return { maxWidth: (c && c.width && c.width.max) || 0, maxHeight: (c && c.height && c.height.max) || 0 };
   };
   const skip = (label, err) => {
     skipped.push({ label, error: `${err.name}: ${err.message}`, busy: isBusyError(err), denied: isDeniedError(err) });
@@ -286,15 +299,16 @@ export async function openCamera(want = 'auto', o = {}) {
     try {
       await r.track.applyConstraints(constraints);
       const st = r.track.getSettings();
-      if (st.width > 0 && st.height > 0) return { ...r, width: st.width, height: st.height };
+      if (st.width > 0 && st.height > 0) return { ...r, width: st.width, height: st.height, resizeMode: st.resizeMode };
     } catch {
       /* keep the mode it opened in */
     }
     return r;
   };
   // A track that declares itself a side-by-side pair IS one, whatever its aspect (a phone's portrait
-  // eyes make a 1440x1280 pair). Shape is only the guess for an unknown device, e.g. a USB pair.
-  const isPair = (r) => !!r && (!!r.stereo || looksSbs(r.width, r.height));
+  // eyes make a 1440x1280 pair). Shape is only the guess for an unknown device, e.g. a USB pair, and
+  // only the camera's OWN shape: a 16:9 camera cropped to 3840x1080 by the engine is not a pair.
+  const isPair = (r) => !!r && (!!r.stereo || looksNativeSbs(r));
   const result = (r, format) => ({
     stream: r.stream, format, width: r.width, height: r.height, deviceId: r.deviceId, label: r.label, owned: true, skipped,
     calibration: {
